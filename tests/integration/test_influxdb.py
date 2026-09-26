@@ -316,8 +316,10 @@ def test_a_broken_instrument_is_stored_as_absent_and_invalid(
         encode_point(KEYS[DO], math.nan, ts + 1000, quality=0, table=table),
         encode_point(KEYS[DO], 2.11, ts + 2000, quality=0, table=table),
     ])
-    rows = _query(f"SELECT time, value, quality FROM {table} "
-                  f"WHERE signal = 'do_mg_l' AND time >= '{_rfc3339(ts)}' ORDER BY time")
+    rows = _query(
+        f"SELECT time, value, quality FROM {table} "
+        f"WHERE signal = 'do_mg_l' AND time >= '{_rfc3339(ts)}' ORDER BY time"
+    )
     assert len(rows) == 3, "the broken reading must not be dropped"
     assert rows[0]["value"] == pytest.approx(2.03)
     assert rows[1]["value"] is None, "a failed reading has no value"
