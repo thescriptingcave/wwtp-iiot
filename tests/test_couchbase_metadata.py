@@ -163,7 +163,10 @@ def test_event_extra_fields_are_kept() -> None:
 
 def test_seeding_writes_every_contract_object() -> None:
     written: dict[str, dict] = {}
-    w = MetadataWriter(lambda k, d: written.__setitem__(k, d))
+    def record(key: str, doc: dict) -> None:
+        written[key] = doc
+
+    w = MetadataWriter(record)
     stats = w.seed_contract(C)
     assert stats.sites == 1
     assert stats.tags == len(C.signals)
@@ -176,7 +179,10 @@ def test_seeding_is_idempotent_by_key() -> None:
     """A seeder that appends becomes a second, disagreeing copy of the contract —
     and the copy nobody remembers to update."""
     written: dict[str, dict] = {}
-    w = MetadataWriter(lambda k, d: written.__setitem__(k, d))
+    def record(key: str, doc: dict) -> None:
+        written[key] = doc
+
+    w = MetadataWriter(record)
     w.seed_contract(C)
     first = dict(written)
     w.seed_contract(C)

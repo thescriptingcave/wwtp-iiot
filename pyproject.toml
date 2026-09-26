@@ -105,6 +105,19 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "PLR2004"]
+# Lazy imports are a design decision in these two files, not an oversight: the
+# InfluxDB client must stay optional so the protocol code and its tests run
+# without the storage extras, and the SDK's enums are only reachable at the point
+# the transport is actually built.
+"storage/influx/writer.py" = ["PLC0415"]
+# Same reasoning for the rollup entry point: the InfluxDB SDK is imported where it
+# is used so the policy module above stays importable without the storage extras.
+"storage/rollup_worker/main.py" = ["PLC0415"]
+"storage/influx/rollups_sql.py" = ["PLC0415"]
+# The seeder imports the InfluxDB transport lazily so that replaying the plant -
+# which is the interesting half, and needs no database - can be tested directly.
+"storage/seed/main.py" = ["PLC0415"]
+"storage/couchbase/client.py" = ["PLC0415"]
 "sql/*" = ["ALL"]
 
 [tool.mypy]

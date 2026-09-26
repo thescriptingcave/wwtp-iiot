@@ -111,9 +111,17 @@ Each lesson has a question, a query and an expected result in
 
 - [x] **Phase 1** — contracts, process model, scan loop, control blocks, fault engine
 - [x] **Phase 2** — Modbus TCP server, OPC UA server, browser tool, runnable soft PLC
-- [ ] **Phase 3** — gateway with deadband and spool, InfluxDB 3 rollup worker, Couchbase seeder
+- [x] **Phase 3** — gateway (deadband, spool, both protocol readers), InfluxDB
+  line protocol and rollup worker, Couchbase metadata and seeder
 - [ ] **Phase 4** — alarm engine with detection by what the fault does *not* show
 - [ ] **Phase 5** — Grafana dashboards, the custom Next.js page, Node-RED SCADA flows
+
+Phase 3 is complete in code and unit-tested; the parts that need a live
+InfluxDB and Couchbase are wired in `compose.yaml` but not yet exercised by an
+integration run. Two known gaps are named in `docs/LEARNING-LOG.md`: the contract
+does not link a signal to the Modbus register that carries it, so the gateway
+reads Modbus and publishes only OPC UA; and the seed run is not yet checked
+against a real database.
 
 ## Licence
 

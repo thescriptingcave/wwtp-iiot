@@ -13,9 +13,9 @@ about why it is not redundancy.
 
 | Question | Store | Why that one |
 |---|---|---|
-| What was DO at 03:14? | InfluxDB | range scan, bucketing, aggregation |
-| What is AHU-1? | Couchbase | key lookup, joins, full text |
-| Is nitrification degrading this year? | InfluxDB (1 h) | 8 760 points, not 8.7 million |
+| What was DO at 03:14? | InfluxDB | range scan, bucketing, mean |
+| What is AHU-1? | Couchbase | key lookup, joins, relations |
+| Is nitrification degrading this year? | InfluxDB (1 h) | 8 760 points, not 8.7 M |
 | Which documents describe the blower? | Couchbase | a relation, not a series |
 | What failed last week? | Couchbase | heterogeneous, queryable events |
 | When was the DO probe last calibrated? | Couchbase | a fact with no time series |

@@ -1,0 +1,264 @@
+"""Seed a week of plant history, so the dashboards and the SQL course have
+something to bite on.
+
+An empty database teaches nothing: every query returns no rows, every chart is
+flat, and the most common conclusion is that the query is wrong. It usually is
+the query. Seeding separates "my SQL is broken" from "there is no data", which is
+the single most useful distinction available when learning a new dialect.
+
+## What it produces, and why it is not just noise
+
+The seed is not random. It replays the actual process model — the same
+``softplc.process.plant.Plant`` the live PLC uses — at high speed, through real
+fault scenarios. So the seeded history contains the things that make the SQL
+course worth doing:
+
+- a diurnal load pattern, because a flat influent flow makes every
+  time-bucketing lesson look like it does nothing;
+- a storm, because the interesting questions are all about what happens when a
+  signal moves faster than its deadband;
+- a blower trip and recovery, because the DO sag followed by ammonia
+  breakthrough hours later is the one ordering the course keeps asking about;
+- deadband gaps, because a dataset with no gaps teaches nothing about ``WHERE
+  time`` and nothing about why a signal can be *absent* rather than zero.
+
+## It writes through the same path as the live gateway
+
+Same line protocol, same buckets, same field names. A seeded database that took a
+shortcut is a database the course cannot be trusted to describe, because the
+shortcut is exactly where the interesting differences are.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+import time
+from collections.abc import Callable
+
+from gateway.deadband import Deadband
+from softplc.contract import Contract
+from softplc.contract import contract as get_contract
+from softplc.faults.engine import FaultEngine
+from softplc.process.plant import Plant, PlantSnapshot
+
+from storage.influx.line_protocol import encode_batch, encode_point, keys_from_contract
+
+log = logging.getLogger("storage.seed")
+
+#: ``(bucket, line_protocol_payload) -> bool``. A protocol rather than a client, so
+#: the replay policy is testable without a database.
+ExecuteFn = Callable[[str, str], bool]
+
+#: One second, because that is the raw tier's resolution. Recording faster would
+#: invent precision the plant does not have — and the whole point of a time-series
+#: database is that it does not let you.
+SAMPLE_INTERVAL_S = 1.0
+
+#: How many samples per write. 5 000 is InfluxDB's documented ceiling; two thirds
+#: of it leaves room for tags without needing a second request.
+BATCH_LINES = 3_000
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+class Seeder:
+    """Replays the plant model and writes the result.
+
+    Takes an ``execute`` callable rather than a database client, so the *policy* —
+    which scenario, which sampling rate, what gets deadbanded — is testable
+    without one.
+    """
+
+    def __init__(self, contract: Contract, execute: ExecuteFn, *,
+                 database: str = "wwtp",
+                 sample_interval_s: float = SAMPLE_INTERVAL_S,
+                 speed: float = 600.0, storm_after_h: float | None = 2.0) -> None:
+        self.c = contract
+        self._execute = execute
+        self.database = database
+        self.sample_interval_s = sample_interval_s
+        self.speed = speed
+        self.storm_after_h = storm_after_h
+        self.keys = keys_from_contract(contract)
+        self.deadband = Deadband.from_contract(contract)
+        self.lines: list[str] = []
+        self.written = 0
+        self.offered = 0
+        self.plant = Plant(c=contract)
+        self.faults = FaultEngine(self.plant)
+
+    # ─── one sample ───────────────────────────────────────────────────────────
+
+    def _record(self, snapshot: PlantSnapshot, ts_ms: int) -> None:
+        for signal_id, value in snapshot.values.items():
+            key = self.keys.get(signal_id)
+            if key is None:
+                continue
+            self.offered += 1
+            quality = snapshot.quality.get(signal_id, 0)
+            if not self.deadband.accept(signal_id, value, quality):
+                continue
+            self.lines.append(
+                encode_point(key, value, ts_ms, quality=quality, source="seed")
+            )
+
+    def _flush(self) -> None:
+        """Write the buffer. Lines are dropped from the buffer either way.
+
+        A seeder is not the live path, so there is no spool behind it and a failed
+        batch is logged and skipped rather than retried. That is a deliberate
+        asymmetry with the gateway, and worth naming: the gateway's data is the
+        only copy, the seeder's data can be regenerated by running it again.
+        """
+        if not self.lines:
+            return
+        payload = encode_batch(self.lines)
+        if self._execute(self.database, payload):
+            self.written += len(self.lines)
+        else:
+            log.warning("seed batch of %d lines was not accepted", len(self.lines))
+        self.lines.clear()
+
+    # ─── the run ──────────────────────────────────────────────────────────────
+
+    def run_days(self, days: float) -> int:
+        """Replay ``days`` of plant time. Returns the number of points written.
+
+        ``days`` is *simulated*. At the default speed a week takes about a minute
+        of wall clock, which is slow enough to watch and fast enough not to
+        abandon.
+        """
+        total_s = days * 86_400.0
+        # The scan period is nominal; the sampling interval is what decides how
+        # many points exist. The two are deliberately different — the PLC scans
+        # at 50 Hz and the historian records at 1 Hz, and conflating them is how
+        # a dataset ends up claiming 1 Hz resolution it does not have.
+        dt = self.sample_interval_s
+        sim_now = time.time()
+        start = sim_now - total_s
+
+        if self.storm_after_h is not None:
+            # Armed relative to the *end* of the run, so the storm lands in the
+            # most recent data and is therefore inside the default dashboard
+            # window. A storm seven days old is in no dashboard window at all.
+            #
+            # ``arm`` takes an offset from the engine's own clock, not a
+            # timestamp, so the offset is measured from zero rather than from the
+            # wall-clock start - and ``now_s`` advances as ``step`` is called, so
+            # the fault fires once the replay reaches that offset.
+            self.faults.arm_scenario("wet_weather")
+            for fault in self.faults.active:
+                delay = total_s - self.storm_after_h * 3600.0
+                fault.start_s = delay
+                if fault.end_s is not None:
+                    fault.end_s = delay + (fault.end_s - fault.start_s)
+
+        n = int(total_s / dt)
+        for i in range(n):
+            ts = start + i * dt
+            snapshot = self.faults.step(dt)
+            self._record(snapshot, int(ts * 1000))
+            if len(self.lines) >= BATCH_LINES:
+                self._flush()
+            if i % 20_000 == 0 and i:
+                log.info("seeded %.1f%% of %s days (%d points)",
+                         100.0 * i / n, days, self.written)
+        self._flush()
+        return self.written
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="seed",
+        description="Generate plant history for the dashboards and lessons.",
+    )
+    p.add_argument("--days", type=float, default=float(_env_int("SEED_DAYS", 7)))
+    p.add_argument("--storm-after", type=float,
+                   default=_env_float("DEMO_STORM_AT_HOURS", 2.0),
+                   help="hours before the end of the run to arm the storm; "
+                        "negative to skip")
+    p.add_argument("--speed", type=float, default=600.0,
+                   help="simulated seconds per real second")
+    p.add_argument("--no-deadband", action="store_true",
+                              help="record every sample; a much larger dataset")
+    p.add_argument("--log-level", default="INFO")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-5s %(name)s %(message)s",
+    )
+
+    token = os.environ.get("INFLUX_TOKEN", "")
+    if not token:
+        log.error("INFLUX_TOKEN is not set; there is nowhere to seed to")
+        return 2
+
+    from storage.influx.writer import make_transport
+
+    contract = get_contract()
+    transport = make_transport(
+        os.environ.get("INFLUX_URL", "http://influxdb:8086"), token,
+        org=os.environ.get("INFLUX_ORG", "wwtp"),
+    )
+    database = os.environ.get("INFLUX_DATABASE", "wwtp")
+
+    def execute(bucket: str, payload: str) -> bool:
+        return transport(bucket, payload)
+
+    seeder = Seeder(
+        contract, execute, database=database, speed=args.speed,
+        storm_after_h=None if args.storm_after < 0 else args.storm_after,
+    )
+    if args.no_deadband:
+        seeder.deadband = Deadband({})
+
+    started = time.perf_counter()
+    written = seeder.run_days(args.days)
+    offered = seeder.offered
+    elapsed = time.perf_counter() - started
+
+    log.info(
+        "seeded %s days into %s: %d points written of %d offered "
+        "(%.1f%% filtered) in %.1fs",
+        args.days, database, written, offered,
+        (100.0 * (1 - written / offered)) if offered else 0.0, elapsed,
+    )
+
+    # Metadata into Couchbase, best-effort. The history is the part the SQL course
+    # needs; the documents are what the dashboards read for labels and limits. A
+    # failure here is worth a warning and not worth failing the run.
+    if os.environ.get("COUCHBASE_URL"):
+        try:
+            from storage.couchbase.client import make_upsert
+            from storage.couchbase.metadata import MetadataWriter
+
+            writer = MetadataWriter(make_upsert())
+            writer.seed_contract(contract)
+            log.info("couchbase metadata: %s", writer.stats.as_dict())
+        except Exception as exc:
+            log.warning("couchbase metadata seeding failed: %s", exc)
+
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
