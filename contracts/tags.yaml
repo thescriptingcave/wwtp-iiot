@@ -132,7 +132,11 @@ measurements:
     signals:
       - { id: "INFLUENT:LIFT:WETWELL_LEVEL", field: level_m,     eu: "m",   range: [0, 8],     normal: [1.0, 4.0], deadband: 0.01, sample_ms: 1000 }
       - { id: "INFLUENT:LIFT:CURRENT",       field: current_a,   eu: "A",   range: [0, 120],   normal: [20, 70],   deadband: 0.5,  sample_ms: 1000 }
-      - { id: "INFLUENT:LIFT:FLOW",          field: flow_m3h,    eu: "m3/h", range: [0, 900],   normal: [100, 600], deadband: 2.0,  sample_ms: 1000 }
+      # Total wet-well pumping, i.e. all running pumps combined. Sized for peak
+      # wet-weather flow (design × peak factor), not for a single pump — a
+      # per-pump range here makes the contract reject normal high-flow
+      # operation, which is worse than no range at all.
+      - { id: "INFLUENT:LIFT:FLOW",          field: flow_m3h,    eu: "m3/h", range: [0, 4800],  normal: [100, 3600], deadband: 2.0,  sample_ms: 1000 }
       - { id: "INFLUENT:LIFT:RUNTIME",       field: runtime_h,   eu: "h",   range: [0, 60000], normal: [0, 60000], deadband: 1.0, sample_ms: 60000 }
       - { id: "INFLUENT:LIFT:STARTS",        field: starts,      eu: "{1}",  range: [0, 100000], normal: [0, 100000], deadband: 1.0, sample_ms: 60000 }
 
