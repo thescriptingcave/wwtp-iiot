@@ -142,6 +142,9 @@ class Plant:
         # ── control state the SCADA layer will override ───────────────────────
         self.dose_mg_l: float = 2.0
         self.cl_dose_enable: bool = True
+        #: Scales digester organic loading. The fault library uses it to model a
+        #: genuine overloading event, which is what actually sours a digester.
+        self.digester_feed_multiplier: float = 1.0
 
         # Inventory at t=0. Balances are stated as *changes* in stored material,
         # because solids and water that entered and are still sitting in a basin
@@ -275,7 +278,7 @@ class Plant:
         ) * 24.0
         self.digester.step(
             dt,
-            feed_kg_d,
+            feed_kg_d * self.digester_feed_multiplier,
             self.aeration.ph,
             self.aeration.wtemp_c,
             boiler_demand_kw=1200.0,

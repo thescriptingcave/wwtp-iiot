@@ -52,9 +52,18 @@ def oxygen_saturation(temp_c: float) -> float:
 MU_HETEROTROPH = 6.0
 #: Half-saturation constant for heterotrophic growth on substrate, mg/L.
 K_S_HETEROTROPH = 20.0
-#: Maximum specific nitrification rate, d⁻¹. Well below heterotrophs, which is
-#: exactly why nitrification is the fragile step.
-MU_NITRIFIER = 0.8
+#: Maximum specific growth rate of ammonia oxidisers, d⁻¹.
+#:
+#: Nitrifiers grow an order of magnitude slower than heterotrophs, which is
+#: precisely why nitrification is the fragile step in the plant. Calibrated
+#: against a realistic rate: with ~400 mg/L of nitrifier biomass and this
+#: coefficient, the basin removes roughly 1.4 mg N/L/h at a DO setpoint of
+#: 2 mg/L — a typical full-scale nitrification rate, and only a little above the
+#: influent ammonia load. That small margin is the whole reason a blower trip
+#: causes ammonia breakthrough: an earlier value of 0.8 /d gave ~50x the real
+#: capacity, so the population could be almost entirely suppressed and the
+#: plant would still nitrify, which no real plant can do.
+MU_NITRIFIER = 0.08
 #: Half-saturation for ammonia, mg/L. Nitrifiers are inhibited below ~1 mg/L.
 K_S_NITRIFIER = 1.0
 #: Yield of biomass on substrate, gVSS/gCOD.
@@ -347,17 +356,35 @@ class Pump:
     runtime_h: float = 0.0
     starts: int = 0
     fault: int = 0
-    cavitating: bool = False
     #: 0..1 speed command from the level controller. Affine pump curves mean flow
     #: is roughly proportional to speed down to about 40 %, below which the
     #: relationship flattens and the minimum useful flow sets in.
     speed: float = 1.0
     #: 0..1, how much of rated current the pump draws at nominal load.
     efficiency: float = 0.78
+    #: Standing cause of cavitation, independent of the wet-well level: a
+    #: damaged or badly-seated impeller, a partial blockage, or a design fault.
+    #: Cavitation is the *condition*; this is a *cause*. Modelling only the
+    #: level case means an injected fault is cleared again on the very next
+    #: scan, which is indistinguishable from a fault that does nothing.
+    degraded_suction: bool = False
+    #: Backing field for the ``cavitating`` property. Low submergence is
+    #: evaluated every scan; ``degraded_suction`` is a standing cause that the
+    #: level logic must not clear.
+    _cavitating: bool = False
 
     @property
     def available(self) -> bool:
         return self.fault == 0
+
+    @property
+    def cavitating(self) -> bool:
+        """Cavitating if the suction is degraded *or* the level is too low."""
+        return self._cavitating or self.degraded_suction
+
+    @cavitating.setter
+    def cavitating(self, value: bool) -> None:
+        self._cavitating = value
 
     @property
     def flow_m3h(self) -> float:
@@ -658,9 +685,15 @@ class PrimaryClarifier:
         )
 
         # Rake torque: base plus a term proportional to the solids being pushed.
+        # Torque depends on concentration *and* on the volume of sludge being
+        # pushed, so it rises with hydraulic load. Omitting the flow term makes
+        # scraper torque insensitive to a storm, which is wrong: the drive is one
+        # of the first things an operator watches during wet weather.
+        hydraulic_load = influent_m3h / 1800.0
         load = (
-            0.35 * (self.underflow_solids_pct / 2.0)
-            + 0.65 * (1.0 - self.raking_difficulty)
+            0.25 * (self.underflow_solids_pct / 2.0)
+            + 0.40 * (1.0 - self.raking_difficulty)
+            + 0.35 * _clamp(hydraulic_load, 0.2, 2.5)
         )
         self.torque_nm = _clamp(
             self.scraper_torque_nm * load + 2.0 * math.sin(self._t * 0.7),
@@ -1260,6 +1293,11 @@ class SecondaryClarifier:
     effluent_cod_mg_l: float = 20.0
     #: Realised return-sludge ratio, reported rather than commanded.
     ras_ratio_actual: float = 0.75
+    #: 1.0 = healthy scraper. Below 1.0 the drive cannot rake solids out as fast
+    #: as they are captured, so the blanket builds. This is the *cause* of
+    #: blanket thickening — reducing capture would make it shallower, because
+    #: less sludge would arrive to accumulate.
+    scraper_impairment: float = 1.0
     #: Return activated sludge as a fraction of forward flow. 0.5–1.0 is
     #: typical; too low thins the sludge and the blanket deepens.
     ras_ratio: float = 0.75
@@ -1365,7 +1403,10 @@ class SecondaryClarifier:
 
         # Scraping gets harder as the blanket deepens.
         self.raking_difficulty = _clamp(
-            1.0 - 0.55 * max(0.0, self.blanket_m - 0.5) / self.depth_m, 0.15, 1.0
+            (1.0 - 0.55 * max(0.0, self.blanket_m - 0.5) / self.depth_m)
+            * self.scraper_impairment,
+            0.05,
+            1.0,
         )
         load = (
             0.30

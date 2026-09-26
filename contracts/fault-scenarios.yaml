@@ -1,0 +1,372 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# WWTP-IIOT — FAULT SCENARIO LIBRARY
+#
+# A simulator that only ever produces clean data teaches nothing about
+# detection. This file is the catalogue of things that go wrong, declared so
+# that scenarios are reproducible and reviewable rather than buried in code.
+#
+# Two kinds of fault, and the distinction matters:
+#
+#   kind: process  — the *plant* misbehaves. Effluent genuinely degrades.
+#   kind: sensor   — the *instrument* lies. The plant is fine, the reading is
+#                    not. These are the interesting ones, because a threshold
+#                    alarm cannot catch them: nothing is out of range, the
+#                    value is simply wrong.
+#
+# Injection strategy:
+#   mutate: plant   — a mutator touches real plant state, and the physics
+#                     propagates the consequence honestly.
+#   corrupt: snapshot — applied to the *published* values only. The process is
+#                     untouched, so any alarm that fires is either a genuine
+#                     coincidence or a false positive. This is how real bad
+#                     instruments behave, and it is why "the trend looks wrong"
+#                     is a detection problem no single-point threshold solves.
+#
+# Fields
+#   start_at_s   when the fault becomes active, relative to scenario start
+#   duration_s   how long it lasts; omit for indefinite (until stopped)
+#   ramp_s       how long the onset takes (mechanical and biological faults
+#                are not instantaneous, and a step change is unrealistic)
+#   targets      equipment ids, instrument ids, or literal:*
+#   expects      the signature a correct detector should find — used by the
+#                tests as the specification of what "working" means
+# ═════════════════════════════════════════════════════════════════════════════
+
+version: 1
+
+faults:
+
+  # ─── process faults ────────────────────────────────────────────────────────
+
+  - id: storm_inflow
+    kind: process
+    title: Wet-weather storm inflow
+    description: >
+      A rainfall event on a combined sewer. Inflow and infiltration raise the
+      flow well above design while *diluting* the influent, so the plant's
+      hydraulic load spikes even as its pollutant load per litre falls. This
+      is the canonical IIoT event: several unrelated variables move together,
+      which is exactly what a single-point threshold cannot see and what a
+      correlation or a trend can.
+    start_at_s: 0
+    duration_s: 7200
+    ramp_s: 900
+    targets: ["influent"]
+    inject: storm
+    params: { intensity: 1.3, duration_s: 7200 }
+    expects:
+      signature: >
+        Influent turbidity rises several-fold; flow exceeds 1.5x design;
+        conductivity rises sharply (the cheap storm tracer); clarifier scraper
+        torque rises; effluent TSS climbs *after* the flow peak, because the
+        solids wash out of a deepened blanket; the DO loop opens up.
+      detectable_by: [trend, correlation, deviation_from_baseline]
+      NOT_detectable_by: [single_point_threshold]
+
+  - id: blower_failure
+    kind: process
+    title: Aeration blower trip
+    description: >
+      Loss of one blower. Air capacity falls, transfer capability falls with
+      it, and DO sags. The signature is *delayed*: nitrifiers stop growing
+      almost immediately, but effluent ammonia does not rise until the existing
+      population has decayed, which takes hours. An operator who alarms only on
+      effluent ammonia gets a four-hour warning; one who alarms on DO gets a
+      four-hour head start. That delay is the single most valuable thing to
+      model in this library.
+    start_at_s: 0
+    # Long enough to observe the *consequence* in effluent ammonia. A one-hour
+    # trip is over before the nitrifier population has finished decaying, so
+    # the signature that matters is never actually produced.
+    duration_s: 21600
+    ramp_s: 30
+    targets: ["BLW-2"]
+    inject: aeration_capacity
+    params: { fraction_remaining: 0.5 }
+    expects:
+      signature: >
+        Air flow rises to the remaining capacity and then sits there pinned —
+        the blowers are giving everything they have. DO decays over one to two
+        hours, limited by the basin's dissolved-oxygen inventory rather than by
+        biology: ~40 kg of DO in a 20 000 m³ basin at 2 mg/L takes over an hour
+        to drain at a 25 mg/L/h deficit. So even the *fast* signal has an hour
+        of lag, and effluent NH4 follows two to six hours after that, staying
+        elevated for a similar period once air is restored because the
+        nitrifier population must regrow.
+
+        An operator alarming only on effluent ammonia gets roughly three hours
+        less warning than one alarming on DO. That is the single most valuable
+        thing this library models, and it is why the test asserts the
+        *ordering* of the two responses, not just their magnitudes.
+      detectable_by: [deviation_from_baseline, state_change, trend]
+      NOT_detectable_by: [single_point_threshold]
+
+  - id: sludge_blanket_thickening
+    kind: process
+    title: Secondary clarifier blanket deepening
+    description: >
+      The blanket builds when solids are captured faster than the scraper can
+      rake them out. Left alone it reaches the surface and washes over the weir
+      — a permit breach with no alarm on the way. The early warnings are all
+      indirect: rising scraper torque, and a blanket depth that keeps climbing
+      with no load change to explain it.
+    start_at_s: 0
+    ramp_s: 21600      # 6 hours to develop
+    targets: ["SEC-CL-1"]
+    inject: clarifier_degrade
+    params: { raking_difficulty: 0.25 }
+    expects:
+      signature: >
+        Scraper torque rises; blanket depth climbs monotonically with no
+        corresponding solids-loading change; effluent TSS rises once the
+        blanket approaches the water surface; return sludge concentration
+        falls as the sludge is diluted.
+      detectable_by: [trend, rate_of_change, deviation_from_baseline]
+      NOT_detectable_by: [single_point_threshold]
+
+  - id: digester_souring
+    kind: process
+    title: Anaerobic digester souring
+    description: >
+      Overloading an anaerobic digester drives volatile fatty acids up faster
+      than alkalinity can buffer them. The VFA/alkalinity ratio crosses 0.6, pH
+      falls, methane production collapses, and gas yield follows. Slow to
+      develop and slow to recover, and expensive to recover from — which makes
+      it the best example in the plant of a condition only a *trend* will
+      reveal.
+    start_at_s: 0
+    ramp_s: 10800      # 3 hours
+    targets: ["DIG-1"]
+    inject: digester_overload
+    params: { overload: 2.6, souring: 1.0 }
+    expects:
+      signature: >
+        VFA/alkalinity ratio climbs past 0.6; pH falls toward 6.5 and below;
+        methane fraction drops toward 45 %; gas flow falls; boiler duty falls
+        with it. The *order* matters: VFA rises first, gas falls last.
+      detectable_by: [trend, ratio_derived_alarm, deviation_from_baseline]
+      NOT_detectable_by: [single_point_threshold]
+
+  - id: lift_pump_cavitation
+    kind: process
+    title: Lift pump cavitation
+    description: >
+      A pump running below its minimum submergence cavitates. Delivered flow
+      drops well below nameplate while *current becomes violently unsteady* —
+      the oscillation is the tell. Left alone it destroys the pump. The
+      interesting detection problem: the level controller compensates by
+      starting the next pump, so the *system* looks fine while one machine is
+      being destroyed.
+    start_at_s: 0
+    ramp_s: 60
+    targets: ["PIT-1"]
+    inject: pump_cavitation
+    params: {}
+    expects:
+      signature: >
+        Pump current oscillates at high frequency about a raised mean; that
+        pump's contribution to total lift flow drops; the wet-well controller
+        compensates by bringing another pump on, so level stays normal. The
+        fault is invisible in the level and visible only in the current.
+      detectable_by: [oscillation_detection, deviation_from_baseline]
+      NOT_detectable_by: [single_point_threshold, state_change]
+
+  - id: lift_pump_failure
+    kind: process
+    title: Lift pump trip
+    description: >
+      A hard failure with an unmistakable signature: the pump stops, its state
+      goes to FAULT, and the standby starts automatically. This one *is*
+      detectable by a threshold, and it is included deliberately as the control
+      case — a library where nothing is easy teaches nothing about what is hard.
+    start_at_s: 0
+    duration_s: 3600
+    targets: ["PIT-1"]
+    inject: pump_fault
+    params: { fault_code: 17 }
+    expects:
+      signature: >
+        PIT-1 state becomes FAULT (2); runtime stops accumulating; the standby
+        pump starts; total lift flow is maintained and the wet-well level does
+        not move. Duty rotation is suspended while no pump is available.
+      detectable_by: [state_change, single_point_threshold]
+      NOT_detectable_by: []
+
+  - id: high_ammonia_load
+    kind: process
+    title: Sustained ammonia shock load
+    description: >
+      A persistent step increase in influent ammonia — a slug load, a failing
+      septic system upstream, or a changed industrial discharge. Distinct from
+      the storm: this does *not* dilute, so flow barely moves while the load
+      climbs. Nitrification cannot keep up and effluent ammonia rises towards
+      the permit limit. Slow recovery once the load clears.
+    start_at_s: 0
+    ramp_s: 1800
+    targets: ["influent"]
+    inject: load_shock
+    params: { nh4_multiplier: 3.2, cod_multiplier: 1.4, duration_s: 10800 }
+    expects:
+      signature: >
+        Influent NH4 and COD rise; OUR rises; air demand rises; the DO loop
+        compensates and DO stays on setpoint; effluent NH4 climbs towards the
+        permit limit with a lag; the chlorine dose rises with it, because
+        ammonia dominates chlorine demand.
+      detectable_by: [trend, deviation_from_baseline, correlation]
+      NOT_detectable_by: [single_point_threshold]
+
+  # ─── sensor faults ─────────────────────────────────────────────────────────
+  # The process is healthy in all of these. Only the reported value is wrong.
+
+  - id: do_sensor_drift
+    kind: sensor
+    title: Dissolved oxygen sensor drift
+    description: >
+      A fouled or ageing DO probe reads progressively high. The plant is
+      running correctly at a genuinely lower DO than the gauge suggests, so the
+      *indicated* value looks healthy while the process is being stressed. This
+      is the flagship model-based detection case: the aeration basin knows its
+      own oxygen transfer rate, so a divergence between the indicated DO and
+      the oxygen actually being consumed reveals the drift. No threshold on the
+      DO reading alone can ever catch it, because the reading is never out of
+      range.
+    start_at_s: 0
+    ramp_s: 3600
+    targets: ["AERATION:AHU-1:DO"]
+    inject: sensor_drift
+    params: { bias_max: 0.7 }
+    expects:
+      signature: >
+        Indicated DO rises smoothly above the true value while air flow and OUR
+        stay normal. The tell is a *divergence*: indicated DO climbs while the
+        oxygen consumption implied by air flow does not. Detect it by
+        cross-checking against transfer, not by threshold.
+      detectable_by: [model_based, cross_validation, correlation]
+      NOT_detectable_by: [single_point_threshold, deviation_from_baseline]
+      note: >
+        The bias is deliberately small enough that the indicated value stays
+        inside the normal operating band. A larger drift would be caught by a
+        plain high alarm, and the whole point of this fault is that it is not.
+
+  - id: sensor_flatline
+    kind: sensor
+    title: Frozen sensor value
+    description: >
+      A failed transmitter holds its last value. This is the most deceptive
+      class of instrument fault, because a frozen value is a *valid* value: it
+      sits in range, it changes slowly enough to look alive, and it will
+      happily satisfy a deadband check. In a trend chart it is nearly
+      indistinguishable from a genuinely steady process — which is precisely
+      why it needs explicit detection rather than careful thresholds.
+    start_at_s: 0
+    duration_s: 5400
+    targets: ["SECONDARY:SEC-CL-1:BLANKET", "AERATION:AHU-1:BLOWER_RPM"]
+    inject: sensor_flatline
+    params: {}
+    expects:
+      signature: >
+        The reported value stops changing while every correlated variable keeps
+        moving. Detection requires either an expected-sample-count check or a
+        cross-variable correlation — a value that never moves while the plant
+        around it does. Note this is *not* the same as a gap: a gap is missing
+        data, a flatline is plausible data.
+      detectable_by: [flatline_detection, cross_validation, expected_sample_count]
+      NOT_detectable_by: [deadband, single_point_threshold, deviation_from_baseline]
+
+  - id: sensor_stuck_high
+    kind: sensor
+    title: Sensor stuck at end of range
+    description: >
+      A transmitter fails stuck near full scale. Unlike a drift, this *is* out
+      of range, so a well-configured high alarm fires — but it fires on the
+      symptom rather than the cause, and if the instrument happens to freeze
+      below its alarm setpoint the same failure is silent. Included to test the
+      alarm system against a fault that is simultaneously obvious and subtle.
+    start_at_s: 0
+    duration_s: 7200
+    targets: ["INFLUENT:LIFT:CURRENT"]
+    inject: sensor_stuck_high
+    params: { fraction: 0.97 }
+    expects:
+      signature: >
+        Indicated value pins near full scale. Cross-validation is the reliable
+        detector: the *total* lift current summed from per-pump values no longer
+        agrees with the plant power, because the per-pump reading is wrong.
+      detectable_by: [cross_validation, single_point_threshold]
+      NOT_detectable_by: []
+
+  - id: effluent_tss_stuck
+    kind: sensor
+    title: Effluent TSS instrument stuck low
+    description: >
+      The most consequential instrument failure in the plant. The effluent TSS
+      transmitter reads a constant low value while solids are actually passing
+      over the weir. Every downstream number — the permit, the discharge
+      report, the compliance calculation — is built on it, and it is wrong.
+      Only an independent measurement, such as the clarifier's blanket and
+      torque moving together, contradicts it.
+    start_at_s: 0
+    ramp_s: 1800
+    duration_s: 10800
+    targets: ["EFFLUENT:FLOW:TSS"]
+    inject: sensor_stuck_low
+    params: { value: 6.0 }
+    expects:
+      signature: >
+        Reported effluent TSS is frozen at a plausible, compliant-looking low
+        value while the real solids load is elevated. The clarifier torque and
+        blanket disagree with it. This is the fault that motivates the whole
+        argument for keeping raw signals alongside their alarm state.
+      detectable_by: [cross_validation, flatline_detection, correlation]
+      NOT_detectable_by: [single_point_threshold, deadband]
+
+# ─── scenarios ──────────────────────────────────────────────────────────────
+# Named sequences used by the demo runner and the tests. A scenario is a list
+# of (fault_id, start_offset_s).
+scenarios:
+
+  - id: baseline
+    title: Healthy plant, one week
+    faults: []
+    expect: "No alarms. Everything inside its normal band."
+
+  - id: wet_weather
+    title: Storm over a healthy plant
+    faults: [[storm_inflow, 0]]
+    expect: >
+      A coherent cascade. The test for whether the units are genuinely coupled
+      or merely running side by side.
+
+  - id: aeration_loss
+    title: Blower trip and recovery
+    faults: [[blower_failure, 0]]
+    expect: >
+      DO sags within minutes; effluent ammonia rises hours later; both recover
+      slowly. The delay is the point.
+
+  - id: night_shift_compliance
+    title: Ammonia shock at night
+    faults: [[high_ammonia_load, 0]]
+    expect: >
+      Load rises without a flow rise, so flow-based alarms stay quiet while
+      ammonia climbs towards the permit.
+
+  - id: bad_instrument
+    title: DO probe fouling behind a healthy process
+    faults: [[do_sensor_drift, 0]]
+    expect: >
+      The plant is fine and the gauge is wrong. The only detector is
+      model-based.
+
+  - id: everything_at_once
+    title: Compound event
+    faults:
+      - [do_sensor_drift, 0]
+      - [sensor_flatline, 1800]
+      - [high_ammonia_load, 3600]
+      - [blower_failure, 7200]
+    expect: >
+      The realistic case, and the one that breaks naive alerting: a degraded
+      instrument hides a process fault, and the operator cannot trust what the
+      screen says. This is the scenario the Phase 4 alarm engine is designed
+      against.
