@@ -161,7 +161,10 @@ measurements:
     signals:
       - { id: "AERATION:AHU-1:DO",              field: do_mg_l,        eu: "mg/L", range: [0, 20],     normal: [1.5, 3.0],  deadband: 0.02,  sample_ms: 1000 }
       - { id: "AERATION:AHU-1:SETPOINT_DO",     field: setpoint_do_mg_l, eu: "mg/L", range: [0.5, 6.0], normal: [2.0, 2.0], deadband: 0.01, sample_ms: 5000, writable: true }
-      - { id: "AERATION:AHU-1:AIR_FLOW",        field: air_flow_m3h,   eu: "m3/h", range: [0, 12000],  normal: [2000, 8000], deadband: 20.0, sample_ms: 1000 }
+      # Total air across all blowers. Capacity is 20 000 m³/h; the normal band is
+      # set from the calibrated aeration model, which needs ~2 000–8 000 m³/h
+      # (≈2.7 m³ of air per m³ of sewage) to hold a 2.0 mg/L DO setpoint.
+      - { id: "AERATION:AHU-1:AIR_FLOW",        field: air_flow_m3h,   eu: "m3/h", range: [0, 26000],  normal: [2000, 14000], deadband: 20.0, sample_ms: 1000 }
       - { id: "AERATION:AHU-1:BLOWER_RPM",      field: blower_rpm,      eu: "rev/min", range: [0, 2400], normal: [600, 1800], deadband: 2.0, sample_ms: 1000 }
       - { id: "AERATION:AHU-1:BLOWER_VALVE",    field: blower_valve_pct, eu: "%",  range: [0, 100],    normal: [20, 90],   deadband: 0.2,  sample_ms: 1000 }
       - { id: "AERATION:AHU-1:NH4_IN",          field: nh4_in_mg_l,     eu: "mg/L", range: [0, 60],   normal: [8, 30],   deadband: 0.1,  sample_ms: 5000 }

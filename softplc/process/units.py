@@ -73,10 +73,12 @@ F_NON_SETTLEABLE = 0.08
 #: are a small minority of the population in a healthy plant — and their share
 #: collapses under shock, which is why nitrification is the fragile step.
 NITRIFIER_BIOMASS_FRACTION = 0.12
-#: Below this COD (mg/L) nitrifiers are carbon limited. Operators call this
-#: "nitrate recycle into the anoxic zone is too high" or "the clarifier is
-#: passing RAS", and the symptom is rising effluent ammonia at adequate DO.
-CARBON_STARVATION_THRESHOLD = 8.0
+#: Influent COD (mg/L) at which carbon stops limiting nitrification. Municipal
+#: influent is 200–500 mg/L, so nitrifiers are comfortably carbon-supplied;
+#: industrial or dilute effluents really do fail to nitrate, and this is the
+#: knob that reproduces it. Keyed to the *influent*, not the effluent residue —
+#: a clean effluent means the heterotrophs won, not that carbon ran out.
+CARBON_STARVATION_THRESHOLD = 50.0
 #: Oxygen consumed per gram of ammonia-N nitrified, g O₂/g N.
 O2_PER_NITRIFIED_N = 4.57
 #: Nitrogen as a fraction of biomass VSS. Roughly 0.07 for activated sludge.
@@ -149,6 +151,16 @@ CL_DECAY_BASE = 0.35
 #: Souring is a slow drift, and that is the whole diagnostic point — a model
 #: that sours in twenty minutes would teach the opposite lesson about how much
 #: lead time an operator has.
+#: Minimum pump speed as a fraction of nameplate. Below roughly this, an
+#: affine pump curve stops being reliable and the minimum-flow limit sets in.
+MIN_PUMP_SPEED_FACTOR = 0.10
+#: Minimum thickened return-sludge concentration, mg/L. Activated sludge will
+#: not thicken below roughly 3 g/L in service.
+MIN_RETURN_SLUDGE_CONC_MG_L = 3000.0
+#: Time constant for wet-well level control, h. The controller aims to bring the
+#: level back to the start setpoint over this horizon, which is what stops the
+#: proportional-only oscillation an integrating process would otherwise have.
+LEVEL_CONTROL_HORIZON_H = 0.45
 VFA_PRODUCTION_GAIN = 60.0
 VFA_CONSUMPTION_RATE = 0.10
 ALKALINITY_GAIN = 25.0
@@ -313,6 +325,18 @@ class Pump:
     Runtime is the input to duty rotation: a real plant evens out runtime so no
     pump wears out early. That behaviour is a control decision, and it is
     modelled here rather than hidden in a status flag.
+
+    Pumps are **variable-speed**. This is not decoration — it is what makes the
+    lift station well behaved. With fixed-speed pumps sized so that one pump
+    roughly equals the average flow, the wet well has no stable equilibrium: it
+    fills until a pump starts, the pump overshoots, the well empties, and the
+    whole station cycles between nothing and full output. Worse, the amplitude of
+    that cycle scales with the *timestep*, so the same model behaves differently
+    at 1 s and at 60 s — a property no real plant has, and one that makes every
+    downstream number timestep-dependent.
+
+    Throttling to track the level gives a continuous family of operating points
+    and removes the artefact.
     """
 
     id: str
@@ -324,6 +348,10 @@ class Pump:
     starts: int = 0
     fault: int = 0
     cavitating: bool = False
+    #: 0..1 speed command from the level controller. Affine pump curves mean flow
+    #: is roughly proportional to speed down to about 40 %, below which the
+    #: relationship flattens and the minimum useful flow sets in.
+    speed: float = 1.0
     #: 0..1, how much of rated current the pump draws at nominal load.
     efficiency: float = 0.78
 
@@ -335,18 +363,23 @@ class Pump:
     def flow_m3h(self) -> float:
         if not self.running or not self.available:
             return 0.0
-        # Cavitation throttles delivered flow well below nameplate.
-        return self.capacity_m3h * (0.35 if self.cavitating else 1.0)
+        if self.cavitating:
+            return self.capacity_m3h * 0.35
+        # Affine pump curve, flattened at low speed to respect minimum flow.
+        frac = _clamp(self.speed, MIN_PUMP_SPEED_FACTOR, 1.0)
+        return self.capacity_m3h * _clamp(0.25 + 0.75 * frac, 0.0, 1.0)
 
     @property
     def current_a(self) -> float:
         if not self.running or not self.available:
             return 0.0
-        kw = self.rated_kw * (1.12 if self.cavitating else 0.85)
-        # Three-phase: I = P / (sqrt(3) · V · pf · η)
+        # Cube-law on speed, which is why variable-speed pumping is the single
+        # biggest energy saving in a lift station: flow ∝ speed, power ∝ speed³.
+        kw = self.rated_kw * (1.12 if self.cavitating else 0.85) * _clamp(
+            self.speed, 0.0, 1.0
+        ) ** 3
         amps = (kw * 1000.0) / (math.sqrt(3.0) * 400.0 * 0.85 * self.efficiency)
         if self.cavitating:
-            # Cavitation makes current oscillate violently — the detection cue.
             amps *= 1.0 + 0.30 * math.sin(self.runtime_h * 37.0)
         return amps
 
@@ -367,6 +400,8 @@ class LiftStation:
     level_alarm_m: float = 5.5
     level_trip_m: float = 6.8
     level_min_pump_m: float = 0.6  # below this, running pumps trip on cavitation
+    #: Inflow the level controller is currently fighting, m³/h.
+    _inflow_m3h: float = 0.0
 
     level_m: float = 2.0
     pumps: list[Pump] = field(default_factory=list)
@@ -379,6 +414,10 @@ class LiftStation:
         return sum(p.flow_m3h for p in self.pumps if p.available)
 
     def step(self, dt: float, inflow_m3h: float) -> None:
+        # The controller needs to know the inflow it is fighting. Storing it on
+        # the station keeps :meth:`_sequence` free of plumbing.
+        self._inflow_m3h = inflow_m3h
+
         # ── volume balance: what goes in, what goes out ──────────────────────
         net_m3h = inflow_m3h - self.total_outflow_m3h
         self.level_m += (net_m3h / self.area_m2) * (dt / 3600.0)
@@ -413,38 +452,80 @@ class LiftStation:
         return self.level_trip_m
 
     def _sequence(self) -> None:
-        """Lead/lag start-stop with standby failover.
+        """Level control by variable-speed pumping, with lead/lag rotation.
 
-        Multiple pumps run together at high flow. A lift station is *sized* for
-        peak wet-weather flow, so at design flow more than one pump is running
-        and the standby only starts during a storm. Getting this wrong is the
-        single most common way a plant model accumulates an impossible mass
-        balance: inflow exceeds what the pumps can ever deliver, the wet well
-        pins at its trip level, and overflow becomes permanent.
+        The control problem: keep the wet well between its limits while matching
+        whatever the inflow is doing, which varies by a factor of two diurnally
+        and rises several-fold in a storm.
+
+        The approach, in order of increasing level:
+          1. Below the start level, no pump runs and the well fills.
+          2. At the start level, the lead pump starts and its speed is
+             modulated to hold the level just below start. This is the normal
+             operating mode and it is *continuous* — the station does not
+             switch on and off, so there is no limit cycle and no timestep
+             dependence.
+          3. If the lead alone cannot keep up, the lag joins and the pair
+             shares the duty.
+          4. If both are saturated, the standby starts — the storm case, where
+             a lift station genuinely does run flat out.
+
+        Getting this wrong in the on/off direction is what produces a station
+        that oscillates between zero and full output, with an amplitude that
+        scales with the simulation timestep.
         """
-        # Stop everything once the well is drained to the stop level.
-        if self.level_m <= self.level_stop_m:
+        available = [p for p in self.pumps if p.available and not p.cavitating]
+        if not available:
             for p in self.pumps:
                 p.running = False
+                p.speed = 0.0
             return
 
-        if self.level_m < self.level_start_m:
-            return  # within the deadband — do nothing
-
-        # Add pumps in duty order as the level rises past start + offset.
-        # The offsets are the interstage levels of the wet well.
-        thresholds = {"lead": self.level_start_m, "lag": self.level_start_m + 0.6,
-                      "standby": self.level_start_m + 1.4}
-        for duty in ("lead", "lag", "standby"):
-            want = self.level_m >= thresholds[duty]
+        # ── 1. below start: nothing runs ────────────────────────────────────
+        if self.level_m <= self.level_start_m:
             for p in self.pumps:
-                if p.duty != duty or not p.available or p.cavitating:
-                    continue
-                if want and not p.running:
-                    p.running = True
-                    p.starts += 1
-                elif not want and p.running:
-                    p.running = False
+                p.running = False
+                p.speed = 0.0
+            return
+
+        # ── how much flow do we need? ───────────────────────────────────────
+        # Target: bring the level back to the start setpoint over a fixed
+        # horizon. A time-constant form rather than pure proportional gain,
+        # because a proportional-only controller on an integrating process
+        # cannot remove its own error.
+        head = self.level_m - self.level_start_m
+        horizon_h = LEVEL_CONTROL_HORIZON_H
+        required_flow = self._inflow_m3h + self.area_m2 * head / horizon_h
+        required_flow = _clamp(required_flow, 0.0, self.total_installed_m3h())
+
+        # ── 2/3/4. commit pumps in duty order, sharing the requirement ───────
+        # Sort by duty so the lead is always used first, and only bring in the
+        # next pump when the previous one is already saturated.
+        order = {"lead": 0, "lag": 1, "standby": 2}
+        ranked = sorted(available, key=lambda p: (order.get(p.duty, 3), p.id))
+        remaining = required_flow
+        for p in ranked:
+            if remaining <= MIN_PUMP_SPEED_FACTOR * p.capacity_m3h:
+                p.running = False
+                p.speed = 0.0
+                continue
+            if not p.running:
+                p.running = True
+                p.starts += 1
+            # Give this pump the smallest share that covers what is left.
+            share = min(remaining, p.capacity_m3h)
+            remaining -= share
+            p.speed = _clamp(
+                (share / p.capacity_m3h - 0.25) / 0.75, MIN_PUMP_SPEED_FACTOR, 1.0
+            )
+        # Anything left over means every pump is saturated; run them all flat.
+        for p in ranked:
+            if remaining > 0.0:
+                p.speed = 1.0
+                remaining -= p.capacity_m3h
+
+    def total_installed_m3h(self) -> float:
+        return sum(p.capacity_m3h for p in self.pumps if p.available)
 
     def _rotate_duty(self) -> None:
         """Swap lead/lag once daily, or when the lead has run much longer.
@@ -628,13 +709,16 @@ class AerationBasin:
     #: makes the whole model quietly wrong rather than obviously wrong.
     volume_m3: float = 20000.0
     design_air_m3h: float = 5000.0
-    #: **Total installed** air capacity across all blowers, m³/h. At ~40 mg/L/h
-    #: OUR this basin needs ~800 kg O₂/h, which at an effective SOTE near 0.14 is
-    #: ~4 200 m³/h of air — roughly 2.3 m³ of air per m³ of sewage. Sizing this
-    #: too small is the classic aeration-plant mistake: the basin then cannot
-    #: reach its DO setpoint at design load, so every scenario looks like a
-    #: total aeration failure and the DO loop has nothing to control.
-    blower_capacity_m3h: float = 15000.0
+    #: **Total installed** air capacity across all blowers, m³/h.
+    #:
+    #: Sized so the basin holds its DO setpoint across the design day *and*
+    #: moderate wet weather. Note the basin is **aeration-limited above roughly
+    #: 2 400 m³/h of influent in cold water** — the blowers saturate, KLa cannot
+    #: rise further, and DO falls. That is a genuine design characteristic rather
+    #: than a modelling artefact: an undersized aeration train behaves exactly
+    #: this way, and it is the reason plants carry a blower standby. The fault
+    #: library and the storm scenarios both exercise this limit deliberately.
+    blower_capacity_m3h: float = 26000.0
     srt_d: float = 15.0
     srt_actual_d: float = 15.0
     was_m3h: float = 40.0
@@ -672,11 +756,13 @@ class AerationBasin:
     #: geometry and standard conditions, so deriving one from the other and then
     #: using *both* to move oxygen counts the same transfer twice.
     #:
-    #: Calibrated, not guessed: at 6 /h this basin just holds a 2.0 mg/L
-    #: setpoint at design load, and below about 5 /h it is aeration-limited and
-    #: DO collapses regardless of blower capacity. That threshold is a real
-    #: design fact about the tank, and the fault library uses it.
-    kla_per_h: float = 6.0
+    #: Calibrated, not guessed. Solved so that at design load the basin holds a
+    #: 2.0 mg/L setpoint on ~2.7 m³ of air per m³ of sewage — the range real
+    #: fine-bubble plants run at — with roughly 19 % transfer headroom in
+    #: reserve. Below about 4.5 /h the basin is aeration-limited: DO collapses
+    #: regardless of blower capacity. That threshold is a real design fact
+    #: about the tank, and the fault library uses it.
+    kla_per_h: float = 5.5
     #: Oxygen balance, kg/h. Exposed because oxygen utilisation is the plant's
     #: single largest operating cost and deserves to be a first-class signal.
     o2_required_kg_h: float = 0.0
@@ -808,16 +894,37 @@ class AerationBasin:
         # The setpoint is held when the transfer across the driving force equals
         # demand:  KLa(air) · (C* − C_sp)  =  OUR
         kla_required = self.ours_mg_l_h() / driving_force
-
         if self._kla_at(self.blower_capacity_m3h) < kla_required:
             # Aeration-limited: full capacity still cannot reach the setpoint.
             # Return full capacity and let DO fall — the honest answer, and
             # exactly the shortfall an operator needs to see.
             return self.blower_capacity_m3h
 
-        # KLa rises monotonically with air, so bisect on it.
+        # The air flow that holds the setpoint is the **KLa solution**. The
+        # oxygen *mass* check below is a feasibility gate, not a second
+        # constraint: taking the larger of the two over-aerates, because the
+        # extra air raises DO above the setpoint even though the mass balance is
+        # satisfied. At the design point the two agree — the air flow giving the
+        # required KLa necessarily delivers the required mass.
+        def delivered(air_m3h: float) -> float:
+            sote = _clamp(self.sote() * self._mixing_at(air_m3h), 0.005, 0.60)
+            return air_m3h * O2_KG_PER_M3_AIR * sote
+
+        if delivered(self.blower_capacity_m3h) < o2_required_kg_h:
+            # The blowers cannot even supply the oxygen the biology wants, so
+            # the setpoint is unreachable however the level is tuned. Run flat
+            # out and let DO fall — and say so, because that is the shortfall an
+            # operator needs to see.
+            return self.blower_capacity_m3h
+
+        return self._air_for_kla(kla_required)
+
+    def _air_for_kla(self, kla_required: float) -> float:
+        """Smallest air flow achieving a given KLa — the DO-level constraint."""
+        if self._kla_at(self.blower_capacity_m3h) < kla_required:
+            return 0.0
         lo, hi = 0.0, self.blower_capacity_m3h
-        for _ in range(48):
+        for _ in range(40):
             mid = 0.5 * (lo + hi)
             if self._kla_at(mid) < kla_required:
                 lo = mid
@@ -971,13 +1078,21 @@ class AerationBasin:
         # Same CSTR logic as COD: a kinetic *capacity*, and a residual found by
         # balancing that capacity against the demand the mass balance requires.
         #
-        # The important correction: **reduced nitrifier activity must leave more
-        # ammonia, not less.** An earlier version computed the residual from the
-        # activity directly, which drove effluent ammonia to zero whenever the
-        # nitrifiers were suppressed — a plant that looked *better* the harder
-        # it was failing, and would have passed a compliance check while doing it.
+        # **Reduced nitrifier activity must leave more ammonia, not less.** An
+        # earlier version computed the residual from the activity directly,
+        # which drove effluent ammonia to zero whenever the nitrifiers were
+        # suppressed — a plant that looked *better* the harder it was failing,
+        # and would have passed a compliance check while doing it.
+        #
+        # Carbon limitation reads the *influent* supply, not the effluent
+        # residue. Nitrifiers compete with heterotrophs for what arrives, and on
+        # a well-run plant the effluent COD is low precisely because the
+        # heterotrophs won — so keying the factor to the residue starves
+        # nitrification on a plant that is working perfectly, and effluent
+        # ammonia then creeps up for no physical reason. Dilute influent really
+        # does limit nitrification; a clean effluent does not.
         carbon_factor = _clamp(
-            self.cod_out_mg_l / CARBON_STARVATION_THRESHOLD, 0.0, 1.0
+            influent_cod_mg_l / CARBON_STARVATION_THRESHOLD, 0.0, 1.0
         )
         do_factor = self._do_limitation()
         # Nitrifier population lags conditions, and recovery is slow.
@@ -1062,11 +1177,12 @@ class AerationBasin:
         # reports as healthy, because the gauge reads concentration, not mass.
         target_waste_kg_d = inventory_kg / max(1.0, self.srt_d)
         self.was_kg_h = target_waste_kg_d / 24.0
-        self.was_m3h = _clamp(
-            self.was_kg_h / max(0.1, self.return_sludge_conc_mg_l / 1000.0),
-            0.0,
-            500.0,
-        )
+        # Activated sludge does not thicken below roughly 3 g/L in service.
+        # Dividing by a thinner (or, at start-up, a near-zero) concentration
+        # produces a waste rate of hundreds of m³/h, which is not physical and
+        # leaves the contract's range immediately.
+        conc = max(MIN_RETURN_SLUDGE_CONC_MG_L, self.return_sludge_conc_mg_l)
+        self.was_m3h = _clamp(self.was_kg_h / (conc / 1000.0), 0.0, 500.0)
         was_kg_h = self.was_kg_h
 
         # Biomass grows on the substrate actually removed. Using the removal
@@ -1185,8 +1301,12 @@ class SecondaryClarifier:
         underflow_m3h = ras_m3h + self.was_m3h
         self.underflow_m3h = underflow_m3h
         self.return_sludge_m3h = ras_m3h
-        self.forward_m3h = forward_m3h
-        self.ras_ratio_actual = ras_m3h / max(1.0, forward_m3h)
+        # Effluent over the weir is the feed less the whole underflow. Reporting
+        # the *forward* flow here while also counting WAS as a separate outflow
+        # deducts the waste water twice, and the plant's water balance then
+        # drifts by 2 × the waste rate forever.
+        self.forward_m3h = max(1.0, influent_m3h - underflow_m3h)
+        self.ras_ratio_actual = ras_m3h / max(1.0, self.forward_m3h)
 
         # ── capture efficiency ──
         # A secondary clarifier is a good separator: 99.5–99.9 % TSS capture at
