@@ -10,7 +10,6 @@ plausible-looking wrong data rather than an error.
 from __future__ import annotations
 
 import pytest
-
 from softplc.contract import (
     CONTRACT_PATH,
     QUALITY_BAD,
@@ -354,6 +353,9 @@ def _minimal_contract(tmp_path, **overrides):
                     "type": "float32",
                     "word_order": "big",
                     "unit_id": 1,
+                    # Every register needs a signal, or the whole contract is
+                    # rejected — so a minimal contract links the one it has.
+                    "signal": "A:E:P",
                 }
             ],
         },
@@ -531,3 +533,105 @@ def test_rejects_always_mode_with_a_nonzero_deadband(tmp_path) -> None:
     p.write_text(yaml.safe_dump(d))
     with pytest.raises(ContractError, match="contradictory"):
         load_contract(p)
+
+
+# ─── the register → signal link ───────────────────────────────────────────────
+#
+# Added in Phase 3 to close the gap that stopped the gateway publishing Modbus.
+# A register name identifies a *location*; a signal is a *measurement*. The link
+# between them is not derivable, so the contract states it.
+
+
+def test_every_measurement_register_links_to_a_real_signal(c: Contract) -> None:
+    linked = {r.name: r.signal for r in c.registers if r.signal}
+    assert len(linked) >= 10, "the gateway needs something to publish"
+    for name, signal_id in linked.items():
+        assert signal_id in c.signals, f"{name} -> {signal_id!r} is not a signal"
+
+
+def test_the_link_covers_the_word_order_traps(c: Contract) -> None:
+    """The two low-word-first registers are the ones a client is most likely to
+    get wrong, so they are exactly the ones that must be reachable *and* named.
+    A trap you cannot address is a trap you cannot demonstrate."""
+    traps = {r.name for r in c.registers if r.word_order == "little"}
+    assert traps == {"AERATION_BLOWER_VALVE", "AERATION_WASTE_RATE"}
+    for name in traps:
+        assert c.register(name).signal is not None, name
+
+
+def test_unlinked_registers_are_the_non_measurements(c: Contract) -> None:
+    """A heartbeat, a fault code, a state bitfield and half a 32-bit value are
+    not measurements. Saying so is the point — an implied link that does not
+    exist is worse than a declared absence."""
+    unlinked = {r.name for r in c.registers if not r.signal}
+    assert unlinked == {
+        "HEARTBEAT", "FAULT_CODE", "EQUIP_STATE_WORD",
+        "PUMP1_RUNTIME_HI", "PUMP1_RUNTIME_LO",
+    }
+
+
+def test_no_signal_is_claimed_by_two_registers(c: Contract) -> None:
+    """Otherwise the second is a shadow that is never read, because the first
+    wins — and nothing says which."""
+    claimed = [r.signal for r in c.registers if r.signal]
+    assert len(claimed) == len(set(claimed))
+
+
+def test_rejects_a_register_naming_a_signal_that_does_not_exist(tmp_path) -> None:
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    d["modbus"]["registers"][0]["signal"] = "A:E:NOPE"
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="not in the contract"):
+        load_contract(p)
+
+
+def test_rejects_two_registers_claiming_one_signal(tmp_path) -> None:
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    d["modbus"]["registers"].append({
+        "address": 40010, "name": "R2", "type": "float32", "word_order": "big",
+        "unit_id": 1, "signal": "A:E:P",
+    })
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="claimed by both"):
+        load_contract(p)
+
+
+def test_rejects_a_contract_where_no_register_has_a_signal(tmp_path) -> None:
+    """The whole point of the field. A contract without it is a contract the
+    gateway cannot publish from, and that should be a load-time error rather than
+    a gateway that runs and quietly stores nothing."""
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    del d["modbus"]["registers"][0]["signal"]
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="declares a 'signal:'"):
+        load_contract(p)
+
+
+def test_rejects_a_writable_register_on_a_read_only_signal(tmp_path) -> None:
+    """A write path that exists in one file and not the other is a trap."""
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    d["modbus"]["registers"][0]["writable"] = True
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="writable"):
+        load_contract(p)
+
+
+def test_the_server_and_the_contract_agree_on_the_mapping(c: Contract) -> None:
+    """The server used to hold its own dict of the same mapping, which meant the
+    register map existed in two places and could not disagree loudly."""
+    from softplc.servers.modbus import REGISTER_TO_SIGNAL
+
+    from_contract = {r.name: r.signal for r in c.registers if r.signal}
+    assert from_contract == REGISTER_TO_SIGNAL

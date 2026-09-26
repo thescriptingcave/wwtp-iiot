@@ -183,9 +183,13 @@ class Gateway:
                 result = self.modbus.poll()
                 for name, value in result.values.items():
                     sid = _signal_for(name, self.c)
-                    if sid is not None:
-                        readings[sid] = value
-                        quality[sid] = result.quality.get(name, 0)
+                    if sid is None:
+                        # A register that is not a measurement: a heartbeat, a
+                        # fault code, half of a 32-bit runtime. Publishing it
+                        # would put a number in a series nothing is watching.
+                        continue
+                    readings[sid] = value
+                    quality[sid] = result.quality.get(name, 0)
             except ModbusLinkDownError as exc:
                 self.stats.modbus_failures += 1
                 log.error("modbus link down: %s", exc)
@@ -300,24 +304,22 @@ class Gateway:
         }
 
 
-def _signal_for(
-    register_name: str,  # noqa: ARG001 - the missing link, named for the reader
-    contract: Any,  # noqa: ARG001
-) -> str | None:
-    """Map a Modbus register name to the signal it exposes.
+def _signal_for(register_name: str, contract: Any) -> str | None:
+    """Map a Modbus register name to the signal it carries.
 
-    **This is a stub, and it is honestly labelled as one.** The contract does not
-    link a signal to the register that carries it — a register is a *view* of a
-    subset of signals — so there is no correct derivation from the contract
-    alone. The obvious implementation, substring-matching equipment names, is
-    wrong often enough to be dangerous and wrong quietly enough to be worse.
+    Answered by the contract's own ``signal:`` field, which is what the register
+    map was missing until Phase 3 closed. There is deliberately no fallback: an
+    earlier version substring-matched equipment names, and that is right by luck
+    and wrong by design — a register is a *view* of a subset of signals, so the
+    relation is many-to-one or one-to-none and cannot be derived from names at
+    all.
 
-    So Modbus readings are currently dropped unless the contract grows a
-    ``signal:`` field on each register. OPC UA carries signal ids natively, so the
-    gateway is fully functional on OPC UA alone — which is one of the better
-    arguments for OPC UA that this project has produced.
+    ``None`` means "this register is not a measurement" — a heartbeat, a fault
+    code, a state bitfield, half of a 32-bit value. Returning ``None`` for those
+    is the correct answer, not a gap to be papered over.
     """
-    return None
+    signal_id: str | None = contract.register(register_name).signal
+    return signal_id
 
 
 # ─── entrypoint ───────────────────────────────────────────────────────────────

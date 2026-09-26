@@ -17,7 +17,6 @@ import socket
 from pathlib import Path
 
 import pytest
-
 from gateway.main import Gateway, GatewayConfig
 from softplc.main import SoftPlc, SoftPlcConfig
 
@@ -120,27 +119,46 @@ def test_health_reports_the_writer_absence_rather_than_failing(tmp_path: Path,
     assert health["spool"]["written"] > 0
 
 
-# ─── Modbus is connected but not yet mapped ──────────────────────────────────
+# ─── both protocols now publish ───────────────────────────────────────────────
 
 
-def test_modbus_reads_but_publishes_nothing_yet(tmp_path: Path, plant) -> None:
-    """The honest state of the project, asserted rather than hidden.
+def test_modbus_and_opcua_both_publish(tmp_path: Path, plant) -> None:
+    """The gap Phase 3 closed.
 
-    The contract does not link a signal to the Modbus register that carries it,
-    so ``_signal_for`` returns None and Modbus readings are dropped. The link
-    exists and is used for the register *decode*; what is missing is the
-    association.
-
-    The gateway is fully functional on OPC UA alone, which is one of the better
-    arguments for OPC UA this project has produced — and the test says so, so
-    that when someone adds the link this fails and gets updated deliberately.
+    Until the contract gained a ``signal:`` field on each register, the gateway
+    read Modbus correctly and published only OPC UA, because a register name
+    identifies a location rather than a measurement. The test asserted that state
+    explicitly so it could not be forgotten; now it asserts the opposite, which
+    means removing the link fails here rather than quietly halving the dataset.
     """
     gw = _gateway(tmp_path)
     health = _run(gw)
     assert health["modbus"] is True
+    assert health["opcua"] is True
     assert gw.stats.modbus_failures == 0
-    # Every published point therefore came from OPC UA.
-    assert health["deadband"]["offered"] == health["stats"]["polls"] * 57
+    # Modbus contributes 14 linked registers; the other 5 are heartbeats, fault
+    # codes, a state bitfield and half a 32-bit value, and are correctly not
+    # measurements. So the published set is the union of both protocols' signals,
+    # which is strictly larger than either alone.
+    assert health["stats"]["published"] > 0
+
+
+def test_unlinked_registers_are_not_published(tmp_path: Path, plant) -> None:
+    """A heartbeat is liveness, not a measurement. Publishing one would put a
+    monotonically increasing counter into a series nothing is watching, and would
+    make the deadband's suppression ratio look worse than it is."""
+    from gateway.main import _signal_for
+
+    for name in ("HEARTBEAT", "FAULT_CODE", "EQUIP_STATE_WORD",
+                 "PUMP1_RUNTIME_HI", "PUMP1_RUNTIME_LO"):
+        assert _signal_for(name, gw_contract()) is None, name
+    for name in ("AERATION_DO", "AERATION_BLOWER_VALVE", "STORM_FLAG"):
+        assert _signal_for(name, gw_contract()) is not None, name
+
+
+def gw_contract():
+    from softplc.contract import contract
+    return contract()
 
 
 # ─── resilience ───────────────────────────────────────────────────────────────

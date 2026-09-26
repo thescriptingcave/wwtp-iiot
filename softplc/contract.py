@@ -15,6 +15,7 @@ import functools
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Iterator, Sequence
 
 import yaml
@@ -147,6 +148,16 @@ class Register:
     #: ``big`` = high word first, ``little`` = low word first. Only meaningful
     #: for float32. The contract deliberately mixes both orders.
     word_order: str = "big"
+    #: The signal this register carries, or ``None`` for a register that is not a
+    #: measurement — a heartbeat, a fault code, a piece of equipment state.
+    #:
+    #: This link is the reason the gateway can publish Modbus. Without it a client
+    #: has a register name and no way to know which of the plant's 57 signals it
+    #: is, and the only derivations available are both wrong: a register is a
+    #: *view* of a subset of signals, so the relation is many-to-one or
+    #: one-to-none, and a substring match on the name is right by luck and wrong
+    #: by design.
+    signal: str | None = None
 
     @property
     def width(self) -> int:
@@ -356,6 +367,51 @@ def _validate_registers(regs: Sequence[Register]) -> None:
         raise ContractError("no Modbus registers declared")
 
 
+def _validate_register_signals(regs: Sequence[Register],
+                               signals: Mapping[str, Signal]) -> None:
+    """Check the register-to-signal link.
+
+    Three failure modes, all worth catching at load:
+
+    * a ``signal:`` naming something that does not exist — a typo, which would
+      otherwise mean a register silently publishing nothing;
+    * two registers claiming the same signal, where the second is a shadow that
+      never gets read because the first wins;
+    * a signal claimed by a register that is not float32-shaped, or by one that
+      the contract also marks writable while the signal is not — a write path
+      that exists in one file and not the other.
+    """
+    claimed: dict[str, str] = {}
+    for reg in regs:
+        if reg.signal is None:
+            continue
+        if reg.signal not in signals:
+            raise ContractError(
+                f"register {reg.name!r} claims signal {reg.signal!r}, which is "
+                f"not in the contract. Known signals: {len(signals)}."
+            )
+        if reg.signal in claimed:
+            raise ContractError(
+                f"signal {reg.signal!r} is claimed by both "
+                f"{claimed[reg.signal]!r} and {reg.name!r}; only the first "
+                "would ever be read"
+            )
+        claimed[reg.signal] = reg.name
+        sig = signals[reg.signal]
+        if reg.writable and not sig.writable:
+            raise ContractError(
+                f"register {reg.name!r} is writable but its signal "
+                f"{reg.signal!r} is not; a write path that exists in one file "
+                "and not the other is a trap, not a feature"
+            )
+    if not any(r.signal for r in regs):
+        raise ContractError(
+            "no Modbus register declares a 'signal:'. The gateway cannot "
+            "publish Modbus readings without it — a register name does not "
+            "identify which of the plant's signals it carries."
+        )
+
+
 def _validate_cardinality(measurements: dict[str, Measurement]) -> None:
     """Guard the cardinality trap from docs/DESIGN.md rule 1.
 
@@ -544,9 +600,11 @@ def load_contract(path: Path | str | None = None) -> Contract:
                 unit_id=int(r.get("unit_id", 1)),
                 writable=bool(r.get("writable", False)),
                 word_order=order,
+                signal=r.get("signal"),
             )
         )
     _validate_registers(regs)
+    _validate_register_signals(regs, signals)
 
     # ── writable surface ────────────────────────────────────────────────────
     writable: dict[str, dict[str, Any]] = {}

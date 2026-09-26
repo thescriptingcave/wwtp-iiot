@@ -310,14 +310,21 @@ bugs showed up. All four produced *plausible numbers* rather than errors.
    commanded from the SRT target rather than emergent, so the residual measures
    commanded-vs-realised discharge. What must not happen is growth without
    bound, and that has its own test.
-5. **The contract does not link a signal to the Modbus register carrying it.**
-   A register is a *view* of a subset of signals, so the relation is many-to-one
-   or one-to-none and cannot be derived by comparing names. The gateway reads
-   Modbus correctly and decodes the word-order traps, but publishes only OPC UA,
-   because a substring match would be right by luck and wrong by design. The fix
-   is a `signal:` field on the registers in `contracts/tags.yaml`.
-   `tests/test_gateway_cycle.py` asserts the current state, so adding the link
-   fails that test and gets updated deliberately.
+5. **The contract now links signals to Modbus registers — resolved.** Each
+   register carries an optional `signal:`, validated at load: it must name a real
+   signal, no two registers may claim one, and a writable register may not sit on
+   a read-only signal. Fourteen of nineteen registers are linked; the other five
+   — heartbeat, fault code, state bitfield, and the two halves of a 32-bit pump
+   runtime — are deliberately unlinked, because they are not measurements. The
+   contract loader *rejects* a contract where no register has one, so a gateway
+   that cannot publish is a startup error rather than a process that runs and
+   quietly stores nothing.
+
+   The server used to hold this mapping as a literal dict in Python. That was two
+   copies of the register map — the YAML a client read, and this one the server
+   read — which could not disagree loudly: a register renamed in the contract
+   would keep working on the server and break every client. It is derived from the
+   contract now, and a test asserts the two agree.
 6. **Storage has never run against a live database.** Every storage module is
    unit-tested with an injected callable, which is the right design and also
    means the SQL text, the InfluxDB 3 client calls and the Couchbase SDK calls

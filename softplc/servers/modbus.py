@@ -104,23 +104,16 @@ def quantise_to_float32(value: float) -> float:
     return float(_FLOAT.unpack(_FLOAT.pack(value))[0])
 
 
-#: Modbus register name → contract signal id. The contract names registers
-#: independently of signals (a register is a *location*, a signal is a
-#: *measurement*), so the correspondence is explicit and reviewable.
+#: Modbus register name → contract signal id.
+#:
+#: Derived from the contract's ``signal:`` field rather than written out here.
+#: This mapping used to be a literal dict in this file, which meant the register
+#: map existed in two places: the YAML the client read, and this copy the server
+#: read. They could not disagree loudly — the server would simply publish
+#: whatever its own dict said, and a register renamed in the contract would keep
+#: working here while breaking every client. One source, validated at load.
 REGISTER_TO_SIGNAL: dict[str, str] = {
-    "INFLUENT_FLOW": "INFLUENT:FLOW:FLOW",
-    "INFLUENT_TURBIDITY": "INFLUENT:FLOW:TURBIDITY",
-    "INFLUENT_NH4": "INFLUENT:FLOW:NH4_IN",
-    "AERATION_DO": "AERATION:AHU-1:DO",
-    "AERATION_SETPOINT_DO": "AERATION:AHU-1:SETPOINT_DO",
-    "AERATION_AIR_FLOW": "AERATION:AHU-1:AIR_FLOW",
-    "AERATION_MLSS": "AERATION:AHU-1:MLSS",
-    "AERATION_BLOWER_VALVE": "AERATION:AHU-1:BLOWER_VALVE",
-    "AERATION_WASTE_RATE": "AERATION:AHU-1:WASTE_RATE",
-    "SECONDARY_BLANKET": "SECONDARY:SEC-CL-1:BLANKET",
-    "SECONDARY_TORQUE": "SECONDARY:SEC-SCR-1:TORQUE",
-    "DIGESTER_PH": "SLUDGE:DIG-1:PH",
-    "DIGESTER_CH4": "SLUDGE:DIG-1:CH4",
+    r.name: r.signal for r in get_contract().registers if r.signal
 }
 
 
@@ -207,19 +200,21 @@ class RegisterModel:
             if reg.name == "FAULT_CODE":
                 self.holding[off] = self.fault_code & 0x7FFF
                 continue
-            if reg.name == "STORM_FLAG":
-                self.holding[off] = (
-                    1 if values.get("SITE:WEATHER:STORM", 0.0) > 0.5 else 0
-                )
-                continue
             if reg.name == "EQUIP_STATE_WORD":
                 self.holding[off] = self._state_word(states)
                 continue
             if reg.name in ("PUMP1_RUNTIME_HI", "PUMP1_RUNTIME_LO"):
                 continue  # written as a pair below
 
-            signal_id = REGISTER_TO_SIGNAL.get(reg.name, reg.name)
-            value = values.get(signal_id)
+            # Unlinked registers are not measurements, so there is nothing to
+            # publish for them. ``STORM_FLAG`` used to need a special case here
+            # to threshold its value to 0/1; now that it declares a ``signal:``
+            # the generic path below handles it, and the flag's own field is
+            # already 0 or 1.
+            if reg.signal is None:
+                continue
+
+            value = values.get(reg.signal)
             if value is None:
                 continue
             self.values[reg.name] = value

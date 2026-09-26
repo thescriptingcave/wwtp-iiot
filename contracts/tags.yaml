@@ -253,32 +253,50 @@ state_equipment: [PIT-1, PIT-2, PIT-3, SCREEN-1, SCREEN-2, GRIT-1, PRI-CL-1, PRI
 #     high-word-first. The gateway must handle both or produce garbage.
 #   • FAULT_CODE is int16 holding values that overflow if read as float32.
 #   • HEARTBEAT increments every scan; proves liveness and detects a stuck client.
+#
+# `signal:` names the measurement a register carries, and it is what lets the
+# gateway publish Modbus readings at all. A register name identifies a
+# *location*, not a measurement: the only way to derive the correspondence from
+# names is to substring-match, and that is right by luck and wrong by design,
+# because a register is a *view* of a subset of signals.
+#
+# Registers with no `signal:` are deliberately not measurements. HEARTBEAT is
+# liveness. FAULT_CODE and EQUIP_STATE_WORD are plant-wide state, not a reading.
+# The PUMP1_RUNTIME pair is one 32-bit value that Modbus has no type for, and
+# this register model has no concept of a straddled value — so it is left
+# unlinked rather than linked to half of something. Saying "no link" is the
+# honest answer; implying one that does not exist is not.
 # ─────────────────────────────────────────────────────────────────────────────
 modbus:
   endpoint: "tcp://0.0.0.0:5020"
   unit_id: 1
   registers:
+    # No signal: liveness, not a measurement.
     - { address: 40000, name: HEARTBEAT,              type: int16,  unit_id: 1, writable: false }
-    - { address: 40002, name: INFLUENT_FLOW,          type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40004, name: INFLUENT_TURBIDITY,     type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40006, name: INFLUENT_NH4,            type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40100, name: AERATION_DO,             type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40102, name: AERATION_SETPOINT_DO,    type: float32, word_order: big,    unit_id: 1, writable: true }
-    - { address: 40104, name: AERATION_AIR_FLOW,       type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40106, name: AERATION_MLSS,           type: float32, word_order: big,    unit_id: 1, writable: false }
+    - { address: 40002, name: INFLUENT_FLOW,          type: float32, word_order: big,    unit_id: 1, writable: false, signal: "INFLUENT:FLOW:FLOW" }
+    - { address: 40004, name: INFLUENT_TURBIDITY,     type: float32, word_order: big,    unit_id: 1, writable: false, signal: "INFLUENT:FLOW:TURBIDITY" }
+    - { address: 40006, name: INFLUENT_NH4,           type: float32, word_order: big,    unit_id: 1, writable: false, signal: "INFLUENT:FLOW:NH4_IN" }
+    - { address: 40100, name: AERATION_DO,            type: float32, word_order: big,    unit_id: 1, writable: false, signal: "AERATION:AHU-1:DO" }
+    - { address: 40102, name: AERATION_SETPOINT_DO,   type: float32, word_order: big,    unit_id: 1, writable: true,  signal: "AERATION:AHU-1:SETPOINT_DO" }
+    - { address: 40104, name: AERATION_AIR_FLOW,      type: float32, word_order: big,    unit_id: 1, writable: false, signal: "AERATION:AHU-1:AIR_FLOW" }
+    - { address: 40106, name: AERATION_MLSS,          type: float32, word_order: big,    unit_id: 1, writable: false, signal: "AERATION:AHU-1:MLSS" }
     # ⚠ TRAP: low word first. Decoded incorrectly, this reads ~0.
-    - { address: 40108, name: AERATION_BLOWER_VALVE,   type: float32, word_order: little, unit_id: 1, writable: false }
-    - { address: 40200, name: SECONDARY_BLANKET,       type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40202, name: SECONDARY_TORQUE,        type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40300, name: DIGESTER_PH,             type: float32, word_order: big,    unit_id: 1, writable: false }
-    - { address: 40302, name: DIGESTER_CH4,            type: float32, word_order: big,    unit_id: 1, writable: false }
+    - { address: 40108, name: AERATION_BLOWER_VALVE,  type: float32, word_order: little, unit_id: 1, writable: false, signal: "AERATION:AHU-1:BLOWER_VALVE" }
+    - { address: 40200, name: SECONDARY_BLANKET,      type: float32, word_order: big,    unit_id: 1, writable: false, signal: "SECONDARY:SEC-CL-1:BLANKET" }
+    - { address: 40202, name: SECONDARY_TORQUE,       type: float32, word_order: big,    unit_id: 1, writable: false, signal: "SECONDARY:SEC-SCR-1:TORQUE" }
+    - { address: 40300, name: DIGESTER_PH,            type: float32, word_order: big,    unit_id: 1, writable: false, signal: "SLUDGE:DIG-1:PH" }
+    - { address: 40302, name: DIGESTER_CH4,           type: float32, word_order: big,    unit_id: 1, writable: false, signal: "SLUDGE:DIG-1:CH4" }
     # ⚠ TRAP: low word first.
-    - { address: 40304, name: AERATION_WASTE_RATE,     type: float32, word_order: little, unit_id: 1, writable: false }
-    - { address: 40350, name: FAULT_CODE,              type: int16,  unit_id: 1, writable: true }
-    - { address: 40351, name: STORM_FLAG,              type: int16,  unit_id: 1, writable: true }
-    - { address: 40400, name: EQUIP_STATE_WORD,        type: int16,  unit_id: 1, writable: false }
-    - { address: 40401, name: PUMP1_RUNTIME_HI,        type: uint16, unit_id: 1, writable: false }
-    - { address: 40402, name: PUMP1_RUNTIME_LO,        type: uint16, unit_id: 1, writable: false }
+    - { address: 40304, name: AERATION_WASTE_RATE,    type: float32, word_order: little, unit_id: 1, writable: false, signal: "AERATION:AHU-1:WASTE_RATE" }
+    # No signal: a plant-wide fault code, not a measurement.
+    - { address: 40350, name: FAULT_CODE,             type: int16,  unit_id: 1, writable: true }
+    - { address: 40351, name: STORM_FLAG,             type: int16,  unit_id: 1, writable: true,  signal: "SITE:WEATHER:STORM" }
+    # No signal: a bitfield of every state-bearing asset, not a measurement.
+    - { address: 40400, name: EQUIP_STATE_WORD,       type: int16,  unit_id: 1, writable: false }
+    # No signal: high and low halves of one 32-bit value, reassembled by the
+    # client. Linking either half to a signal would be a lie about the other.
+    - { address: 40401, name: PUMP1_RUNTIME_HI,       type: uint16, unit_id: 1, writable: false }
+    - { address: 40402, name: PUMP1_RUNTIME_LO,       type: uint16, unit_id: 1, writable: false }
 
 # ─── OPC UA address space ────────────────────────────────────────────────────
 # Mirrors the ISA-95 hierarchy. NodeIds are generated deterministically from
