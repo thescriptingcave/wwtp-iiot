@@ -310,3 +310,36 @@ bugs showed up. All four produced *plausible numbers* rather than errors.
    commanded from the SRT target rather than emergent, so the residual measures
    commanded-vs-realised discharge. What must not happen is growth without
    bound, and that has its own test.
+5. **The contract does not link a signal to the Modbus register carrying it.**
+   A register is a *view* of a subset of signals, so the relation is many-to-one
+   or one-to-none and cannot be derived by comparing names. The gateway reads
+   Modbus correctly and decodes the word-order traps, but publishes only OPC UA,
+   because a substring match would be right by luck and wrong by design. The fix
+   is a `signal:` field on the registers in `contracts/tags.yaml`.
+   `tests/test_gateway_cycle.py` asserts the current state, so adding the link
+   fails that test and gets updated deliberately.
+6. **Storage has never run against a live database.** Every storage module is
+   unit-tested with an injected callable, which is the right design and also
+   means the SQL text, the InfluxDB 3 client calls and the Couchbase SDK calls
+   have not been executed. `compose.yaml` wires them; nothing has run them.
+   This is the first thing to do with a real InfluxDB token, and the reason
+   `tests/integration/` exists but is empty.
+7. **Lint debt in the older test files.** `ruff check tests/` reports ~60
+   findings, nearly all in the Phase 1–2 test files: import ordering, function-
+   local imports, unused unpacked variables. The files are correct and the
+   findings are cosmetic. Left visible rather than swept in a commit that
+   claims to be about something else.
+
+## What I would do next, in order
+
+1. Run the stack against a real InfluxDB and Couchbase and fix what breaks
+   (thread 6). Everything above it is unverified against the actual product.
+2. Add `signal:` to the Modbus registers and switch the gateway to publishing
+   both protocols (thread 5), which also makes the cross-protocol disagreement
+   check meaningful.
+3. Write `tests/integration/` so the SQL in `storage/influx/rollups_sql.py` is
+   proven to run, and the seeded week is queryable.
+4. Start `sql/01-beginner/` against the seeded data. The course is the point of
+   the project and it is the largest untouched piece.
+5. Phase 4's alarm engine, which is the piece the whole fault library was built
+   to feed.
