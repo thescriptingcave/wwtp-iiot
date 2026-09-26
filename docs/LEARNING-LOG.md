@@ -222,6 +222,38 @@ worth something on its own.
   because the instinct when a test fails is to change the test, and that instinct
   is wrong exactly when the test was the thing that was wrong.
 
+## Phase 3b — the InfluxDB schema, and the bug it hid
+
+The line-protocol encoder is small. Writing the tests for it took far longer than
+writing it, and the reason is instructive: the first version of the schema was
+wrong in a way that only a test looking for *collision* would find.
+
+- **Six signals, one series.** I keyed the series on (area, equipment,
+  measurement, eu). But the contract's `measurement` is a *group* — every
+  aeration signal is `measurement: aeration` — so `AERATION:AHU-1:DO`,
+  `SETPOINT_DO`, `NH4_IN`, `NH4_OUT`, `NO3_OUT` and `MLSS` all resolved to the
+  *same* series key. InfluxDB identifies a field by series + field + timestamp,
+  so those six would have written to the same field at the same timestamps and
+  overwritten each other. No error, no warning, and a chart that looks entirely
+  plausible because five of the six had silently vanished.
+  The fix is the project's own rule, applied properly: `field` (`do_mg_l`,
+  `nh4_out_mg_l`) is the identity of a signal and belongs in the tags.
+  `measurement` is a grouping for querying, not an identity.
+- **The measurement is now the stage**, so `SELECT mean(value) FROM aeration`
+  is one scan over one part of the plant, rather than a UNION of eleven
+  measurements. A measurement-per-signal — what most tutorials do — is the
+  mistake here, and it is the mistake the tag design exists to prevent.
+- **Two implementations of one specification is worth it.** The encoder and the
+  test-only decoder disagreed until escape handling was made symmetric: the
+  decoder split on the first literal space, and an escaped `\ ` inside a tag
+  value *is* a literal space. The result parsed into a right measurement with
+  nonsense tags and no error at all. Comparing against a hardcoded expected
+  string would not have found it; a second implementation written from the
+  specification did, immediately.
+- Line protocol has no escaping of its own, so escaping has to be total. Spaces
+  matter as much as commas: an unescaped space ends the tags section and the
+  remainder is parsed as a field.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net
