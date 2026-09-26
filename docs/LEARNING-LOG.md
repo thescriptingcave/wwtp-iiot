@@ -121,6 +121,13 @@ zero, nitrification died, contact time read 900 h.
 - `StartTcpServer` blocks forever with no shutdown hook. It must be a **daemon
   thread**: a non-daemon thread hangs the interpreter on exit, and an asyncio
   task cannot cancel it because the work has already left the event loop.
+- **Two address spaces, not one.** The datastore's own `getValues` and the
+  Modbus PDU addressing disagree, and both differ from the contract's 4xxxx
+  convention. Anything verified through the wrong one looks correct and is not.
+  Every check now goes through a real client.
+- A measurement against a block populated via the *constructor* does not
+  generalise to one populated via `setValues`. "The value looked about right"
+  never settles an addressing question; a unique ramp in the block does.
 - Building the OPC UA address space in two passes put variables in a folder
   named after the area and left equipment objects as empty siblings. Every path
   a client constructs from the contract resolved to the wrong node — exactly the
@@ -133,13 +140,49 @@ zero, nitrification died, contact time read 900 h.
 
 ---
 
+## Phase 2b — the first runnable process
+
+The soft PLC (`softplc/main.py`) is the first time the pieces met each other, and
+the first time the interesting bugs showed up. None of them were in the
+components; every one was in the seams.
+
+- **A server is bound to the event loop it was created on.** The OPC UA address
+  space holds state tied to its loop, so `asyncio.run(plc.start())` followed by
+  talking to it from a second loop times out — and the log says *connection
+  refused/timeout*, which sends you hunting for a network fault that does not
+  exist. One long-lived loop on its own thread, driven with
+  `run_coroutine_threadsafe`. The Modbus listener still needs a second thread,
+  because pymodbus's `StartTcpServer` has no asynchronous form.
+- **Staging is not publishing.** `set_value` records a change; the address space
+  only moves when `publish()` runs. Forgot, and a connected client watched a
+  frozen plant that looked perfectly healthy — the most convincing possible
+  wrong answer. Unit tests of the server passed throughout, because the server
+  was never asked to do this.
+- **A control program that never runs looks exactly like one that works.** The
+  blocks were originally invoked beside the scan loop rather than through it,
+  so the phase metrics — the only evidence they executed at all — were empty.
+  They now run through `ScanLoop.scan_once()`.
+- **`--duration` waited on a signal forever.** A bounded smoke test had to be
+  killed by hand, and a test you have to kill is a test nobody runs. Shutdown now
+  waits on whichever comes first.
+- **The alarm signature is an ordering, not a threshold.** Measured on the
+  `aeration_loss` scenario: at 2 h DO is 1.73 mg/L while effluent ammonia is
+  still 0.96 mg/L; at 6 h DO has collapsed and effluent ammonia is 4.17 mg/L.
+  The basin holds ~40 kg of oxygen, so air must be lost long before anyone is
+  endangered. The end-to-end test asserts that lag, because an alarm on ammonia
+  would have blamed the wrong unit.
+- Two PLCs in one test session need their own ports. `Errno 48` is a real
+  constraint, not a flake to retry.
+
 ## Open threads
 
-1. **Modbus wire offset is unverified.** pymodbus reserves register 0, and two
-   measurements disagreed about whether a client requests `index` or `index + 1`.
-   Not guessed. The register model is fully verified independently; the
-   wire-level round trip is marked `xfail` rather than asserted on a guess.
-   Resolve with one instrumented experiment against a known block.
+1. **Modbus wire addressing — resolved, and it took three attempts.** The net
+   translation is `PDU = contract address - 40000`, but it is the *composition*
+   of three shifts (model index, a one-slot block lead-in, and pymodbus's
+   `PDU = index - 1`), any of which can be changed independently. Two earlier
+   probes disagreed because they were run against blocks populated differently.
+   The one that settled it probed a live server and located returned values in
+   the block. Ten xfail'd tests are now passing.
 2. **OPC UA engineering range is not enforced on the wire.** `EUInformation` is
    advisory in the base specification and `asyncua` does not enforce it, so a
    client can write 99 mg/L to a 0.5–6.0 setpoint. Write *permission* **is**

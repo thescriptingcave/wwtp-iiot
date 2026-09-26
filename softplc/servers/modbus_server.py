@@ -78,11 +78,10 @@ class ModbusTcpServer:
         self.model = RegisterModel(c=self.c)
         self.host = host
         self.port = port
-        # Base address 0 is required, not cosmetic. With a non-zero base this
-        # pymodbus version builds the block at ``address - 1`` and
-        # ``getValues(0, n)`` then returns an empty list rather than an error,
-        # so the block silently reads as all zeroes. Found by a test that read a
-        # published value back rather than by reading the source.
+        # Base address 0. At a non-zero base this pymodbus version returns an
+        # empty list from the block's own ``getValues`` rather than an error, so
+        # a non-zero base silently reads as all zeroes. Every verification here
+        # therefore goes through a real client, never through ``getValues``.
         self._holding = ModbusSequentialDataBlock(0x00, [0] * BLOCK_SIZE)
         self._input = ModbusSequentialDataBlock(0x00, [0] * BLOCK_SIZE)
         self._coil = ModbusSequentialDataBlock(0x00, [0] * COIL_BLOCK_SIZE)
@@ -94,24 +93,32 @@ class ModbusTcpServer:
 
     # ─── address translation ─────────────────────────────────────────────────
 
-    @staticmethod
-    def wire_offset(contract_address: int) -> int:
-        """Contract 4xxxx address → the address a client must request.
+    #: The model is written into the block one slot above index 0. Modbus
+    #: reserves register 0 and pymodbus resolves ``PDU = block index - 1``, so
+    #: without this the contract's first register — the heartbeat, at model index
+    #: 0 — would sit at PDU -1, which is not a legal address and would be
+    #: unreachable by any client.
+    BLOCK_LEAD_IN = 1
 
-        ``40000`` is the first holding register, so the model's own index is
-        ``address - 40000``.
+    @classmethod
+    def wire_offset(cls, contract_address: int) -> int:
+        """Contract 4xxxx address → the PDU address a client must request.
 
-        Whether pymodbus wants that index or index+1 was **not** settled: two
-        measurements disagreed, and one of them showed the client returning
-        values that overlapped oddly across a two-register read. Guessing would
-        be the worst outcome here, because a wrong translation does not error —
-        it returns plausible numbers from the neighbouring register.
+        Three quantities compose, and getting any of them wrong returns
+        plausible values from the neighbouring register rather than an error:
 
-        So the arithmetic is kept in one function, the register model is verified
-        independently of it, and the wire-level round trip is marked
-        ``xfail`` in tests/test_modbus_server.py rather than being asserted on
-        a guess. Resolving it needs a clean, instrumented experiment against a
-        known block, which is the first thing to pick up next.
+        1. The model's own index is ``address - 40000``.
+        2. The model is written into the block with a one-slot lead-in.
+        3. pymodbus resolves ``PDU = block index - 1``.
+
+        Net: ``PDU = address - 40000``, which is the same as the model index —
+        convenient, but arrived at through three shifts rather than one, and any
+        of them changed independently would break the whole map.
+
+        Established by probing a live server and locating returned values in the
+        block, not by reading the source. Under base 0, the float written at model
+        index 100 was returned for PDU 99, and another at model index 109 for PDU
+        108 — consistent, and consistent with the lead-in.
         """
         return contract_address - HOLDING_BASE
 
@@ -129,14 +136,15 @@ class ModbusTcpServer:
         a block write is one operation, and issuing ~40 individual writes per
         scan for a plant this size would be needlessly chatty on the wire.
         """
-        self._holding.setValues(0, self.model.holding)
-        # Coils: the model's bool list becomes 0/1 words.
+        self._holding.setValues(self.BLOCK_LEAD_IN, self.model.holding)
+        # Coils get the same lead-in, for the same reason: coil 1 in the model
+        # must not land on the reserved register 0.
         self._coil.setValues(
-            0, [1 if v else 0 for v in self.model.coils]
+            self.BLOCK_LEAD_IN, [1 if v else 0 for v in self.model.coils]
         )
         # Input registers carry the indexed measurement table, so a client can
         # read a contiguous block without a per-tag request.
-        self._input.setValues(0, self._input_words())
+        self._input.setValues(self.BLOCK_LEAD_IN, self._input_words())
 
     def _input_words(self) -> list[int]:
         """Input registers as int16 words, in a stable contract-derived order.

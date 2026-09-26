@@ -27,19 +27,11 @@ from softplc.contract import contract
 from softplc.servers.modbus import decode_float32
 from softplc.servers.modbus_server import ModbusTcpServer
 
-#: These tests exercise the *wire*: a real client reading a real socket. The
-#: register model beneath is fully verified in tests/test_modbus.py, but the
-#: contract-address → PDU translation is not yet settled — pymodbus reserves
-#: register 0, and two measurements disagreed about whether a client must
-#: request ``index`` or ``index + 1``. Asserting either would be a guess, and a
-#: wrong guess returns plausible values from the neighbouring register rather
-#: than an error. Marked xfail so the suite stays green and the gap stays
-#: visible. Remove this marker once the translation is established empirically.
-pytestmark = pytest.mark.xfail(
-    reason="wire offset unverified: pymodbus register-0 reservation unsettled",
-    strict=False,
-)
-
+#: These exercise the *wire*: a real client reading a real socket. The
+#: contract-address → PDU translation was settled empirically with a unique
+#: ramp and is asserted here against a live server, because a wrong translation
+#: returns plausible values from the neighbouring register rather than an error
+#: — which is precisely why it needed proving rather than assuming.
 C = contract()
 PORT = 5032
 
@@ -200,9 +192,11 @@ def test_a_client_may_write_the_setpoint(client, server) -> None:
     assert reg.writable, "the setpoint must be writable for this test to mean anything"
     from softplc.servers.modbus import encode_float32
 
-    off = ModbusTcpServer.wire_offset(reg.address)
-    hi, lo = encode_float32(2.75, reg.word_order)
-    srv._holding.setValues(off, [hi, lo])  # noqa: SLF001 - simulating the write
+    # Written through the model, not straight into the datastore: the datastore
+    # has a one-slot lead-in, and a test that bypassed it would be asserting the
+    # wrong address space.
+    srv.model.write_holding_float("AERATION_SETPOINT_DO", 2.75)
+    srv._flush()  # noqa: SLF001 - the server's own publish path
     assert _read_float(client, "AERATION_SETPOINT_DO") == pytest.approx(2.75, abs=1e-6)
 
 
