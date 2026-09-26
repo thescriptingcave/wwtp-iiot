@@ -3,7 +3,11 @@ name = "wwtp-iiot"
 version = "0.1.0"
 description = "Industrial IIoT monitoring for a simulated wastewater treatment plant"
 readme = "README.md"
-requires-python = ">=3.11"
+# The upper bound is not caution, it is arithmetic. uv resolves an *open* range
+# against every future Python too, so ">=3.13" made the solve fail on 3.15,
+# where couchbase>=4.9 does not exist yet — a resolution error about a Python
+# version nobody here is running.
+requires-python = ">=3.13,<3.14"
 license = { text = "Proprietary" }  # portfolio project; no OSS licence granted
 
 # Runtime dependencies are intentionally minimal in Phase 1.
@@ -33,7 +37,11 @@ storage = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "influxdb-client>=1.47",
-    "couchbase>=4.9",
+    # Floor is 4.6, not 4.9. Nothing above 4.6.3 publishes a wheel this
+    # interpreter can install, so requiring 4.9 made the whole storage extra
+    # unresolvable and took ruff and mypy down with it — a typo in one
+    # constraint cost the project its entire toolchain.
+    "couchbase>=4.6,<5",
 ]
 dev = [
     "pytest>=8.3",
@@ -59,13 +67,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["softplc", "gateway", "storage", "alarms", "tools"]
 
+# A workspace with no members: this is a single root package, and the
+# subdirectories are plain packages inside it, not separate distributions.
+# Listing them as members made `uv run` fail outright, because a member without
+# its own pyproject.toml is an error, not a convenience.
 [tool.uv.workspace]
-members = ["softplc", "gateway", "storage", "alarms"]
+members = []
 
 # ─── tooling ──────────────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py313"
 src = ["softplc", "gateway", "storage", "alarms", "tools", "tests"]
 
 [tool.ruff.lint]
@@ -96,7 +108,7 @@ ignore = [
 "sql/*" = ["ALL"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

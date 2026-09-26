@@ -1,0 +1,350 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# wwtp-iiot — the whole stack.
+#
+#   docker compose up -d                    # the six core services
+#   docker compose --profile observability up -d   # …plus Grafana
+#   docker compose --profile demo up -d           # …plus the history seeder
+#
+# Read this file as a diagram. Each service states what it depends on and *why*,
+# because "depends_on" is the most consequential line in any compose file and the
+# one most often written by trial and error.
+#
+# Design rule that shapes everything below: the two databases are not
+# alternatives. InfluxDB 3 answers "what did the dissolved oxygen do at 03:14";
+# Couchbase answers "what is AHU-1, which documents describe it, and what
+# happened to it last week". Neither can do the other's job well, and running
+# both in one process because they happen to both be databases is how a system
+# ends up with two half-truths and no way to reconcile them.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: wwtp-iiot
+
+x-python-build: &python-build
+  context: .
+  dockerfile: docker/Dockerfile.python
+
+# Shared by every Python service. `nonroot` in the image already handles the
+# user; this only makes it explicit at the point of use.
+# One anchor, not two merged in sequence. Compose's YAML parser rejects a
+# sequence-of-maps merge, and splitting "python defaults" from "restart defaults"
+# was never worth the cleverness anyway — there is no service that wants one
+# without the other.
+x-python-service: &python-service
+  build: *python-build
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      # Without a cap, a chatty service fills the disk and takes the databases
+      # down with it. 10 files x 1 MB is plenty for this project's volume.
+      max-size: "10m"
+      max-file: "3"
+
+x-restart: &restart
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 1. softplc — the plant
+# ═════════════════════════════════════════════════════════════════════════════
+services:
+  softplc:
+    <<: *python-service
+    container_name: wwtp-softplc
+    command:
+      - python
+      - -m
+      - softplc.main
+      - --scan-ms=${PLC_SCAN_MS:-20}
+      - --modbus-port=5020
+      - --opcua-endpoint=opc.tcp://0.0.0.0:4840/wwtp/server/
+      - --speed=${PLC_SPEED:-1.0}
+      - --report-every=30
+    environment:
+      # Bind to all interfaces *inside the container*. The service name is what
+      # the rest of the network uses; publishing to the host is a separate,
+      # deliberate decision made per port below.
+      PLC_INSTANCE: PLANT-A
+    ports:
+      # Host 5020 rather than 502: 502 is privileged, and 502 is also what half
+      # the Modbus tooling on a laptop already has bound.
+      - "${MODBUS_PORT:-5020}:5020"
+      - "${OPCUA_PORT:-4840}:4840"
+    networks: [plant]
+    healthcheck:
+      # The PLC has no HTTP endpoint — adding one purely for a healthcheck would
+      # be a web server nobody asked for. A TCP connect to the Modbus port
+      # proves the listener is up, which is the thing that actually matters.
+      test: ["CMD", "python", "-c",
+             "import socket,sys; s=socket.create_connection(('127.0.0.1',5020),2); s.close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 2. influxdb — time series. Raw samples, downsampled by the rollup worker.
+  # ═══════════════════════════════════════════════════════════════════════════
+  influxdb:
+    <<: *restart
+    image: influxdb:3.2-alpine
+    container_name: wwtp-influxdb
+    # InfluxDB 3 Enterprise refuses to start without a licence. The key is read
+    # from .env, which is gitignored; the `${VAR:?}` form fails loudly at
+    # `docker compose up` rather than producing a container that exits 1 with a
+    # message nobody scrolls to.
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_ADMIN_USER:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_ADMIN_PASSWORD:?set INFLUX_ADMIN_PASSWORD in .env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG:-wwtp}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET:-wwtp}
+      DOCKER_INFLUXDB_INIT_RETENTION: 0s
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+    volumes:
+      - influx-data:/var/lib/influxdb3
+      - influx-meta:/var/lib/influxdb3-meta
+    ports:
+      - "${INFLUX_PORT:-8086}:8086"
+    networks: [plant]
+    healthcheck:
+      # `/health` is the endpoint InfluxDB documents for this. Polling the UI
+      # instead would work until the UI changes, which is not a health check,
+      # it is a bet.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8086/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    ulimits:
+      # Bolt/SQLite needs the file lock limits raised or writes fail under
+      # concurrency with a deceptively unhelpful "database is locked".
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 3. couchbase — documents. Equipment metadata, events, N1QL analytics.
+  # ═══════════════════════════════════════════════════════════════════════════
+  couchbase:
+    <<: *restart
+    image: couchbase/server:community-7.6.2
+    container_name: wwtp-couchbase
+    # Community edition needs no licence. It initialises itself on first boot and
+    # is unusable for ~20 s while it does; the healthcheck's start_period covers
+    # that, which is exactly the case start_period exists for.
+    volumes:
+      - couchbase-data:/opt/couchbase/var
+      - couchbase-logs:/opt/couchbase/logs
+    ports:
+      - "${COUCHBASE_PORT:-8091}:8091"   # management / REST
+      - "${COUCHBASE_KV_PORT:-11210}:11210"
+    networks: [plant]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8091/pools/default"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 4. gateway — reads both protocols, applies a deadband, spools, writes.
+  # ═══════════════════════════════════════════════════════════════════════════
+  gateway:
+    <<: *python-service
+    container_name: wwtp-gateway
+    command: ["python", "-m", "gateway.main"]
+    environment:
+      GATEWAY_LOG_LEVEL: ${GATEWAY_LOG_LEVEL:-INFO}
+      GATEWAY_DEADBAND_DEFAULT: ${GATEWAY_DEADBAND_DEFAULT:-0.0}
+      GATEWAY_SPOOL_DIR: /srv/spool
+      GATEWAY_SPOOL_MAX_MB: ${GATEWAY_SPOOL_MAX_MB:-512}
+      # By *service name*, not localhost. Inside a container, localhost is that
+      # container — a mistake that produces a connection-refused loop that looks
+      # like a networking problem and is really a naming one.
+      MODBUS_HOST: softplc
+      MODBUS_PORT: "5020"
+      OPCUA_ENDPOINT: opc.tcp://softplc:4840/wwtp/server/
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+      INFLUX_DATABASE: ${INFLUX_DATABASE:-wwtp}
+      INFLUX_ORG: ${INFLUX_ORG:-wwtp}
+      COUCHBASE_URL: couchbase://couchbase
+      COUCHBASE_USER: ${COUCHBASE_USER:-wwtp_app}
+      COUCHBASE_PASSWORD: ${COUCHBASE_PASSWORD:?set COUCHBASE_PASSWORD in .env}
+      COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
+    volumes:
+      # The spool must outlive the container. Without this volume, every restart
+      # silently discards the backlog — and the data loss is invisible until
+      # someone asks why Tuesday has a four-hour gap.
+      - gateway-spool:/srv/spool
+    depends_on:
+      softplc:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      couchbase:
+        condition: service_healthy
+    networks: [plant]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket,sys; s=socket.create_connection(('influxdb',8086),3); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 5. rollup — 1 s raw → 1 min → 1 h. Applies retention as it goes.
+  # ═══════════════════════════════════════════════════════════════════════════
+  rollup:
+    <<: *python-service
+    container_name: wwtp-rollup
+    command: ["python", "-m", "storage.rollup_worker.main"]
+    environment:
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+      INFLUX_DATABASE: ${INFLUX_DATABASE:-wwtp}
+      INFLUX_ORG: ${INFLUX_ORG:-wwtp}
+      ROLLUP_INTERVAL_SECONDS: ${ROLLUP_INTERVAL_SECONDS:-60}
+      ROLLUP_DISCARD_PARTIAL: ${ROLLUP_DISCARD_PARTIAL:-true}
+      RETENTION_RAW_SECONDS: ${RETENTION_RAW_SECONDS:-604800}
+      RETENTION_1M_SECONDS: ${RETENTION_1M_SECONDS:-7776000}
+      ALARM_EVAL_INTERVAL_SECONDS: ${ALARM_EVAL_INTERVAL_SECONDS:-5}
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    networks: [plant]
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 6. web — the custom Next.js dashboard
+  # ═══════════════════════════════════════════════════════════════════════════
+  web:
+    build:
+      context: ./ui/web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_INFLUX_URL: http://localhost:${INFLUX_PORT:-8086}
+        NEXT_PUBLIC_MODBUS_PORT: ${MODBUS_PORT:-5020}
+    container_name: wwtp-web
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    networks: [plant]
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Profile: observability — Grafana, for the dashboards you did not write by hand
+  # ═══════════════════════════════════════════════════════════════════════════
+  grafana:
+    <<: *restart
+    image: grafana/grafana:11.5.1
+    container_name: wwtp-grafana
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Dashboard provisioning from the mounted directory, so a dashboard is a
+      # reviewed file in git rather than something exported by hand.
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
+      GF_INSTALL_PLUGINS: ""
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+    volumes:
+      - ./ui/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ui/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks: [plant]
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Profile: demo — seed history so the dashboards are not empty on first load
+  # ═══════════════════════════════════════════════════════════════════════════
+  seed:
+    <<: *python-service
+    # A seeder that restarts on failure would seed the same window repeatedly.
+    # Exiting non-zero is the signal; restarting it is not the response.
+    restart: "no"
+    container_name: wwtp-seed
+    profiles: ["demo"]
+    command:
+      - python
+      - -m
+      - storage.seed.main
+      - --days=${SEED_DAYS:-7}
+      - --storm-after=${DEMO_STORM_AT_HOURS:-2}
+    environment:
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+      INFLUX_DATABASE: ${INFLUX_DATABASE:-wwtp}
+      INFLUX_ORG: ${INFLUX_ORG:-wwtp}
+      COUCHBASE_URL: couchbase://couchbase
+      COUCHBASE_USER: ${COUCHBASE_USER:-wwtp_app}
+      COUCHBASE_PASSWORD: ${COUCHBASE_PASSWORD:?set COUCHBASE_PASSWORD in .env}
+      COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
+    networks: [plant]
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      couchbase:
+        condition: service_healthy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+#
+# `plant` is a user-defined bridge, not the default. On a user-defined network
+# Docker resolves *service names* via its embedded DNS — so the gateway can say
+# `influxdb:8086` and mean it. On the default bridge it would mean 127.0.0.1 and
+# fail in a way that reads like a network fault.
+#
+# It is `internal: false` because the containers need outbound access to resolve
+# and, for the seeder, to reach nothing at all — but the soft PLC should not have
+# egress in a real plant. See docs/SECURITY.md.
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  plant:
+    name: wwtp-plant
+    driver: bridge
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes — all named, never bind mounts for data.
+#
+# A bind mount ties the database to a path on one developer's machine and its
+# ownership. A named volume is created by Docker, owned correctly, and portable.
+# `docker compose down` keeps them; `down -v` deletes the data, deliberately.
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  influx-data:
+  influx-meta:
+  couchbase-data:
+  couchbase-logs:
+  gateway-spool:
+  grafana-data:

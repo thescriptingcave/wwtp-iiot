@@ -91,7 +91,7 @@ def decode_float32(first: int, second: int, word_order: str = "big") -> float:
         raw = struct.pack(">HH", first & 0xFFFF, second & 0xFFFF)
     else:
         raw = struct.pack(">HH", second & 0xFFFF, first & 0xFFFF)
-    return _FLOAT.unpack(raw)[0]
+    return float(_FLOAT.unpack(raw)[0])
 
 
 def quantise_to_float32(value: float) -> float:
@@ -101,7 +101,7 @@ def quantise_to_float32(value: float) -> float:
     the original with a fixed tolerance fails for large magnitudes, because
     float32 carries about seven significant digits and nothing more.
     """
-    return _FLOAT.unpack(_FLOAT.pack(value))[0]
+    return float(_FLOAT.unpack(_FLOAT.pack(value))[0])
 
 
 #: Modbus register name → contract signal id. The contract names registers

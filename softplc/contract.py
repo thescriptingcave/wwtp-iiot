@@ -214,7 +214,7 @@ class Contract:
 
     @property
     def permit(self) -> dict[str, Any]:
-        return self.site.get("permit", {})
+        return dict(self.site.get("permit", {}))
 
     @property
     def design_flow_m3h(self) -> float:

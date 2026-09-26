@@ -35,7 +35,12 @@ from typing import Any
 
 from asyncua import Server, ua
 
-from softplc.contract import Contract, UDT_FLOAT32, contract as get_contract
+from softplc.contract import (
+    UDT_FLOAT32,
+    Contract,
+    Signal,
+    contract as get_contract,
+)
 
 log = logging.getLogger(__name__)
 
@@ -208,20 +213,18 @@ async def build_address_space(
         space.equipment_nodes[eq.id] = {"object": node, "state": state_var}
 
     for sig in c.signals.values():
-        eq = c.equipment.get(sig.equipment)
-        if eq is not None:
-            parent = await holder_node(sig.area, sig.equipment, as_object=True)
-        else:
-            # A signal whose holder is a grouping rather than a piece of
-            # equipment (site weather, influent flow) still needs a home.
-            parent = await holder_node(sig.area, sig.equipment, as_object=False)
+        # ``holder`` is a grouping (site weather, influent flow) rather than a
+        # piece of equipment, and those still need a home in the tree.
+        equipment = sig.equipment or sig.area
+        as_object = sig.equipment in c.equipment
+        parent = await holder_node(sig.area, equipment, as_object=as_object)
         await _add_signal(server, space, ns, parent, sig)
 
     return space, server
 
 
 async def _add_signal(server: Server, space: AddressSpace, ns: int,
-                      parent: Any, sig) -> None:
+                      parent: Any, sig: Signal) -> None:
     """Add one measured signal as a typed, unit-bearing variable."""
     path = f"{sig.area}.{sig.equipment}.{sig.id.split(':')[-1]}"
     variable = await parent.add_variable(
@@ -395,9 +398,9 @@ class OpcUaServer:
             # is the sort of bug that survives a long way past where it was
             # introduced.
             status = (
-                ua.StatusCode(ua.StatusCodes.Good)
+                ua.StatusCode(ua.UInt32(ua.StatusCodes.Good))
                 if entry.quality == 0
-                else ua.StatusCode(ua.StatusCodes.Uncertain)
+                else ua.StatusCode(ua.UInt32(ua.StatusCodes.Uncertain))
             )
             await entry.node.write_value(
                 ua.DataValue(

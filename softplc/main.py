@@ -34,18 +34,20 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Coroutine, TypeVar
 
 from softplc.blocks.control import AerationControl, LiftStationControl, build_blocks
 from softplc.contract import Contract
 from softplc.contract import contract as get_contract
 from softplc.faults.engine import FaultEngine, load_faults
-from softplc.process.plant import Plant
+from softplc.process.plant import Plant, PlantSnapshot
 from softplc.scanloop import ScanLoop, ScanState
 from softplc.servers.modbus_server import ModbusTcpServer
 from softplc.servers.opcua import OpcUaServer
 
 log = logging.getLogger("softplc")
+
+T = TypeVar("T")
 
 
 @dataclass(slots=True)
@@ -113,7 +115,7 @@ class SoftPlc:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _call(self, coro, timeout: float = 30.0):
+    def _call(self, coro: Coroutine[Any, Any, T], timeout: float = 30.0) -> T:
         """Run a coroutine on the PLC's loop from any thread."""
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
@@ -210,7 +212,7 @@ class SoftPlc:
         if self.config.verbose:
             self._log_scan(snapshot)
 
-    async def _publish(self, snapshot) -> None:
+    async def _publish(self, snapshot: PlantSnapshot) -> None:
         values = snapshot.values
         states = snapshot.states
         heartbeat = self.cycles & 0x7FFF
@@ -236,7 +238,7 @@ class SoftPlc:
         # invisible to unit tests of the server and obvious to a client.
         self.opcua_published = await self.opcua.publish()
 
-    def _log_scan(self, snapshot) -> None:
+    def _log_scan(self, snapshot: PlantSnapshot) -> None:
         v = snapshot.values
         log.debug(
             "scan %d  DO=%.2f air=%.0f NH4=%.2f TSS=%.1f  faults=%s",
@@ -287,16 +289,25 @@ async def _run(args: argparse.Namespace) -> int:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop.set)
 
-    await plc.start()
-    runner = asyncio.create_task(plc.run(duration_s=args.duration))
-    reporter = asyncio.create_task(_report(plc, args.report_every))
+    plc.start()
+
+    # ``run`` and ``stop`` are blocking on purpose: they marshal onto the PLC's
+    # own loop, so they may be called from a thread that has no loop of its own.
+    # Here there *is* a loop, so they are pushed onto a worker thread rather than
+    # awaited. (Handing the blocking ``run`` straight to ``create_task`` type
+    # checks as ``None``, and the failure mode is a task that never runs — the
+    # CLI would report success having simulated nothing.)
+    runner: asyncio.Task[None] = asyncio.create_task(
+        asyncio.to_thread(plc.run, args.duration)
+    )
+    reporter: asyncio.Task[None] = asyncio.create_task(
+        _report(plc, args.report_every)
+    )
 
     # Wait for whichever comes first: a signal, or the requested duration.
     # Waiting only on the signal made ``--duration`` hang forever, which turns a
     # bounded smoke test into something that has to be killed — and a test you
     # have to kill is a test nobody runs.
-    # ``runner`` is already a Task and asyncio.create_task rejects a coroutine
-    # object, so it is appended as-is rather than wrapped.
     waiters: list[asyncio.Task[Any]] = [asyncio.create_task(stop.wait())]
     if args.duration is not None:
         waiters.append(runner)
@@ -307,13 +318,15 @@ async def _run(args: argparse.Namespace) -> int:
             w.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await w
-        runner.cancel()
-        reporter.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await runner
-        with contextlib.suppress(asyncio.CancelledError):
-            await reporter
-        await plc.stop()
+        for task in (runner, reporter):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        # Teardown last, and only here. Scheduling the stop alongside the run —
+        # which is what a stopper task looks like it should do — runs it
+        # immediately instead, so the plant exits after a single scan and the
+        # command reports success having simulated nothing.
+        await asyncio.to_thread(plc.stop)
     return 0
 
 

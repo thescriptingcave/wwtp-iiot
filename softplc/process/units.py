@@ -705,7 +705,6 @@ class PrimaryClarifier:
         self.forward_m3h = forward_m3h
 
     t_s_internal: float = 0.0
-    forward_m3h: float = 1000.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -973,7 +972,7 @@ class AerationBasin:
         distributed at that flow.
         """
         temp_factor = KLA_TEMPERATURE_COEFF ** (self.wtemp_c - 20.0)
-        return self.kla_per_h * temp_factor * self._mixing_at(air_m3h)
+        return float(self.kla_per_h * temp_factor * self._mixing_at(air_m3h))
 
     def _mixing_at(self, air_m3h: float) -> float:
         """Mixing factor at an arbitrary air flow."""
@@ -1641,5 +1640,3 @@ class Disinfection:
         ct_credit = ct / (4.0 * max(0.2, 1.0 + 0.06 * (20.0 - temp_c)))
         log_removal = _clamp(3.2 * math.log10(max(1.0, ct_credit) + 1.0) + 1.1, 0.0, 6.0)
         self.bacti_mpn_100ml = _clamp(1.0e5 * 10.0 ** (-log_removal), 10.0, 100000.0)
-
-    contact_time_h: float = 1.0

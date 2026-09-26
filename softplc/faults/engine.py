@@ -196,7 +196,7 @@ class FaultEngine:
         #: Equipment states forced by process faults, and the states to restore.
         self._forced_states: dict[str, int] = {}
         self._original_states: dict[str, int] = {}
-        self._digester_original: dict[str, float] = {}
+        self._digester_original: dict[str, dict[str, float]] = {}
         self._clarifier_originals: dict[str, dict[str, float]] = {}
         self._original_kla: dict[str, tuple[float, float]] = {}
         self.log: list[dict[str, Any]] = []

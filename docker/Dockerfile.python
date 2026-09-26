@@ -1,0 +1,78 @@
+# syntax=docker/dockerfile:1.7
+#
+# One image definition for every Python service in this project.
+#
+# The build argument is the point. softplc, gateway and the rollup worker share
+# almost all of their dependency surface, so building three near-identical
+# images separately triples the build time and triples the number of CVEs to
+# track. One parameterised Dockerfile gives one base, one user, one entrypoint
+# convention, and a rebuild that only relayers when the lock file actually moves.
+
+# ─── base ─────────────────────────────────────────────────────────────────────
+# Pinned by tag, and deliberately *not* by digest: a digest is stronger, but a
+# digest in a file people edit by hand is a lock file in disguise, and it breaks
+# the moment a base is rebuilt for a CVE. The trade-off is written down in
+# docs/SECURITY.md rather than hidden.
+FROM python:3.13.2-slim-bookworm AS base
+
+# PYTHONUNBUFFERED matters more than it looks: without it a container that is
+# killed rather than asked to stop loses whatever it had not yet flushed, and a
+# service whose logs stop mid-line is a service you cannot debug.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# libstdc++ is needed by the asyncua/cryptography stack; without it the OPC UA
+# server imports fine and then dies on the first certificate operation, which is
+# a spectacularly unhelpful way to spend an afternoon.
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y libstdc++6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# ─── dependencies, as their own layer ─────────────────────────────────────────
+FROM base AS deps
+WORKDIR /srv
+
+# Dependencies are installed *before* the source is copied. Application code
+# changes constantly; the resolved dependency set almost never does. Getting
+# this order wrong costs a full reinstall on every edit.
+COPY pyproject.toml README.md ./
+COPY uv.lock ./
+
+# --no-dev: the test and lint tools are not needed to run a plant, and shipping
+# them widens the image's attack surface for no benefit. Tests run in CI, in a
+# different image, on purpose.
+RUN pip install --no-cache-dir uv==0.5.11 \
+ && uv export --no-dev --no-emit-project --format requirements-txt \
+      --extra protocols --extra storage -o /tmp/req.txt \
+ && pip install --no-cache-dir -r /tmp/req.txt
+
+# ─── runtime ──────────────────────────────────────────────────────────────────
+FROM base AS runtime
+
+# A container that runs as root is a container where one RCE is a host root.
+# The numeric UID is fixed so bind-mounted volumes have a predictable owner.
+RUN groupadd --gid 10001 softplc \
+ && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin softplc
+
+WORKDIR /srv
+COPY --from=deps /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=deps /usr/local/bin /usr/local/bin
+COPY pyproject.toml README.md ./
+COPY softplc ./softplc
+COPY gateway ./gateway
+COPY storage ./storage
+COPY alarms ./alarms
+COPY contracts ./contracts
+COPY tools ./tools
+
+# The spool survives a restart, so it is a volume rather than a layer.
+RUN mkdir -p /srv/spool && chown -R 10001:10001 /srv
+
+USER 10001:10001
+ENV PYTHONPATH=/srv
+
+# Compose overrides the command per service; this is the sensible default and
+# also what `docker run` without arguments does.
+CMD ["python", "-m", "softplc.main"]
