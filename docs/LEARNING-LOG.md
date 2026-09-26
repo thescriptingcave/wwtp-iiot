@@ -254,6 +254,41 @@ wrong in a way that only a test looking for *collision* would find.
   matter as much as commas: an unescaped space ends the tags section and the
   remainder is parsed as a field.
 
+## Phase 3c — the gateway's two protocol readers
+
+Written against a live plant rather than a mock, which is the only reason four
+bugs showed up. All four produced *plausible numbers* rather than errors.
+
+- **The Modbus plan indexed registers by position, not by offset.** The plan
+  stored register names and worked out where each sat from its index in the
+  list. That is correct exactly when every register in a window is the same
+  width — and this contract mixes float32 pairs with single-word integers. The
+  fifth float in a window sits at offset 8, not 4. The client read the wrong
+  register and reported a confident `7.4e14`. The plan now stores `(name,
+  offset)`. The lesson generalises: any index derived from *position* rather
+  than from the thing's own address is a bug waiting for the first irregular
+  element.
+- **The OPC UA client hardcoded the plant's browse name as `PLANT-A`.** It is
+  actually `PLANT-A: Northgate Water Reclamation Facility`. All 57 lookups
+  failed and the reader reported "connected, zero signals", which looks exactly
+  like a plant with no instruments. The reader now *finds* the plant object by
+  the site id from the contract. A browse name in a client is a second copy of a
+  fact the contract owns.
+- **Browse names are `sig.field` verbatim.** The client lower-cased them, which
+  looks right, matches the server's own `path` construction at a glance, and
+  resolves nothing.
+- **A stale `parts[2:]` slice.** After removing two leading path elements, the
+  slice offset was left behind, so the reader asked for the leaf and got
+  `BadNoMatch` 57 times. Slicing a list you have just edited is the sort of thing
+  that reads as obviously-correct code. Passing the list whole makes the mistake
+  impossible.
+- The end-to-end test could not link a Modbus register to the signals behind it,
+  because the contract does not. I had written a heuristic that string-matched
+  equipment names — a second, wrong mapping, of exactly the kind that hides a
+  real bug. The test now states the mapping explicitly for four registers and
+  uses OPC UA for the full-path leg, where signal ids arrive natively. The gap
+  is still a gap; it is now visible rather than papered over.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net
