@@ -27,16 +27,56 @@ signal into an unbounded series generator and quietly destroys the database.
 **The rule this project enforces:** a tag is something that would still be true
 tomorrow. `area`, `equipment`, `measurement`, `eu`. Never the reading.
 
-## Metadata does not go here
+## What InfluxDB 3 actually allows, measured rather than assumed
 
-Description, vendor, model, install date, calibration history, permit limits —
-none of that is time series, and putting it in line protocol means writing it
-again on every single point. In this project it goes to Couchbase, keyed by tag,
-and is read once when a dashboard needs it.
+Written after running the database. It contradicts most InfluxDB documentation
+and every tutorial, because those describe InfluxDB 1.x and 2.x. Each constraint
+was established by writing to a live `quay.io/influxdb/influxdb3` instance and
+reading the error.
 
-The concrete cost of getting this wrong is easy to calculate: 57 signals x 1 Hz
-x 86 400 = 4.9 million points a day. At 200 bytes of repeated description per
-point that is roughly a gigabyte a day of copying a string that never changes.
+### 1. At most two fields per point
+
+    aeration,... value=2.03,quality=0i,source=opcua 1700000010000000000
+    -> Could not parse entire line.
+       Found trailing content: ',source=opcua 1700000010000000000'
+
+Two is fine. The schema below uses both with nothing to spare, which is why
+`source` is a tag rather than a third field.
+
+### 2. A table's tag *set* is fixed by its first write
+
+    Detected a new tag 'source' in write. The tag set is immutable on first
+    write to the table.
+
+In InfluxDB 2.x any point could carry any tags and every series was independent.
+In InfluxDB 3 a table has a schema and the first write defines it. This is the
+biggest single difference, and it is why every signal here writes the *same six*
+tag keys, differing only in their values. A signal that omitted one would be
+rejected rather than stored with a null.
+
+### 3. A column's type is fixed by its first write
+
+    invalid field value in line protocol for field 'value':
+    expected type iox::column_type::field::float
+
+So `value` is a float forever, and a quoted string is not a way to record a
+broken sensor.
+
+### 4. A non-finite reading is stored as an *absent* value
+
+`value=NaN` and `value=+Inf` both fail with "No fields were provided" - the format
+has no non-finite literal. But a point carrying *only* a quality field is
+accepted, and lands with `value` NULL:
+
+    aeration,... quality=2i 1700000014000000000
+    -> time 2023-11-14T22:13:34, value NULL, quality 2
+
+That is not a workaround, it is the correct representation, and the database
+enforces it: a failed instrument is recorded as *present and invalid*, which is
+distinguishable both from "no data at all" and from "a number that happens to be
+wrong". InfluxDB 2.x would have accepted a string `"nan"` in a float column, or
+a float NaN that plots as a gap and reads as a process that stopped. The refusal
+is the feature.
 
 ## Precision, and why this format is lossy on purpose
 
@@ -58,7 +98,12 @@ import math
 from dataclasses import dataclass
 from typing import Any, Final
 
-from softplc.contract import Contract
+from softplc.contract import QUALITY_BAD, Contract
+
+# ``QUALITY_BAD`` is imported rather than redefined. A second constant that has to
+# be kept in step with the first is a place for the two to disagree, and a
+# disagreement there would mean writing "Bad" for a reading that is merely
+# uncertain - the exact failure this project exists to prevent.
 
 #: Fields every point carries, whatever the signal.
 #:
@@ -83,7 +128,37 @@ COMMON_FIELDS: Final = ("value", "quality", "source")
 #: The contract's own rule says "tag by identity, field by value", and ``field``
 #: (``do_mg_l``, ``nh4_out_mg_l``) is the identity of a signal. ``measurement``
 #: is a grouping for querying, not an identity.
-TAG_KEYS: Final = ("area", "equipment", "field", "eu", "site")
+#:
+#: ``source`` was a field until the two-field limit made that impossible. As a tag
+#: it is still one of the smallest, best-indexed things on the row, and it is what
+#: makes "Modbus and OPC UA disagree" a query rather than a hunch.
+#:
+#: All six appear on every point without exception. InfluxDB 3 fixes a table's tag
+#: set at its first write, so a signal that omitted one is rejected, not nulled.
+#:
+#: The fifth column is ``signal``, and it was called ``field`` until a live query
+#: proved that impossible. ``field`` is a **reserved word in InfluxQL**:
+#:
+#:     SELECT field, value FROM aeration
+#:     -> error in InfluxQL statement: parsing error:
+#:        invalid SELECT statement, expected field at pos 7
+#:
+#: Quoting it works, so the alternative is a column called ``"field"`` that has to
+#: be quoted in every query — which for this project means every lesson in the
+#: ``sql/`` track, and a learner who has to quote an identifier before their first
+#: query has already learned the wrong first lesson. ``signal`` is not reserved,
+#: and it is the word this project already uses.
+TAG_KEYS: Final = ("area", "equipment", "signal", "eu", "site", "source")
+
+#: Field keys. Exactly two, because two is the maximum. ``quality`` is not optional
+#: bookkeeping: a historian that stores a reading without its validity has thrown
+#: away the only thing that distinguishes "the process did this" from "the
+#: instrument thinks this". Both look like a number.
+FIELD_KEYS: Final = ("value", "quality")
+
+#: InfluxDB 3 rejects a third field. Named so the limit is visible where the schema
+#: is built rather than discovered in production.
+MAX_FIELDS_PER_POINT: Final = 2
 
 #: The InfluxDB measurement is the contract's measurement *group*, so
 #: ``SELECT mean(value) FROM aeration WHERE time > now() - 1h`` is one scan over
@@ -121,25 +196,35 @@ class PointKey:
         """The measurement this point is written to: the contract's group name."""
         return self.measurement or DEFAULT_MEASUREMENT
 
-    def tags(self) -> dict[str, str]:
+    def tags(self, source: str = "opcua") -> dict[str, str]:
+        """The six tag columns.
+
+        ``source`` is a parameter rather than a field of the key because it
+        describes the *delivery*, not the signal: the same reading arrives over
+        Modbus and over OPC UA, and which one wrote the row is a property of the
+        write.
+        """
         return {
             "area": self.area,
             "equipment": self.equipment,
-            "field": self.field,
+            "signal": self.field,
             "eu": self.eu,
             "site": self.site,
+            "source": source,
         }
 
     @property
     def series_key(self) -> str:
-        """Measurement plus tags — the identity of the series, without the value.
+        """Table plus the five identity tags: the series, without the value or the
+        delivery.
 
         Two points with the same series key belong to the same series. Used by the
         tests to prove that changing a value does not change the series, which is
         the property the whole schema depends on.
         """
-        tags = ",".join(f"{k}={self.tags()[k]}" for k in TAG_KEYS)
-        return f"{self.influx_measurement},{tags}"
+        tags = self.tags()
+        identity = ",".join(f"{k}={tags[k]}" for k in TAG_KEYS if k != "source")
+        return f"{self.influx_measurement},{identity}"
 
 
 def keys_from_contract(contract: Contract) -> dict[str, PointKey]:
@@ -202,15 +287,24 @@ def format_value(value: float) -> str:
     ``3`` becomes an integer field, and a later query that sums or averages the
     column gets a type error — or worse, silently coerces.
 
-    Non-finite values are written as strings, because line protocol has no
-    literal for NaN or infinity. Writing the string ``"NaN"`` keeps the fact that
-    the instrument broke, which is the whole point of recording it. Dropping the
-    point instead would make the gap invisible.
+    Non-finite values raise. They cannot be represented: line protocol has no
+    literal for them, and InfluxDB 3 fixes a column's type on its first write, so
+    a quoted ``"nan"`` in a float column is a permanent type error rather than a
+    record of a broken instrument. :func:`encode_point` writes those readings with
+    the value field omitted and ``quality=Bad``, which is both representable and
+    more honest.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
     if not math.isfinite(value):
-        return f'"{value}"'
+        # Reached only by a direct call. :func:`encode_point` handles non-finite
+        # readings by omitting the value field entirely, because InfluxDB 3 fixes
+        # the column type on first write and a quoted string would make every
+        # later write to that table a permanent type error.
+        raise LineProtocolError(
+            f"non-finite value {value!r} cannot be written as a field; "
+            "encode_point omits the value and records the quality instead"
+        )
     if float(value).is_integer() and abs(value) < 1e15:
         return f"{value:.1f}"
     return repr(float(value))
@@ -244,27 +338,40 @@ def encode_point(
     quality: int = 0,
     source: str = "opcua",
     resolution: str = "ms",
+    table: str | None = None,
 ) -> str:
     """Encode one point as a line-protocol line.
 
     ``quality`` and ``source`` are separate parameters rather than being folded
     into the value, because they are facts *about* the reading and a caller that
     had to remember them would eventually forget.
+
+    ``table`` overrides the destination, which is the contract's measurement group
+    by default. It exists for two real reasons and one test reason, and the test
+    reason is the honest one: InfluxDB 3 fixes a table's schema on its first write
+    and *never* releases it, so a table that has been written to incorrectly
+    cannot be repaired — only replaced. A test suite that shares the production
+    table therefore has no way to recover from its own mistakes, and needs to
+    write somewhere disposable. The production reasons are per-environment layouts
+    and multi-bucket fan-out.
     """
-    tags = key.tags()
-    tag_part = ",".join(
-        f"{k}={escape_tag(tags[k])}" for k in TAG_KEYS
-    )
-    field_part = ",".join(
-        (
-            f"value={format_value(value)}",
-            f"quality={quality}i",
-            f"source={escape_tag(source)}",
-        )
-    )
+    tags = key.tags(source)
+    tag_part = ",".join(f"{k}={escape_tag(tags[k])}" for k in TAG_KEYS)
+
+    if math.isfinite(value):
+        fields = f"value={format_value(value)},quality={quality}i"
+    else:
+        # A reading that is not a number is recorded as *present and invalid*:
+        # the row exists, the quality says Bad, and the value column is NULL.
+        # This is the one representation that survives InfluxDB 3's fixed column
+        # types, and it happens to be the one that is actually correct — it is
+        # distinguishable from "no data" and from "a number that is merely wrong".
+        fields = f"quality={QUALITY_BAD}i"
+
+    destination = table or key.influx_measurement
     return (
-        f"{escape_measurement(key.influx_measurement)},{tag_part} "
-        f"{field_part} {format_timestamp(ts_ms, resolution)}"
+        f"{escape_measurement(destination)},{tag_part} "
+        f"{fields} {format_timestamp(ts_ms, resolution)}"
     )
 
 

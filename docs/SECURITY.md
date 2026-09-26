@@ -190,6 +190,24 @@ that runs unattended, pin the digest and automate the bump. The one thing not to
 do is pick a tag and then not check whether the base has a known vulnerability
 in it.
 
+### The argument above is wrong in general, and InfluxDB proved it
+
+InfluxDB 3 is not on Docker Hub. It is on Quay, and its complete tag list is 17
+entries: `latest`, `latest-arm64`, `latest-amd64`, `arm64`, `intel`, and one
+commit SHA per build. **There is no version tag.** `influxdb:3.2` does not exist,
+which is the tag this project originally wrote before trying to run it.
+
+So the question is not "tag or digest" in the abstract. It is **what does this
+vendor publish** — and for a vendor that publishes only SHAs, the SHA tag *is*
+the pinnable version, and `latest` is not pinnable at all. `compose.yaml` now
+pins the bare commit SHA, which is the multi-architecture manifest list; the
+`-arm64` and `-amd64` variants are the per-architecture manifests beneath it.
+
+The general lesson is worth more than the rule I started with: a pinning policy
+should be written per dependency, from what that dependency actually publishes,
+rather than applied uniformly from a principle. A uniform policy is either
+unenforceable (no version tags) or ignored (a digest nobody can update).
+
 ## What this project would need before facing a real network
 
 In rough order of value per effort:

@@ -289,6 +289,99 @@ bugs showed up. All four produced *plausible numbers* rather than errors.
   uses OPC UA for the full-path leg, where signal ids arrive natively. The gap
   is still a gap; it is now visible rather than papered over.
 
+## Phase 3d — running the database, and everything it got wrong
+
+Every storage module in this project was unit-tested with an injected callable.
+That is the right design, and it is also why the SQL text, the SDK calls and the
+schema assumptions had **never been executed**. They all passed. Six of them were
+wrong. This is the most valuable section of this log, and none of it could have
+been found by reading documentation, because the documentation describes
+InfluxDB 1.x and 2.x.
+
+### The bugs
+
+1. **The write API is asynchronous, and drops the last batch silently.** Two
+   writes each returned `True` and neither point was in the database. The spool is
+   then deleted on the strength of that success, so the data is lost twice over.
+   The SDK logs one line — *"cannot schedule new futures after interpreter
+   shutdown"* — and the caller has already been told everything is fine. Fixed
+   with `SYNCHRONOUS`. **This is the worst bug in the project and it was invisible
+   to every test.**
+
+2. **At most two fields per point.** The schema had three (`value`, `quality`,
+   `source`). The error is *"Could not parse entire line. Found trailing
+   content"*, which reads like a typo in a line protocol rather than a schema
+   limit. `source` became a tag.
+
+3. **A table's tag set and column types are fixed by its first write.** InfluxDB
+   2.x let any point carry any tags. InfluxDB 3 tables have a schema, so every
+   signal must write the *same six tag keys*, differing only in values.
+
+4. **`field` is a reserved word in InfluxQL.** The tag that fixed the series
+   collision was named `field`, and `SELECT field, value FROM aeration` fails with
+   *"invalid SELECT statement, expected field at pos 7"*. Quoting works, so the
+   alternative was a column called `"field"` in every lesson of the `sql/` track.
+   Renamed to `signal`.
+
+5. **There is no way to write a non-finite value** — and that turned out to be the
+   database being *right*. `NaN`, `+Inf` and a quoted `"nan"` are all refused,
+   because the column's type is fixed on first write. What *is* writable is a
+   point with a quality and **no value**, and it lands as `value` NULL with
+   `quality = 2`.
+
+   That is the representation this project has argued for since Phase 1, and the
+   database will not accept the alternatives. A failed instrument is stored as
+   *present and invalid* — distinguishable both from "no data at all" and from "a
+   number that happens to be wrong". InfluxDB 2.x would have accepted a string in
+   a float column, or a NaN that plots as a gap and reads as a process that
+   stopped. **The refusal is the feature**, and it is the single best argument
+   this project has for the database it chose.
+
+6. **A write that adds a column to an existing table is accepted, and makes the
+   table permanently unreadable.** Success response, then every read fails with
+   *"column types must match schema types, expected Float64 but found
+   Dictionary(Int32, Utf8)"*. Marked `xfail`: it reproduced twice by hand and in
+   the suite, but the trigger is order-dependent, so a test asserting it would be
+   asserting a race. The mitigation needs no understanding of the trigger — the
+   encoder emits exactly two fields and cannot be made to emit a third.
+
+### Things that only running it could tell you
+
+- `DOCKER_INFLUXDB_INIT_*` is InfluxDB **1.x/2.x**. InfluxDB 3 has no setup mode;
+  the database must be started with `--host-id`, an object store and a bearer
+  token, and initialised with `influxdb3 create database` / `create token`.
+- InfluxDB 3 is on **Quay, not Docker Hub**, and publishes **no semver tags** —
+  17 tags, all `latest` or commit SHAs. So the "pin by tag, it is more readable"
+  advice in `docs/SECURITY.md` is impossible here. That inverted my own argument,
+  which is the useful part.
+- It serves on **8181**, not 8086.
+- The official `influxdb_client` SDK **cannot query it**. It posts to
+  `/api/v2/query`, which InfluxDB 3 does not serve; the answer is 404 with a
+  message about the endpoint, so it looks like a wrong URL. SQL lives at
+  `GET /query?q=...&db=...`.
+- `ORDER BY` accepts `time` and nothing else.
+- A `WHERE time >= '4000000000000'` filter is rejected: *"is not a valid
+  timestamp"*. Timestamps in a filter must be RFC 3339, while timestamps in a
+  write are integers. The two forms are not interchangeable and nothing says so.
+
+### The conclusion, and it is not a comfortable one
+
+Query results on this **InfluxDB 3 Core** build are **not deterministic**.
+`WHERE quality >= 1` returned rows on one call and nothing on the next, with no
+writes in between; `WHERE signal = 'do_mg_l'` — the most basic query this project
+could ask — returned nothing while the rows were demonstrably present.
+
+So two integration tests are `xfail` with that reason, and the recommendation is
+recorded rather than hidden: **InfluxDB 3 Enterprise, with the home-use licence
+key the project already assumes, is the path forward.** The schema work above
+transfers unchanged — it is all InfluxDB 3, and Core is the same engine. What
+Enterprise buys is a query engine that returns the same answer twice.
+
+The eight stable integration tests stay: synchronous writes, the NULL-for-broken
+sensor representation, the two-field limit, the fixed tag set, one table per
+process stage, and the round trip through real SQL. Those are the facts the schema
+depends on, and they are verified.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net

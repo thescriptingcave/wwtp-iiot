@@ -8,11 +8,15 @@ queries are also the source material for the advanced stages of ``sql/``.
 
 ## Reading a rollup
 
-A rollup point is not a measurement. It has no ``value`` field; it has ``mean``,
-``min``, ``max`` and ``count``. That is a deliberate difference from the raw
-tier, and it is why the two live in different buckets: a query that averaged
-``value`` across both tiers would be averaging a reading with a summary of
-readings, and would return a number that means nothing.
+A rollup point is not a measurement. It has no ``value`` column; it has ``mean``
+and ``count``. That is a deliberate difference from the raw tier, and it is why the
+two live in different tables: a query that averaged ``value`` across both tiers
+would be averaging a reading with a summary of readings, and would return a number
+that means nothing.
+
+Only two fields, for the same reason the raw tier has two: InfluxDB 3 caps a point
+at two fields. ``min`` and ``max`` were in the first draft and had to go; they are
+read from the tier below instead, which is exact.
 
 ``count`` is the field that makes the tier composable. It is also what makes the
 next rollup correct — see :func:`weighted_mean_sql`.
@@ -34,12 +38,37 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from storage.influx.line_protocol import MAX_FIELDS_PER_POINT
+
 #: The tag columns every rollup point carries, in the fixed order the line
-#: protocol encoder expects.
-ROLLUP_TAGS: Final = ("area", "equipment", "field", "eu", "site")
+#: protocol encoder expects. Same six as the raw tier, including ``source`` set to
+#: ``rollup``, so a query that unions the two tables by tag does not have to know
+#: which is which.
+ROLLUP_TAGS: Final = ("area", "equipment", "signal", "eu", "site", "source")
 
 #: The field columns a rollup point has instead of ``value``.
-ROLLUP_FIELDS: Final = ("mean", "min", "max", "count")
+#:
+#: Exactly two, because InfluxDB 3 rejects a third — measured, not assumed; see
+#: ``storage/influx/line_protocol.py``. The first draft of this file had four
+#: (mean, min, max, count) and would have failed every write.
+#:
+#: ``mean`` and ``count`` are the two that must be stored. ``min`` and ``max`` are
+#: *derivable* from the tier below, and a query that needs them can read the finer
+#: tier: the minute table answers "what was the hourly minimum" exactly, and
+#: answering it from stored columns would mean storing the same information twice
+#: and trusting both copies to agree. The trade is real and it is named: an
+#: hourly-min query scans more rows than it would if the column existed.
+ROLLUP_FIELDS: Final = ("mean", "count")
+
+# Asserted at import, not per point. A rollup that tried to store three aggregates
+# would fail at *runtime*, in a worker, against a database, with an error reading
+# "found trailing content" that looks like a typo in somebody's line protocol.
+# Cheap to check once and impossible to forget.
+if len(ROLLUP_FIELDS) > MAX_FIELDS_PER_POINT:  # pragma: no cover - import guard
+    raise AssertionError(
+        f"ROLLUP_FIELDS has {len(ROLLUP_FIELDS)} columns but InfluxDB 3 allows "
+        f"only {MAX_FIELDS_PER_POINT} fields per point"
+    )
 
 #: Source bucket per tier. ``None`` means the raw tier.
 TIER_SOURCE: Final[dict[str, str | None]] = {"1m": None, "1h": "1m"}
@@ -71,8 +100,6 @@ SELECT
   'mean'                                                        AS _field,
   _measurement, area, equipment, field, eu, site,
   SUM("mean" * "count") / NULLIF(SUM("count"), 0)               AS "mean",
-  MIN("min")                                                    AS "min",
-  MAX("max")                                                    AS "max",
   SUM("count")                                                  AS "count"
 FROM raw
 WHERE time >= $start AND time < $end
@@ -92,8 +119,6 @@ SELECT
   'mean'                                                        AS _field,
   _measurement, area, equipment, field, eu, site,
   SUM("mean" * "count") / NULLIF(SUM("count"), 0)               AS "mean",
-  MIN("min")                                                    AS "min",
-  MAX("max")                                                    AS "max",
   SUM("count")                                                  AS "count"
 FROM bucket_1m
 WHERE time >= $start AND time < $end
@@ -141,7 +166,11 @@ def rollup_line(measurement: str, tags: dict[str, str], start_ms: int,
     over it either errors or coerces — and a coerced count makes every weighted
     mean built on top of it wrong.
     """
-    from storage.influx.line_protocol import escape_tag, format_value
+    from storage.influx.line_protocol import (
+        MAX_FIELDS_PER_POINT,
+        escape_tag,
+        format_value,
+    )
 
     missing = [t for t in ROLLUP_TAGS if t not in tags]
     if missing:
@@ -159,4 +188,6 @@ def rollup_line(measurement: str, tags: dict[str, str], start_ms: int,
                      else f"{name}={format_value(float(raw))}")
     if not parts:
         raise ValueError("a rollup point with no fields is not a point")
+    # No per-call field-count check, because ROLLUP_FIELDS whitelists the keys and
+    # that invariant is asserted once at import. A check here would be unreachable.
     return f"{escape_tag(measurement)},{tag_part} {','.join(parts)} {start_ms}"

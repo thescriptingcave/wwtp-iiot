@@ -176,6 +176,28 @@ docker compose up -d influxdb couchbase
 docker compose ps          # wait for both to be healthy
 ```
 
+> **InfluxDB 3 does not work the way InfluxDB 1.x and 2.x do**, and this cost a
+> long afternoon. There is no `DOCKER_INFLUXDB_INIT_*` setup mode, no port 8086,
+> and no Docker Hub image. The compose service starts it with an explicit
+> `influxdb3 serve --host-id … --object-store … --bearer-token …`, and the
+> database and first token are created with the bundled CLI:
+>
+> ```bash
+> docker compose exec influxdb influxdb3 create database wwtp --token "$INFLUX_TOKEN"
+> docker compose exec influxdb influxdb3 create token
+> ```
+>
+> `create token` prints both a plaintext token (for clients) and a hash (which
+> must be passed to `serve --bearer-token`). **The server must be restarted with
+> that hash**, or the API answers 404 to everything — including `/api/v3/*`,
+> which does not make it obvious that the server is misconfigured rather than
+> absent. The full sequence, and what each failure looks like, is in
+> `docs/LEARNING-LOG.md`.
+>
+> This build is **not stable enough to rely on**: query results were observed to
+> be non-deterministic. See the recommendation at the end of that section before
+> building anything on it.
+
 Couchbase takes 30–60 s on first boot to initialise itself. It will report
 unhealthy while it does, and then become healthy without intervention. That is
 normal and is why its `start_period` is 60 s rather than 10 s.

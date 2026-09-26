@@ -22,6 +22,12 @@ data/
 *.sst
 *.lmdb
 
+# ─── Integration-test credentials ─────────────────────────────────────────────
+# A token written by hand while poking at a local InfluxDB. The suite reads
+# INFLUX_TEST_TOKEN from the environment instead, which is the right way; this
+# entry exists because the convenient way happened once.
+tests/integration/influx_token
+
 # ─── Gateway store-and-forward spool ───────────────────────────────────────────
 # Runtime buffer, may contain plant data. Never commit.
 gateway/spool/*.jsonl

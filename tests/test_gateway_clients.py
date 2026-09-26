@@ -318,14 +318,16 @@ def test_a_poll_reaches_line_protocol_through_the_spool(tmp_path: Path,
     # which is the whole reason the deadband exists.
     known = {k.series_key for k in KEYS.values()}
     for d in decoded:
+        # The series key excludes `source` by design: the same signal arriving
+        # over Modbus and over OPC UA is one series with two provenances.
         series = ",".join(
             f"{tag}={d['tags'][tag]}" for tag in
-            ("area", "equipment", "field", "eu", "site")
+            ("area", "equipment", "signal", "eu", "site")
         )
         assert f"{d['measurement']},{series}" in known, series
-        assert d["fields"]["source"] == "opcua"
+        assert d["tags"]["source"] == "opcua"
         assert "quality" in d["fields"]
-    assert len({d["tags"]["field"] for d in decoded}) < len(decoded)
+    assert len({d["tags"]["signal"] for d in decoded}) < len(decoded)
 
     # The deadband did something. It could not have on a single poll — the first
     # reading of every signal always publishes, so one poll offers 57 and accepts
@@ -363,8 +365,8 @@ def test_modbus_register_names_reach_the_encoder_via_an_explicit_map(
             continue
         line = encode_point(KEYS[signal_id], values[register], ts, source="modbus")
         parsed = decode_line(line)
-        assert parsed["tags"]["field"] == KEYS[signal_id].field
-        assert parsed["fields"]["source"] == "modbus"
+        assert parsed["tags"]["signal"] == KEYS[signal_id].field
+        assert parsed["tags"]["source"] == "modbus"
         assert parsed["fields"]["value"] != "0.0", (
             f"{register} decoded to zero - the word-order signature"
         )

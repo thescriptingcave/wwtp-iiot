@@ -94,7 +94,19 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
   influxdb:
     <<: *restart
-    image: influxdb:3.2-alpine
+    # NOT on Docker Hub, and pinned by commit SHA rather than by version.
+    #
+    # InfluxDB 3 is published to Quay, and it publishes **no semver tags at
+    # all** — the full tag list is `latest`, `latest-arm64`, `latest-amd64`,
+    # `arm64`, `intel`, and one commit SHA per build. There is no `3.2` to pin.
+    # The SHA tags are immutable and multi-arch (the bare SHA is the manifest
+    # list; `-arm64`/`-amd64` are the per-architecture manifests), so the bare
+    # SHA is the correct pin here and `latest` is not.
+    #
+    # This is the concrete case that overturns the usual "pin by tag, it is more
+    # readable" advice: whether a tag pin is *possible* depends on what the vendor
+    # publishes. See docs/SECURITY.md.
+    image: quay.io/influxdb/influxdb3:3309ac0bb2c54e8661f48068e4e761561f72756f
     container_name: wwtp-influxdb
     # InfluxDB 3 Enterprise refuses to start without a licence. The key is read
     # from .env, which is gitignored; the `${VAR:?}` form fails loudly at

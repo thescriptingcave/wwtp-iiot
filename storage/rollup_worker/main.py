@@ -75,7 +75,8 @@ def build_executor(database: str, url: str, token: str,
             lines = [
                 rollup_line(
                     measurement=str(row.values.get("_measurement", "")),
-                    tags={t: str(row.values.get(t, "")) for t in ROLLUP_TAGS},
+                    tags={**{t: str(row.values.get(t, "")) for t in ROLLUP_TAGS},
+                           "source": "rollup"},
                     start_ms=int(row["time"]) * 1_000_000,
                     values={k: row.values.get(k) for k in ROLLUP_FIELDS},
                 )

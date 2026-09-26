@@ -86,8 +86,13 @@ class InfluxWriter:
                  database: str = "wwtp", *, batch_points: int = DEFAULT_BATCH_POINTS,
                  batch_seconds: float = DEFAULT_BATCH_SECONDS,
                  resolution: str = "ms",
+                 table: str | None = None,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.keys: dict[str, PointKey] = keys_from_contract(contract)
+        #: Destination override, forwarded to every point. ``None`` means the
+        #: contract's measurement group per signal, which is the normal case; a
+        #: single table is for a dedicated dataset that is not the plant.
+        self.table = table
         self._transport = transport
         self.database = database
         self.batch_points = min(batch_points, MAX_BATCH_LINES)
@@ -114,7 +119,7 @@ class InfluxWriter:
             return False
         self._lines.append(
             encode_point(key, value, ts_ms, quality=quality, source=source,
-                         resolution=self.resolution)
+                         resolution=self.resolution, table=self.table)
         )
         if len(self._lines) >= self.batch_points:
             self.flush()
@@ -176,19 +181,36 @@ def make_transport(url: str, token: str, timeout_s: float = 10.0,
     the coupling this project is trying to avoid.
     """
     from influxdb_client import InfluxDBClient, WritePrecision
+    from influxdb_client.client.write_api import SYNCHRONOUS
     from influxdb_client.rest import ApiException
 
     bucket_org = org or ""
     client = InfluxDBClient(url=url, token=token, org=bucket_org,
                             timeout=int(timeout_s * 1000))
-    write_api = client.write_api()
+    # SYNCHRONOUS, and this is not a style choice.
+    #
+    # The default write API batches *asynchronously* on a background thread. That
+    # is the right default for throughput and catastrophically wrong for a
+    # gateway whose entire job is not losing data: on interpreter shutdown the
+    # pending batch is dropped, the SDK logs "cannot schedule new futures after
+    # interpreter shutdown", and — the part that matters — the call has already
+    # returned True.
+    #
+    # Verified against a live InfluxDB 3: two writes both reported success and
+    # neither point was in the database afterwards. The spool is then deleted on
+    # the strength of that success, so the data is lost twice over.
+    #
+    # A synchronous write blocks until the server has accepted the batch, so
+    # "accepted" means what it says. Throughput is the trade, and for one bucket
+    # on a local node it is the right way round.
+    write_api = client.write_api(write_options=SYNCHRONOUS)
 
     def transport(database: str, payload: str) -> bool:
         try:
             write_api.write(
                 bucket=database, org=bucket_org, record=payload,
-                # The SDK types this as its own enum but ships a str alias, so the
-                # cast satisfies the annotation and the runtime value is a str.
+                # Cast for the annotation: the SDK types this as its own enum and
+                # ships a str alias.
                 write_precision=cast("WritePrecision", WritePrecision.MS),
             )
             return True
@@ -199,4 +221,5 @@ def make_transport(url: str, token: str, timeout_s: float = 10.0,
             log.error("influx write error: %s", exc)
             return False
 
+    transport.close = write_api.close  # type: ignore[attr-defined]
     return transport

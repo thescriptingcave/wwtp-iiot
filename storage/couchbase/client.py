@@ -20,7 +20,9 @@ from typing import Any
 log = logging.getLogger("storage.couchbase.client")
 
 
-def make_upsert(bucket_name: str | None = None) -> Callable[[str, dict[str, Any]], None]:
+def make_upsert(
+    bucket_name: str | None = None,
+) -> Callable[[str, dict[str, Any]], None]:
     """Build an ``upsert(key, document) -> None`` against a real bucket.
 
     Connects, ensures the primary index exists, and returns the callable the

@@ -14,8 +14,10 @@ from __future__ import annotations
 import math
 
 import pytest
-from softplc.contract import contract
+from softplc.contract import QUALITY_BAD, contract
 from storage.influx.line_protocol import (
+    FIELD_KEYS,
+    MAX_FIELDS_PER_POINT,
     TAG_KEYS,
     LineProtocolError,
     PointKey,
@@ -74,22 +76,31 @@ def test_quality_is_always_written() -> None:
 
 
 def test_source_is_recorded_so_protocols_can_be_compared() -> None:
-    """'Modbus and OPC UA disagree' should be a query, not a hunch."""
+    """'Modbus and OPC UA disagree' should be a query, not a hunch.
+
+    ``source`` is a *tag*, not a field, because InfluxDB 3 allows only two fields
+    per point and ``value`` and ``quality`` already use both. A tag is arguably the
+    better home for it anyway: it is delivery metadata, it is indexed, and it has
+    a tiny number of distinct values.
+    """
     mb = decode_line(
         encode_point(KEYS[DO], 2.0, 1_700_000_000_000, source="modbus").strip()
     )
     ua = decode_line(
         encode_point(KEYS[DO], 2.0, 1_700_000_000_000, source="opcua").strip()
     )
-    assert mb["tags"] == ua["tags"]
-    assert mb["fields"]["source"] != ua["fields"]["source"]
+    assert mb["tags"]["source"] == "modbus"
+    assert ua["tags"]["source"] == "opcua"
+    # Everything else about the series is identical, so the two are comparable.
+    assert {k: v for k, v in mb["tags"].items() if k != "source"} == \
+           {k: v for k, v in ua["tags"].items() if k != "source"}
 
 
 def test_measurement_carries_no_metadata() -> None:
     """The tag set is fixed. Adding a `description` or `vendor` tag would repeat
     an unchanged string on every point forever - roughly a gigabyte a day at this
     scan rate - for a fact that belongs in Couchbase."""
-    assert set(TAG_KEYS) == {"area", "equipment", "field", "eu", "site"}
+    assert set(TAG_KEYS) == {"area", "equipment", "signal", "eu", "site", "source"}
     parsed = decode_line(encode_point(KEYS[DO], 1.0, 1).strip())
     assert set(parsed["tags"]) == set(TAG_KEYS)
     assert parsed["measurement"] == KEYS[DO].influx_measurement
@@ -151,16 +162,75 @@ def test_fractional_values_keep_their_precision() -> None:
     assert format_value(0.001) == "0.001"
 
 
-def test_nan_and_infinity_are_recorded_as_strings_not_dropped() -> None:
-    """Line protocol has no literal for either. Writing the string keeps the fact
-    that the instrument broke, which is the point of recording it at all.
-    Dropping the point would make the gap invisible - indistinguishable from a
-    period when nothing happened."""
-    assert format_value(math.nan) == '"nan"'
-    assert format_value(math.inf) == '"inf"'
-    assert format_value(-math.inf) == '"-inf"'
-    line = encode_point(KEYS[DO], math.nan, 1).strip()
-    assert '"nan"' in line
+def test_a_non_finite_reading_is_recorded_as_absent_and_invalid() -> None:
+    """The single most important thing InfluxDB 3 taught this project.
+
+    The format has no literal for NaN or infinity, and the database fixes a
+    column's type on its first write - so a quoted ``"nan"`` in a float column is
+    not a record of a broken instrument, it is a permanent type error that breaks
+    every later write to that table.
+
+    What does work is writing the quality and omitting the value, which lands as
+    ``value`` NULL with ``quality = 2``. Verified against a live InfluxDB 3.
+
+    That is not a workaround. It is the correct representation, and it is the only
+    one of the three candidates that is distinguishable from both "no data at all"
+    and "a number that happens to be wrong". The database refusing the other two
+    is a feature.
+    """
+    line = encode_point(KEYS[DO], math.nan, 1_700_000_000_000).strip()
+    assert "value=" not in line, "a NaN must not produce a value field"
+    assert f"quality={QUALITY_BAD}i" in line
+
+    for bad in (math.inf, -math.inf):
+        out = encode_point(KEYS[DO], bad, 1_700_000_000_000).strip()
+        assert "value=" not in out
+        assert f"quality={QUALITY_BAD}i" in out
+
+
+def test_a_non_finite_reading_keeps_its_tags() -> None:
+    """The point still exists, with a full identity. That is the difference
+    between "the sensor failed" and "we have no record"."""
+    line = decode_line(encode_point(KEYS[DO], math.nan, 1).strip())
+    assert set(line["tags"]) == set(TAG_KEYS)
+    assert line["tags"]["signal"] == "do_mg_l"
+
+
+def test_format_value_refuses_a_non_finite_value_rather_than_quoting_it() -> None:
+    """A quoted string is the failure mode this exists to prevent, so it is an
+    error at the point of encoding rather than a surprise at the database."""
+    with pytest.raises(LineProtocolError, match="non-finite"):
+        format_value(math.nan)
+
+
+def test_a_good_reading_is_never_confused_with_a_bad_one() -> None:
+    """Both are rows. Only one has a value. A query filtering on quality must
+    find exactly the broken ones."""
+    good = decode_line(encode_point(KEYS[DO], 2.0, 1).strip())
+    bad = decode_line(encode_point(KEYS[DO], math.nan, 2).strip())
+    assert good["fields"]["value"] == "2.0"
+    assert "value" not in bad["fields"]
+    assert bad["fields"]["quality"] == f"{QUALITY_BAD}i"
+
+
+def test_the_schema_uses_but_does_not_exceed_the_field_limit() -> None:
+    """InfluxDB 3 rejects a third field outright, with a parser error that does
+    not mention fields at all - it says "found trailing content", which reads like
+    a malformed line rather than a schema limit. Named here so the constraint is
+    visible where the schema is built."""
+    assert len(FIELD_KEYS) == MAX_FIELDS_PER_POINT
+    line = encode_point(KEYS[DO], 2.0, 1)
+    fields = line.split(" ")[1]
+    assert len(fields.split(",")) == MAX_FIELDS_PER_POINT
+
+
+def test_every_point_carries_the_full_tag_set() -> None:
+    """InfluxDB 3 fixes a table's tag set at its first write, so a point missing
+    one is rejected rather than stored with a null. Every point therefore carries
+    all six, always - including the value-less ones."""
+    for value in (2.0, math.nan):
+        parsed = decode_line(encode_point(KEYS[DO], value, 1).strip())
+        assert set(parsed["tags"]) == set(TAG_KEYS)
 
 
 def test_booleans_are_not_numbers() -> None:
@@ -207,10 +277,10 @@ def test_awkward_names_round_trip() -> None:
     assert parsed["tags"]["equipment"] == "UNIT = 1"
 
 
-def test_a_source_with_a_comma_does_not_break_the_field_list() -> None:
+def test_a_source_with_a_comma_does_not_break_the_tag_list() -> None:
     line = encode_point(KEYS[DO], 1.0, 1, source="modbus, tcp").strip()
     parsed = decode_line(line)
-    assert parsed["fields"]["source"] == "modbus, tcp"
+    assert parsed["tags"]["source"] == "modbus, tcp"
     assert parsed["fields"]["value"] == "1.0"
 
 
@@ -282,7 +352,8 @@ def test_the_line_has_the_shape_the_specification_describes() -> None:
                         quality=1, source="modbus")
     measurement_and_tags, fields, timestamp = line.split(" ")
     assert measurement_and_tags.startswith(f"{KEYS[DO].influx_measurement},")
-    assert fields.startswith("value=2.03,quality=1i,source=modbus")
+    assert measurement_and_tags.endswith("source=modbus")
+    assert fields == "value=2.03,quality=1i"
     assert timestamp == "1700000000000"
 
 
