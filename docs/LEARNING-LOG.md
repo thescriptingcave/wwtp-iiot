@@ -418,12 +418,19 @@ depends on, and they are verified.
    read — which could not disagree loudly: a register renamed in the contract
    would keep working on the server and break every client. It is derived from the
    contract now, and a test asserts the two agree.
-6. **Storage has never run against a live database.** Every storage module is
-   unit-tested with an injected callable, which is the right design and also
-   means the SQL text, the InfluxDB 3 client calls and the Couchbase SDK calls
-   have not been executed. `compose.yaml` wires them; nothing has run them.
-   This is the first thing to do with a real InfluxDB token, and the reason
-   `tests/integration/` exists but is empty.
+6. **Storage now runs against a live database — partially.** InfluxDB is done:
+   eight integration tests, and the schema was rebuilt around six measured
+   constraints. **Couchbase is not.** Its container starts and initialises, but no
+   test has yet written a document or run a N1QL query, so
+   `storage/couchbase/client.py` and every SDK call in `metadata.py` remain
+   unexecuted — the same position the InfluxDB half was in an hour before it
+   turned out to hide six bugs. `tests/integration/test_couchbase.py` does not
+   exist yet, and that is the next thing to write.
+
+   The other half of this thread: **InfluxDB 3 Core is not usable.** Query
+   results were observed to be non-deterministic, so two integration tests are
+   xfail and the recommendation is Enterprise with the home-use licence key the
+   project already assumes.
 7. **Lint debt in the older test files.** `ruff check tests/` reports ~60
    findings, nearly all in the Phase 1–2 test files: import ordering, function-
    local imports, unused unpacked variables. The files are correct and the
@@ -432,14 +439,21 @@ depends on, and they are verified.
 
 ## What I would do next, in order
 
-1. Run the stack against a real InfluxDB and Couchbase and fix what breaks
-   (thread 6). Everything above it is unverified against the actual product.
-2. Add `signal:` to the Modbus registers and switch the gateway to publishing
-   both protocols (thread 5), which also makes the cross-protocol disagreement
-   check meaningful.
-3. Write `tests/integration/` so the SQL in `storage/influx/rollups_sql.py` is
-   proven to run, and the seeded week is queryable.
-4. Start `sql/01-beginner/` against the seeded data. The course is the point of
-   the project and it is the largest untouched piece.
+1. **Get an InfluxDB 3 Enterprise home-use licence key** and re-run
+   `tests/integration/`. Everything downstream — the rollup SQL, the seeder, the
+   whole `sql/` track — is blocked on a query engine that returns the same answer
+   twice. This is the single highest-value thing anyone can do for this project,
+   and it takes about five minutes.
+2. **Write `tests/integration/test_couchbase.py`** (thread 6). The container runs;
+   nothing has written a document. Given that the InfluxDB half hid six bugs
+   behind passing unit tests, assume the same here.
+3. **Re-verify the rollup SQL** against a real engine. `storage/influx/rollups_sql.py`
+   was written for InfluxDB 2.x-shaped SQL and has never been executed; the
+   two-field limit already forced a redesign of its output, and its `DELETE` +
+   `INSERT` idempotency claim is currently a comment.
+4. **Start `sql/00-foundations/`** against the seeded data. The course is the
+   point of the project and it is the largest untouched piece — and the tag
+   rename to `signal` means the column names in the lessons have to be right
+   before they are written, not after.
 5. Phase 4's alarm engine, which is the piece the whole fault library was built
    to feed.
