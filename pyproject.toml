@@ -118,6 +118,10 @@ ignore = [
 # which is the interesting half, and needs no database - can be tested directly.
 "storage/seed/main.py" = ["PLC0415"]
 "storage/couchbase/client.py" = ["PLC0415"]
+# The integration tests reach for stdlib imports inside the tests that need them
+# (datetime, json, urllib) so that the module-level imports stay to the things
+# every test needs - a skipped module should not import a database driver.
+"tests/integration/*" = ["PLC0415"]
 "sql/*" = ["ALL"]
 
 [tool.mypy]

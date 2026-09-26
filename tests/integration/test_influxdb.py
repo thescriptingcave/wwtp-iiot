@@ -47,7 +47,6 @@ import uuid
 from pathlib import Path
 
 import pytest
-
 from softplc.contract import contract
 from storage.influx.line_protocol import (
     FIELD_KEYS,
@@ -346,7 +345,8 @@ def test_a_new_tag_is_refused_with_a_useful_message(
     trace — the table still reads, which is the behaviour that makes the
     *field* case below so much worse.
     """
-    tags = "area=AERATION,equipment=AHU-1,signal=do_mg_l,eu=mg/L,site=PLANT-A,source=opcua"
+    tags = ("area=AERATION,equipment=AHU-1,signal=do_mg_l,"
+            "eu=mg/L,site=PLANT-A,source=opcua")
     _write(transport, [f"{scratch},{tags} value=2.0,quality=0i {_BASE_TS}"])
 
     error = _write_expecting_rejection(
