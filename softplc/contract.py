@@ -80,6 +80,10 @@ class Signal:
     area: str
     equipment: str | None = None
     writable: bool = False
+    #: How ``deadband`` is read. See gateway/deadband.py. Optional in YAML and
+    #: defaulted here, so adding it to 57 signals is a deliberate act rather
+    #: than a schema migration.
+    deadband_mode: str = "absolute"
 
     @property
     def sample_s(self) -> float:
@@ -249,6 +253,11 @@ class Contract:
 
 # ─── validation ──────────────────────────────────────────────────────────────
 
+#: Mirrors ``gateway.deadband.BandMode``. Duplicated rather than imported
+#: because the contract must be loadable without the gateway, and a one-way
+#: dependency is cheaper to keep honest than a cycle.
+_DEADBAND_MODES = frozenset({"absolute", "relative", "always"})
+
 
 def _parse_signal(
     raw: dict[str, Any], *, measurement: str, unit: str
@@ -285,6 +294,22 @@ def _parse_signal(
     if raw["sample_ms"] <= 0:
         raise ContractError(f"{raw['id']}: sample_ms must be > 0")
 
+    # Validated here rather than in the gateway, so a typo in the contract is a
+    # startup failure with a line number instead of a runtime surprise in the
+    # one component that reads it.
+    mode = str(raw.get("deadband_mode", "absolute"))
+    if mode not in _DEADBAND_MODES:
+        raise ContractError(
+            f"{raw['id']}: deadband_mode must be one of "
+            f"{', '.join(sorted(_DEADBAND_MODES))}, got {mode!r}"
+        )
+    if mode == "always" and raw["deadband"] != 0:
+        raise ContractError(
+            f"{raw['id']}: deadband_mode 'always' with deadband "
+            f"{raw['deadband']:g} is contradictory — 'always' ignores the "
+            "threshold, so a non-zero one means the author expected filtering"
+        )
+
     parts = raw["id"].split(":")
     if len(parts) != 3:
         raise ContractError(
@@ -301,6 +326,7 @@ def _parse_signal(
         normal_low=float(nlo),
         normal_high=float(nhi),
         deadband=float(raw["deadband"]),
+        deadband_mode=mode,
         sample_ms=int(raw["sample_ms"]),
         measurement=measurement,
         unit=unit,

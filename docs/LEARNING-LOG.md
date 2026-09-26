@@ -174,6 +174,54 @@ components; every one was in the seams.
 - Two PLCs in one test session need their own ports. `Errno 48` is a real
   constraint, not a flake to retry.
 
+## Phase 3a — the deadband and the spool
+
+Two small components, and between them they produced five real bugs. All five
+were found by tests that asserted a *property* rather than a case, which is
+worth something on its own.
+
+**The deadband**
+
+- `BandRule.for_signal` read `signal.min` and `signal.max`. The field is called
+  `range_min`/`range_max`, and `getattr(..., None)` returned `None` for every
+  signal in the contract — so every span was `0.0` and relative mode was
+  **silently dead across all 57 signals**. A component whose entire job is to
+  filter, filtering nothing, with no error anywhere. `getattr` with a default is
+  the worst way to read a field: it converts a typo into a silent wrong answer
+  instead of an `AttributeError`.
+- The baseline is the last **published** value, not the last **seen** one. I had
+  written two tests asserting the opposite intuition (that cumulative distance
+  matters), and both were wrong. The property that actually matters: a suppressed
+  reading must not become the reference, or a signal drifting steadily at 0.6
+  with a band of 1.0 never publishes — not at 0.6 per scan, not per hour. It
+  simply vanishes while the plant keeps reporting it.
+- A deadband of `0.0` does **not** mean "publish everything". It means "publish
+  any change at all", which still drops a signal that is sitting still. I had
+  assumed otherwise in a test. Worth knowing before calling 0.0 a safe default.
+- `deadband_mode` is now validated in the contract loader rather than in the
+  gateway. A typo like `relitive` is a startup failure with a line number,
+  instead of a runtime surprise in the one component that reads it — which is
+  also the component furthest from the file containing the mistake.
+
+**The spool**
+
+- The size cap was checked against the **current file's** size, not the spool's.
+  Nine hour-files reached 2.8 MB under a 1 MB limit. A limit that looks
+  enforced and bounds nothing is the worst way for a safety limit to fail.
+- `st_size` cannot see Python's write buffer, so `refresh()` reported ~130 KB
+  less than had been written — and *shrank* the running total in the process.
+- A deleted file was credited back its `st_size` while the total had been
+  incremented by the logical size. The remainder stayed counted forever, and the
+  cap crept upwards a buffer at a time.
+- Each of those three passed every smaller test. The test that caught all three
+  asserts one property — *the total never exceeds the limit* — over enough hours
+  to matter, because three separate near-misses all look fine in isolation.
+- Two of my own tests were wrong before the code was. `drain()` correctly
+  excludes the hour still being written, and I had written two tests expecting it
+  not to. The component was right; my model of it was not. Worth saying plainly,
+  because the instinct when a test fails is to change the test, and that instinct
+  is wrong exactly when the test was the thing that was wrong.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net

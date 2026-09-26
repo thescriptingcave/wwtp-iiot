@@ -489,3 +489,45 @@ def test_contract_carries_the_modbus_block(c: Contract) -> None:
     source — so a renamed key fails at import rather than silently defaulting."""
     assert c.modbus["unit_id"] == 1
     assert c.modbus["endpoint"].startswith("tcp://")
+
+
+def test_every_signal_declares_a_valid_deadband_mode(c: Contract) -> None:
+    """The mode is validated at load, not in the one component that reads it.
+
+    A typo like ``relitive`` would otherwise become a runtime surprise in the
+    gateway — the component furthest from the file that contains the mistake.
+    """
+    for sig in c.signals.values():
+        assert sig.deadband_mode in ("absolute", "relative", "always"), (
+            f"{sig.id}: deadband_mode {sig.deadband_mode!r} is not valid"
+        )
+        # Relative mode is meaningless without a span, and a span of zero would
+        # make it silently fall back to absolute.
+        if sig.deadband_mode == "relative":
+            assert sig.range_span > 0, f"{sig.id}: relative mode needs a range"
+
+
+def test_rejects_a_misspelled_deadband_mode(tmp_path) -> None:
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    first = d["measurements"][0]["signals"][0]
+    first["deadband_mode"] = "relitive"
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="deadband_mode"):
+        load_contract(p)
+
+
+def test_rejects_always_mode_with_a_nonzero_deadband(tmp_path) -> None:
+    """``always`` ignores the threshold, so a non-zero one means the author
+    expected filtering that will never happen. Better to say so at load."""
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    first = d["measurements"][0]["signals"][0]
+    first["deadband_mode"] = "always"
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="contradictory"):
+        load_contract(p)
