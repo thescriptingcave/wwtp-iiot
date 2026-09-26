@@ -1,0 +1,112 @@
+[project]
+name = "wwtp-iiot"
+version = "0.1.0"
+description = "Industrial IIoT monitoring for a simulated wastewater treatment plant"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }  # portfolio project; no OSS licence granted
+
+# Runtime dependencies are intentionally minimal in Phase 1.
+# Added as the phases that need them begin:
+#   Phase 2: asyncua, pymodbus
+#   Phase 3: fastapi, uvicorn, influxdb-client, couchbase
+#   Phase 4: (none beyond the above)
+#   Phase 5: (Next.js is separate, ui/web)
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Everything needed for Phases 1-2. Install with: uv sync --extra protocols
+protocols = [
+    "asyncua>=1.1",
+    "pymodbus>=3.6",
+]
+storage = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "influxdb-client>=1.47",
+    "couchbase>=4.9",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.112",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.112",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["softplc", "gateway", "storage", "alarms", "tools"]
+
+[tool.uv.workspace]
+members = ["softplc", "gateway", "storage", "alarms"]
+
+# ─── tooling ──────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["softplc", "gateway", "storage", "alarms", "tools", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "SIM",       # simplify
+    "C4",        # comprehensions
+    "RET",       # return
+    "PTH",       # pathlib
+    "ARG",       # unused arguments
+    "PL",        # pylint subset
+    "RUF",
+]
+ignore = [
+    "PLR0913",  # too many arguments — control blocks legitimately have many
+    "PLR2004",  # magic value comparison — used intentionally in process physics
+    "N802",     # function name should be lowercase — PLC blocks use domain names
+    "N803",     # argument name should be lowercase — see N802
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "PLR2004"]
+"sql/*" = ["ALL"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+# The soft PLC is deliberately typed as strictly as a PLC would be, but the
+# process model uses float math from sensors that are inherently noisy.
+allow_redefinition = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "contract: tests that validate contracts/tags.yaml against consumers",
+    "integration: tests requiring running services",
+    "chaos: tests that deliberately break things",
+    "slow: tests taking more than a few seconds",
+]
