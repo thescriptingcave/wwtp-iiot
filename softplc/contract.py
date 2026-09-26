@@ -180,6 +180,11 @@ class Contract:
     faults: tuple[FaultSpec, ...]
     writable: dict[str, dict[str, Any]]
     opcua: dict[str, Any]
+    #: The ``modbus:`` block from the contract: endpoint, unit_id, register map.
+    #: Carried on the contract rather than read separately, so a consumer has
+    #: one source of truth and a renamed key fails loudly at import instead of
+    #: silently defaulting.
+    modbus: dict[str, Any]
 
     # ── convenience lookups ──────────────────────────────────────────────────
     def signal(self, signal_id: str) -> Signal:
@@ -535,6 +540,12 @@ def load_contract(path: Path | str | None = None) -> Contract:
                 f"{wid}: signal.writable is true but it is absent from `writable`"
             )
 
+    modbus_block = raw.get("modbus", {})
+    if modbus_block and "unit_id" not in modbus_block:
+        raise ContractError("modbus block must state unit_id")
+    if modbus_block and "endpoint" not in modbus_block:
+        raise ContractError("modbus block must state endpoint")
+
     return Contract(
         version=int(raw["version"]),
         site=raw["site"],
@@ -547,6 +558,7 @@ def load_contract(path: Path | str | None = None) -> Contract:
         faults=_validate_faults(raw.get("faults")),
         writable=writable,
         opcua=raw.get("opcua", {}),
+        modbus=modbus_block,
     )
 
 

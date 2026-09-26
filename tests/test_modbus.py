@@ -306,3 +306,22 @@ def test_publish_does_not_mutate_the_caller_dicts() -> None:
     m.publish(values, states, 1)
     assert values == VALUES
     assert states == STATES
+
+
+def test_write_surface_is_enforced_by_the_contract_not_by_the_wire() -> None:
+    """Modbus has no concept of a read-only register.
+
+    Every register in the 4xxxx block is writable at the protocol level. The
+    protection is the *declared* write surface in the contract, and the gateway's
+    obligation to honour it. This test pins the contract side; claiming the wire
+    enforces it would be false, and OPC UA is the protocol that actually does.
+    """
+    writable = {r.name for r in C.registers if r.writable}
+    assert writable == {"AERATION_SETPOINT_DO", "FAULT_CODE", "STORM_FLAG"}, (
+        f"unexpected writable set: {sorted(writable)}"
+    )
+    for reg in C.registers:
+        if reg.name in ("AERATION_DO", "AERATION_MLSS", "INFLUENT_FLOW"):
+            assert not reg.writable, f"{reg.name} must be read-only"
+
+

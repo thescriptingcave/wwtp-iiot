@@ -20,7 +20,12 @@ dependencies = [
 # Everything needed for Phases 1-2. Install with: uv sync --extra protocols
 protocols = [
     "asyncua>=1.1",
-    "pymodbus>=3.6",
+    # PINNED. 3.15 replaced ModbusSlaveContext with ModbusDeviceContext, removed
+    # the sequential block's getValues/setValues, and made
+    # ModbusServerContext serve only ModbusSimulatorContext. The register model
+    # in softplc/servers/modbus.py is deliberately free of this dependency, so
+    # this pin is the only place a library upgrade can cause rework.
+    "pymodbus==3.6.6",
 ]
 storage = [
     "fastapi>=0.115",

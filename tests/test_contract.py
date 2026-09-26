@@ -345,6 +345,8 @@ def _minimal_contract(tmp_path, **overrides):
         ],
         "state_equipment": ["E"],
         "modbus": {
+            "endpoint": "tcp://0.0.0.0:5020",
+            "unit_id": 1,
             "registers": [
                 {
                     "address": 40000,
@@ -353,7 +355,7 @@ def _minimal_contract(tmp_path, **overrides):
                     "word_order": "big",
                     "unit_id": 1,
                 }
-            ]
+            ],
         },
     }
     base.update(overrides)
@@ -458,3 +460,32 @@ def test_real_contract_path_is_correct() -> None:
     assert CONTRACT_PATH.exists(), f"{CONTRACT_PATH} does not exist"
     assert CONTRACT_PATH.name == "tags.yaml"
     assert CONTRACT_PATH.parent.name == "contracts"
+
+
+def test_rejects_a_modbus_block_without_unit_id(tmp_path) -> None:
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    del d["modbus"]["unit_id"]
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="unit_id"):
+        load_contract(p)
+
+
+def test_rejects_a_modbus_block_without_endpoint(tmp_path) -> None:
+    p = _minimal_contract(tmp_path)
+    import yaml
+
+    d = yaml.safe_load(p.read_text())
+    del d["modbus"]["endpoint"]
+    p.write_text(yaml.safe_dump(d))
+    with pytest.raises(ContractError, match="endpoint"):
+        load_contract(p)
+
+
+def test_contract_carries_the_modbus_block(c: Contract) -> None:
+    """Consumers read the protocol config off the contract, not from a second
+    source — so a renamed key fails at import rather than silently defaulting."""
+    assert c.modbus["unit_id"] == 1
+    assert c.modbus["endpoint"].startswith("tcp://")
