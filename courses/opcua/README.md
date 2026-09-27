@@ -97,7 +97,7 @@ including a reference id that had been guessed and was wrong.
 | # | Lesson | Status |
 |---|---|---|
 | 01 | [The address space is a tree, and you can walk it](01-the-address-space.md) | **written** |
-| 02 | Engineering units, and the one lie in the type system | planned |
+| 02 | [Units, types, and the one lie in the type system](02-units-and-types.md) | **written** |
 | 03 | Reading, and what a StatusCode is for | planned |
 | 04 | Subscriptions — `DataChangeNotification`, and why our deadband is not OPC UA's | planned |
 | 05 | Writing: access levels, and the range that is *not* enforced on the wire | planned |
@@ -113,26 +113,35 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Four things are wrong or missing in this implementation, and each gets its own
+Five things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
-1. **Every numeric value is a `Double`.** `_variant_type()` at
+1. **The address space is not conformant.** `add_variable()` creates a
+   `BaseDataVariableType`, not an `AnalogItemType`, and the unit and range are
+   bolted on as ad-hoc properties with names the specification does not use:
+   `EngineeringUnits` is a bare `Int32` where the spec requires an
+   `EUInformation` struct, and there is no `EURange` at all. The information is
+   present and readable — by *this project's* client — and invisible to any
+   client that walks the standard type hierarchy, which is what a discovery tool
+   or a generic historian integration does. So the docstring's "the client is
+   told what the number means" is true of our client and false of the protocol.
+   One cause, three symptoms, and the fix is a few lines of `asyncua`.
+   → **lesson 02**
+2. **Every numeric value is a `Double`.** `_variant_type()` at
    `softplc/servers/opcua.py:130` takes an engineering unit and ignores it,
    returning `Double` for everything. So the storm flag — `{Boolean}` in the
    contract — is published as a floating-point number, and a pH and a cubic
-   metre per hour are indistinguishable by type. The module's own docstring
-   claims the address space is typed, and that claim is currently only true for
-   `RunState`. → lesson 02
-2. **A failing sensor publishes `Uncertain`, not `Bad`.** `publish()` at line 402
+   metre per hour are indistinguishable by type. → **lesson 02**
+3. **A failing sensor publishes `Uncertain`, not `Bad`.** `publish()` at line 402
    maps quality to `Good`/`Uncertain` and never produces `Bad` — `grep -c
    'StatusCodes.Bad' softplc/servers/opcua.py` returns **0** — while the
    docstring at line 18 says a failing sensor reports `Bad`. The historian's
    honesty argument depends on this distinction. → lesson 03
-3. **The engineering range is advisory.** OPC UA does not enforce it and
+4. **The engineering range is advisory.** OPC UA does not enforce it and
    `asyncua` does not either, so a client can write 99 mg/L to a DO setpoint
    whose range is 0.5–6.0 and the server accepts it. Write *permission* is
    genuinely enforced; the range is a promise. → lesson 05
-4. **`RunState` is zero until the process model drives it.** A bare
+5. **`RunState` is zero until the process model drives it.** A bare
    `OpcUaServer` — a unit test, or the snippet gate — publishes 22 pieces of
    equipment all reading `0`, which is indistinguishable from 22 stopped motors.
    → lesson 01, where it is the closing example

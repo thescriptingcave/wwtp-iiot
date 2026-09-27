@@ -19,7 +19,11 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
+
+from softplc.contract import contract
+from softplc.servers.opcua import UNIT_IDS, _unit_id
 
 ROOT = Path(__file__).resolve().parent.parent
 GATE = ROOT / "tools" / "check_lessons.py"
@@ -173,6 +177,63 @@ def test_the_lesson_claims_bad_quality_is_never_published() -> None:
     )
     assert "StatusCodes.Uncertain" in src
 
+
+def test_the_unit_id_collisions_lesson_02_teaches_are_still_there() -> None:
+    """22 units, 18 ids, and five of them sharing 12755.
+
+    If somebody "fixes" the collision by giving `{Boolean}` an id of its own,
+    lesson 02's central example stops existing and the lesson is wrong. That is a
+    good reason to fail — but it must fail *loudly*, with the numbers, rather than
+    leaving a lesson that quietly misdescribes the code.
+    """
+    c = contract()
+    units = {s.eu for s in c.signals.values()}
+    ids = {_unit_id(eu) for eu in units}
+    assert len(units) == 22, f"lesson says 22 units, contract has {len(units)}"
+    assert len(ids) == 18, f"lesson says 18 distinct ids, there are {len(ids)}"
+    colliding = [eu for eu in units if _unit_id(eu) == 12755]
+    assert len(colliding) == 5, (
+        f"lesson says five units share 12755, these do: {sorted(colliding)}"
+    )
+    # And the Counter arithmetic the lesson's snippet does, checked here so the
+    # printed line cannot drift from the table above it.
+    counts = Counter(_unit_id(s.eu) for s in c.signals.values())
+    assert sum(counts.values()) == len(c.signals)
+
+
+def test_the_psi_mbar_collision_lesson_02_teaches_is_still_there() -> None:
+    """A real error in `UNIT_IDS`, currently unused by any signal.
+
+    425 is millibar. A pound per square inch is not a millibar. No signal uses
+    `psi`, so nothing is broken today — and the lesson says so rather than
+    implying otherwise. The test exists so that "nothing is broken today" stays
+    true: if a signal starts using `psi`, this fails and the mapping gets fixed
+    before a client is told 1 psi is 425 mbar.
+    """
+    assert UNIT_IDS["mbar"] == UNIT_IDS["psi"] == 425
+    assert "psi" not in {s.eu for s in contract().signals.values()}, (
+        "a signal now uses psi, so the 425 mapping is live and the lesson and "
+        "docs/SECURITY.md need updating"
+    )
+
+
+def test_the_lesson_claims_no_analog_item_type_instances_exist() -> None:
+    """Lesson 02's sharpest claim: a conformant client finds nothing.
+
+    Asserted against the *source* rather than a live walk, because the claim is
+    about what the server never builds. The runtime behaviour is covered by the
+    gate, which runs lesson 02's own snippets against a real server — so the
+    number the lesson prints and the assertion here come from the same place.
+    """
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    assert 'ua.Variant(_unit_id(sig.eu), ua.VariantType.Int32)' in src, (
+        "EngineeringUnits is no longer a bare Int32; lesson 02 must be rewritten"
+    )
+    assert "AnalogItemType" not in src, (
+        "the server now builds AnalogItemType variables, so lesson 02's central "
+        "claim — that a conformant client finds nothing — is no longer true"
+    )
+    assert "add_variable(" in src, "the lesson quotes add_variable() at a line"
 
 def test_the_course_readme_does_not_claim_lessons_that_do_not_exist() -> None:
     """'Planned' must mean planned.
