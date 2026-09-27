@@ -651,9 +651,10 @@ argument for having both.
    was written for InfluxDB 2.x-shaped SQL and has never been executed; the
    two-field limit already forced a redesign of its output, and its `DELETE` +
    `INSERT` idempotency claim is currently a comment.
-4. **Start `sql/00-foundations/`** against the seeded data. The course is the
-   point of the project and it is the largest untouched piece — and the tag
-   rename to `signal` means the column names in the lessons have to be right
-   before they are written, not after.
+4. **Write `sql/02-intermediate/`** — CTEs, window functions, and the join
+   across the two databases. The foundations and beginner stages exist and are
+   checked; this is the next stage, and the long-format dialect means the window
+   functions have to do the work `CASE` would have done in another database.
+   `sql/_shared/DIALECT.md` is the constraint list to write it against.
 5. Phase 4's alarm engine, which is the piece the whole fault library was built
    to feed.

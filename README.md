@@ -98,11 +98,16 @@ questions the plant exists to answer.
 
 | Stage | Directory | What you learn |
 |---|---|---|
-| 00 | `sql/00-foundations/` | Reading a schema and a time-series table honestly |
-| 01 | `sql/01-beginner/` | `SELECT`, `WHERE`, aggregation, the shape of the data |
-| 02 | `sql/02-intermediate/` | `JOIN`, CTEs, window functions, first time bucketing |
-| 03 | `sql/03-advanced/` | Gap filling, continuous aggregates, retention, `INFORMATION_SCHEMA` |
-| 04 | `sql/04-expert/` | Window frames, time-weighted averages, change detection, query planning |
+| 00 | `sql/00-foundations/` | What a time-series table actually *is*; the six tags and two fields; why `value` can be NULL |
+| 01 | `sql/01-beginner/` | `SELECT`, `WHERE`, aggregation, `GROUP BY time(...)` and choosing the interval |
+| 02 | `sql/02-intermediate/` | Unwritten — CTEs, window functions, joining the two databases |
+| 03 | `sql/03-advanced/` | Unwritten — gap filling, retention, `INFORMATION_SCHEMA` |
+| 04 | `sql/04-expert/` | Unwritten — window frames, time-weighted averages, query planning |
+
+Read [`sql/_shared/DIALECT.md`](sql/_shared/DIALECT.md) first. It lists what this
+SQL dialect does **not** have — including `CASE`, `INTERVAL`, `IN` and `HAVING` —
+each established by running the query and reading the error. Every query in the
+course is checked against a live server by `tools/check_sql.py`.
 
 Each lesson has a question, a query and an expected result in
 `sql/_answers/`. Run them against the seeded database and check yourself.
