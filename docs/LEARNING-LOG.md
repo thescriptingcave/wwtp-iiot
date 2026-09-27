@@ -1073,22 +1073,40 @@ the same name.*
    parameterised** — `CREATE ROLE ... PASSWORD %s` is a syntax error, and the
    first version failed with exactly that.
 
-10. **Six alarm rules fire on a healthy plant**, and three faults are caught only
-    incidentally by rules that do not claim them. Four rules have never fired, so
-    their thresholds are unverified too. All measured, all in
-    `docs/ALARMS.md`, with a ratchet in the test suite so a regression is a
-    failing test. **The top item in the project.** The method that fixed the
-    seventh is the method for the rest: measure the healthy distribution, put the
-    threshold above it.
+10. **False-positive alarm rules — six resolved, five impossible.** Every
+    threshold is now derived from a measurement of what a *settled* healthy plant
+    does, and the measurements are in `docs/ALARM-TUNING.md`. Six rules fired on a
+    healthy plant; five do, and none of the five is fixable by tuning:
 
-11. **The contract's `NOT_detectable_by` entries are stated as absolutes and
-    three of them are wrong.** A `single_point_threshold` rule detects
-    `digester_souring` and `storm_inflow`, which the contract says it cannot.
+    * `secondary_blanket_stuck` — the clarifier blanket genuinely moves less than
+      its own deadband. **A deadband makes a healthy steady signal and a failed
+      instrument the same observation**, and no threshold can fix a quantity the
+      database does not record.
+    * `lift_pump_flow_lost` — `pump_fault` stops one pump and the controller
+      starts the other, and **both lift signals are station totals**. A
+      single-pump failure is structurally undetectable from the signals the
+      contract collects. The fix is per-pump signals in `contracts/tags.yaml`.
+    * `influent_flow_surge` — a storm's flow *slope* never exceeds a healthy
+      flow's slope, though the storm's flow level triples.
+    * the two `cross_validation` rules — the simulator publishes one source, so
+      there is nothing to cross-validate.
 
-    The fix is to reword the contract to "not sufficient alone" — and that edit
-    has deliberately **not** been made. Editing a source of truth to agree with
-    the code is exactly the failure mode this log keeps recording, so it is
-    recorded as a disagreement and left for a decision.
+    The general lesson, hit three times: **a threshold copied from a normal band
+    inherits the band's optimism, and a band is a specification rather than a
+    measurement of what the machine does.**
+
+11. **The contract's `NOT_detectable_by` — resolved, and it was an absolute.**
+    The coverage report disproved three of its eleven entries, and none of the
+    three was a mistake about the method: a limit check *does* find
+    `digester_souring`, it finds it days late, and days late is adequate for a
+    fault that develops over days and useless for one that develops in an hour.
+
+    Renamed to **`not_sufficient_alone`**, which can only be read one way, and the
+    three faults where a threshold provably fires late now say so under a new
+    `expects.threshold_eventually_fires` note. The coverage report distinguishes an
+    *expected* late detection from a real contradiction, which is why it no longer
+    says "either the contract is wrong or the rule is" three times about three
+    faults where the contract was fine.
 
 12. **The SQL course's shown outputs are not tested.** `tools/check_sql.py`
     verifies that every query runs and returns rows. Whether the output printed in
@@ -1114,42 +1132,81 @@ the same name.*
     The fix is a separate concern — a scan budget check, or a lower default rate
     — and is not done.
 
+15. **A parameter declared in three places and used in none.** `min_span_s` — the
+    thing the previous commit called `aeration_do_sagging`'s fix — was honoured by
+    the detector, honoured by `lookback_s`, and tested in the detector, and was
+    **not passed by a single rule**, because a string replacement silently failed
+    to match. The rule was still fitting a line over twenty minutes.
+
+    It survived because the detector's test builds rules through
+    `alarms.synthetic.rule()`, which supplies defaults for every parameter — so a
+    helper that defaults the one parameter whose whole purpose is to be *absent by
+    default* hides exactly this. The guard is now on the rule set, and it found a
+    second ignored parameter on the same run: `direction` on
+    `deviation_from_baseline`, which used `abs()` — so a rule documented as "lift
+    pump current far *above* its normal draw" also fired on a large fall, and that
+    single ignored parameter was a 90 % false-positive rate.
+
+16. **The two harnesses disagree by a factor of seven.** `alarms.tune` and
+    `alarms.scenarios.run_fault` measure the same rules over the same window and
+    report healthy DO slopes of −0.005 and −0.028 mg/L per hour. A threshold from
+    the first fires on a healthy plant in the second. It is set from the wider
+    measurement, with 3× the margin on either side, and the disagreement is
+    **unexplained** — which is the honest place for it.
+
+17. **The continuous aggregates were never refreshed.** `schema.sql` created
+    `reading_1m` and `reading_1h`; nothing populated them, ever. A seeded week of
+    4 290 000 readings produced a *2-row* `reading_1h` and every query in a stage
+    of the course returned nothing. Nothing failed and no test caught it, because
+    a continuous aggregate is a table *and a definition* and the definition does
+    not fill the table.
+
+18. **Two harness bugs that made every threshold wrong.** The plant's *startup*
+    was in the "healthy" sample, and the fault was armed at t = 0 — so with a
+    9h15m settle a two-hour storm was over before the first measurement, and the
+    tool reported influent flow as identical under a storm and under a healthy
+    sky. The tell was that every distribution equalled the baseline's: **an
+    identical distribution is a finding about the harness, not about the fault.**
+
+19. **The slow tests now take 18 minutes.** The settle window is set by the
+    longest rule lookback, so one long-horizon rule makes every scenario slow.
+    Making it depend on the rules under test is exercise 5 of `03-04`.
+
 ## What I would do next, in order
 
-1. **Tune the six false-positive alarm rules** (thread 10). Measure each healthy
-   distribution the way `aeration_do_sagging` was measured — 1 618 windows, two
-   minutes — and set the threshold above it. An alarm system that pages on a
-   healthy plant is worse than no alarm system, and this one currently pages on
-   six. This is the single highest-value thing in the project.
-2. **Reword the contract's `NOT_detectable_by`** (thread 11), as a deliberate
-   change with the disagreement recorded alongside it. Not a code change and not
-   a silent one.
-3. **Verify the four rules that have never fired.** `lift_pump_flow_lost` and
-   `secondary_scrape_torque_high` claim two faults that are currently blind, and
-   two `cross_validation` rules cannot fire in simulation at all. A rule that is
-   written, claimed and unverified looks like coverage and provides none.
+1. **Find the factor of seven** (thread 16). Two harnesses, same rules, same
+   window, healthy DO slopes an order of magnitude apart. Until that is explained
+   no threshold here is trustworthy to better than a factor of two, and the fix is
+   in the harness rather than in the rules.
+2. **Per-pump signals in the contract** (thread 10). `lift_pump_failure` is
+   structurally undetectable because both lift signals are station totals and the
+   controller compensates. A `contracts/tags.yaml` change, and the only way to
+   close that fault.
+3. **Make the settle window depend on the rules under test** (thread 19), which
+   takes the slow suite from 18 minutes back under two.
 4. **Pin the seeder's seed and check the course's shown outputs** (thread 12).
-5. **`sql/03-advanced`**: continuous aggregates, retention, `EXPLAIN`, chunk
-   behaviour. The material is available and the stage is no longer blocked by a
-   dialect.
-6. **A CI workflow.** There is no `.github/workflows` and no pre-commit. `make
-   check` now exists and runs the four gates in the order that fails fastest, so
-   the YAML is thin — but it is still missing, which means the gates are run by
-   hand, which means they are run when I remember.
-7. **`ui/web` has no tests at all.** It is the least verified part of the project
-   and the part a portfolio reviewer will click first.
+5. **A CI workflow.** `make check` runs the four gates in the order that fails
+   fastest, so the YAML is thin — but it is missing, which means the gates run when
+   I remember.
+6. **`ui/web` has no tests at all.** The least verified part of the project and
+   the part a portfolio reviewer will click first. Phase 5.
+7. **Node-RED flows** (`scada/`) — still the only part of the original brief I
+   have not touched at all.
 
 ### Done in this phase, and no longer on the list
 
-* **The database roles** (threads 9 and 10). `wwtp_writer` and `wwtp_reader` are
-  group roles applied by `storage/postgres/roles.py`; the gateway authenticates as
-  a `LOGIN` role that is a member of `wwtp_writer` and nothing else. It cannot
-  DELETE a reading, TRUNCATE, DROP a table, or UPDATE the contract, and each of
-  those is proved by attempting it and reading the server's refusal. The password
-  has to be composed as a quoted literal because **DDL cannot be parameterised** —
-  `CREATE ROLE ... PASSWORD %s` is a syntax error. That is in
-  `storage/postgres/login_role.py`.
-* **The alarm engine itself** (was item 2 for three phases). Ten detectors, fifteen
-  rules, a state machine, and a coverage audit that reports 8 of 11 faults
-  covered by a rule that claims them.
-* **`make check`**, which the CI item above is now a thin wrapper around.
+* **The alarm engine itself.** Ten detectors, fifteen rules, a state machine, and
+  a coverage audit reporting a matrix of fault against rule.
+* **The database roles.** `wwtp_writer` and `wwtp_reader` are group roles; the
+  gateway is a `LOGIN` role in `wwtp_writer` and nothing else. It cannot DELETE or
+  TRUNCATE a reading, and each of those is proved by attempting it and reading the
+  refusal. The password has to be composed as a quoted literal because **DDL
+  cannot be parameterised**.
+* **Every alarm threshold, measured** (thread 10). Six false positives became five,
+  and the five are impossible rather than untuned.
+* **The contract's detection vocabulary** (thread 11). `not_sufficient_alone`,
+  `threshold_eventually_fires`, and a report that tells an expected late detection
+  apart from a real contradiction.
+* **`sql/03-advanced`** — continuous aggregates, chunks, retention, `EXPLAIN`. The
+  stage could not be written before, because the rollups it teaches were empty.
+* **`make check`**, which the CI item is a thin wrapper around.
