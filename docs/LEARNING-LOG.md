@@ -588,6 +588,39 @@ guess about Grafana's provisioning log that cost most of them.
 
 **Learned:**
 
+- **Proved it properly, by wiping the volume.** `admin` / `replace-me` — the pair
+  in `.env` — returned `401`, and `admin` / `admin` returned `200`, because I had
+  reset it during the previous ten minutes of chasing. So the answer to "is the
+  password coming from `.env`" was **no**, and the evidence is that
+  `GF_SECURITY_ADMIN_PASSWORD=replace-me` *is* present in the container
+  (`docker inspect` shows it) and Grafana **discards it**.
+
+  The reason is one file: `/var/lib/grafana/grafana.db`. The variable is only read
+  when Grafana *creates* the admin user. After that the password is a row in that
+  database, and no environment variable will change it — which means the
+  documented flow (set it in `.env`, `docker compose up`) works perfectly on a
+  fresh clone and **cannot ever work twice on the same volume.**
+
+  Which is the cleanest statement of the defect I have: it is not that the
+  documentation is wrong, it is that **it is only true once.** A reader who
+  follows it, changes the password, and cannot log in has no way to learn why,
+  because the instruction they followed was correct and the outcome is not.
+
+  The fix is to wipe the volume, which costs nothing here **because every bit of
+  Grafana's state is provisioned from files in git** — and wiping it is also the
+  honest test of the "a fresh clone has a working datasource" claim. It is:
+
+      datasources: 1  TimescaleDB  uid=wwtp-postgres  url='db:5432'
+                    health: {"message":"Database Connection OK","status":"OK"}
+      dashboards:  2  WWTP — discharge permit, WWTP — overview, folder WWTP
+
+  with no manual step of any kind. So the claim is now demonstrated rather than
+  asserted, which is the standard this whole review has been holding.
+
+- **And the symptom pointed the wrong way, which is the part that costs time.**
+  `401` on every API call reads as *wrong password*. It was *stale password*. The
+  difference is one `docker volume rm`, and nothing in the response says which.
+
 - **`GRAFANA_ADMIN_PASSWORD` only applies when Grafana creates its admin user.**
   Afterwards the password lives in Grafana's own database and the environment
   variable is **ignored**. So changing it in `.env` and running
