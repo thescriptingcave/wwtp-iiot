@@ -90,6 +90,16 @@ RECORD_DT = 5.0
 #: enough to run eleven of them in a test.
 DEFAULT_HOURS = 8.0
 
+#: Settled hours before the fault is armed. Must be at least the longest rule
+#: `min_span_s`, or a long-horizon rule cannot be evaluated while the fault is
+#: happening. `DEFAULT_HOURS` is the *measured* window afterwards, not the total.
+#:
+#: Kept in step with `alarms.tune.settle_s_for` by the test that asserts the two
+#: agree, because the coverage matrix and the tuning table are about the same
+#: rules and two different settling disciplines would make their numbers
+#: incomparable.
+DEFAULT_SETTLE_HOURS = 9.25
+
 
 @dataclass
 class FaultRun:
@@ -131,6 +141,7 @@ def run_fault(
     engine: AlarmEngine | None = None,
     rule_set: Sequence[AlarmRule] | None = None,
     include_baseline_hours: float = 1.0,
+    settle_hours: float = DEFAULT_SETTLE_HOURS,
 ) -> FaultRun:
     """Arm one fault on a healthy plant and record what the rules do.
 
@@ -153,8 +164,7 @@ def run_fault(
         max_transitions=eng.max_transitions,
     )
 
-    baseline_s = include_baseline_hours * 3600.0
-    total_s = baseline_s + hours * 3600.0
+    total_s = (settle_hours + include_baseline_hours + hours) * 3600.0
 
     if fault_id and fault_id != "baseline":
         if fault_id not in faults.faults:
@@ -162,19 +172,38 @@ def run_fault(
                 f"unknown fault {fault_id!r}; the engine offers "
                 f"{sorted(faults.faults)}"
             )
-        # Armed at zero and left to expire on its own declared duration, so the
-        # recovery half of the signature is captured rather than cut off.
-        faults.arm(fault_id, 0.0)
+        # Armed **after the plant has settled**, not at zero.
+        #
+        # Arming at t = 0 is what every alarm harness does and it is wrong for
+        # this project twice over. A cold basin's DO trend is dominated by
+        # commissioning, and a rule with a six-hour `min_span_s` cannot be
+        # evaluated until six hours of history exist -- so a fault armed at zero
+        # is invisible to exactly the rules whose whole purpose is a long
+        # horizon. `aeration_do_sagging` measured a 10 % false-positive rate and
+        # a 0 % detection rate in the same run for that reason alone.
+        #
+        # It also excluded the recovery half of the signature from the *baseline*
+        # comparison, because the "healthy" samples were all startup.
+        faults.arm(fault_id, settle_hours * 3600.0)
 
     # A ring per signal: the engine needs a *window*, and the longest rule needs
     # 7200 s of history. Holding the whole run for eleven faults would be tens of
     # millions of samples.
     from alarms.rules import rules_by_signal
 
-    longest = max((r.params.get("stuck_s", 0.0) or 0.0 for r in eng.rules),
-                  default=0.0)
-    longest = max(longest, max((r.for_s for r in eng.rules), default=0.0))
-    keep_s = longest + 3600.0
+    # **`lookback_s()`, not `stuck_s` and not `for_s`.**
+    #
+    # The first version took the longest `stuck_s` (7 200 s) and added an hour,
+    # giving three hours of history -- while `aeration_do_sagging` asks for a
+    # six-hour `min_span_s` and a nine-hour window. So the rule could never be
+    # satisfied, reported "not enough history" for the whole run, and appeared in
+    # the coverage matrix as a rule that had never fired.
+    #
+    # A rule that cannot be fed is indistinguishable from a rule that does not
+    # work, and the coverage matrix is exactly the place that mistake is
+    # invisible: it reports a number, the number is zero, and zero is a perfectly
+    # ordinary result for a rule nobody has debugged.
+    keep_s = max((r.lookback_s() for r in eng.rules), default=3600.0)
 
     # A deque with a maxlen, not a list that is filtered. The list version was
     # O(signals x history) per recorded sample and dominated the whole run: the

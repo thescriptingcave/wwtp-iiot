@@ -231,7 +231,15 @@ quantity — which is `cross_validation`, and which the simulation cannot exerci
 This is the honest limit of the design and it is also the reason
 `sql/02-04` exists: thirteen signals produce exactly one reading in a seeded week.
 
-## The finding that matters most: six rules fire on a healthy plant
+## Thresholds: how they were set
+
+Every threshold in `alarms/rules.py` is derived from a measurement of what a
+settled healthy plant actually does, and the measurements — including the two
+harness bugs that made every one of them wrong first, and the two rules that
+still cannot work — are in [`ALARM-TUNING.md`](ALARM-TUNING.md). Read that before
+changing a number here.
+
+## The finding that started it: six rules fired on a healthy plant
 
 Not "might". Measured, on a six-hour baseline run with no fault armed:
 
@@ -281,9 +289,14 @@ next piece of work and it is measurement rather than design.
   at the record rate rather than applying the contract deadband, so no rule has to
   survive a six-minute gap between DO readings. That flatters the rules and it is
   recorded here rather than buried. `make alarms` runs the real path.
-* **Six false positives**, listed above. The most significant thing left to do
-  in this phase, and the most embarrassing, because it is the failure mode an
-  alarm system exists to avoid and this one has six instances of it.
+* **Five false positives remain**, listed above and measured in
+  `ALARM-TUNING.md`. Six became five; none of the remaining five is fixable by
+  tuning — two are structurally undetectable, one is the deadband's blind spot,
+  and two sit on thresholds the contract's own normal bands made unreachable.
+* **The two harnesses disagree by a factor of seven** on the healthy DO slope.
+  `aeration_do_sagging`'s threshold is set from the wider measurement, so it is
+  safe, but the disagreement is unexplained and is the most important open item
+  in the tuning write-up.
 * **Three blind spots.** `sludge_blanket_thickening`, `lift_pump_failure` and
   `do_sensor_drift` are found only incidentally, by rules that do not claim them.
   Two of the rules that *should* find them — `secondary_scrape_torque_high` and

@@ -46,7 +46,7 @@ uv run python tools/sqlrun.py "SELECT count(*) FROM reading"
 | [00-foundations](00-foundations/) | What a hypertable is; identity versus value and why they are different *tables*; why `value` can be NULL | Because every later stage assumes you know this, and because a time-series table is not a normal table with a timestamp column |
 | [01-beginner](01-beginner/) | `SELECT`, `WHERE`, aggregation, your first `time_bucket`, `CASE`, `HAVING` | Because this is where "read one signal" becomes "answer a question about a signal" |
 | [02-intermediate](02-intermediate/) | CTEs, window functions, joins, gaps, the quality scale as a filter | Because the questions get compositional, and a nested subquery stops being readable before it stops being possible |
-| `03-advanced/` | Continuous aggregates, retention, `EXPLAIN`, chunk behaviour | Unwritten |
+| `03-advanced/` | Continuous aggregates, chunks, retention, `EXPLAIN` | **Written** — 4 lessons |
 | `04-expert/` | Time-weighted averages, change detection, query planning, writing the dashboard query | Unwritten |
 
 ## How to work through a lesson

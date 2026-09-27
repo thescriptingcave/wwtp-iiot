@@ -112,6 +112,7 @@ Full walkthrough, including troubleshooting, in
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | From nothing to a running plant |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The threat model, and the gaps stated plainly |
 | [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
+| [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) | Every threshold, the measurement it came from, and the four that still do not work |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
 
@@ -128,9 +129,14 @@ and the seeder can answer "did this rule fire?" because it replays the plant
 model through each of the eleven faults.
 
 The tool's first full run found that `aeration_do_sagging` fired on **ten of
-eleven** faults, and then that **six rules fire on a healthy plant**. Both are in
-[`docs/ALARMS.md`](docs/ALARMS.md) with the measurements and the fix for one of
-them. A rule set with no audit is a set of thresholds somebody liked the look of.
+eleven** faults, and then that **six rules fire on a healthy plant**. Tuning every
+threshold against a measured healthy distribution took that to five, and
+[`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) records the measurements, the two
+harness bugs that made every threshold wrong before the tuning, and the four
+rules that still do not work — including one fault with no signature anywhere in
+the signals the contract collects.
+
+A rule set with no audit is a set of thresholds somebody liked the look of.
 
 ## The SQL track
 
@@ -170,9 +176,10 @@ then written down as though it were a principle.
 - [x] **Phase 3** — gateway (deadband, spool, both protocol readers), Postgres +
   TimescaleDB storage, metadata seeder, SQL course through `02-intermediate`
 - [x] **Phase 4** — alarm engine: ten detectors, fifteen rules, and a coverage
-  audit against the fault library. **8 of 11 faults are covered by a rule that
-  claims them**, 3 blind spots, and **6 rules fire on a healthy plant** — the
-  ratchet and the tuning are the next piece of work. [`docs/ALARMS.md`](docs/ALARMS.md)
+  audit against the fault library. Every threshold derived from a measurement of
+  a settled healthy plant, which took the false-positive count from six rules to
+  five — and the remaining five cannot be tuned away.
+  [`docs/ALARMS.md`](docs/ALARMS.md) · [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md)
 - [ ] **Phase 5** — Grafana dashboards, the custom Next.js page, Node-RED SCADA flows
 
 Phase 3 is complete and exercised against a live database: 378 unit tests, 17

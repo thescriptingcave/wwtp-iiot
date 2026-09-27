@@ -391,33 +391,48 @@ def test_a_healthy_plant_raises_almost_nothing() -> None:
     a regression is obvious. Reaching zero is the next piece of work and it is
     measurement, not design.
     """
-    run = run_fault("baseline", hours=6)
+    run = run_fault("baseline", hours=8)
     raised = sorted({t.rule.id for t in run.transitions if t.kind == "raised"})
 
-    # Sorted, because the assertion is about the *set* and an unsorted
-    # comparison fails on ordering and reads as a content change.
+    # The measurement that matters is in `docs/ALARM-TUNING.md`, and it says
+    # something this assertion cannot: every one of these thresholds was derived
+    # from a *settled* healthy distribution, because including the plant's startup
+    # in a "healthy" sample inflates every one of them. This test runs the
+    # coverage harness, which deliberately does not settle, so it is a strictly
+    # harsher test than the tuning measurement -- and it is here as a ratchet on
+    # the *set*, not as a claim that five is an acceptable number.
     assert raised == sorted([
-        # 0.5 mg/L per hour upward over three hours is inside the diurnal swing.
-        "aeration_ammonia_rising",
-        # Blower speed moves by thousands per hour on the plant's own load cycle.
-        "aeration_blower_speed_drop",
-        # DO reaches 1.40 against a normal_low of 1.5. The contract's normal band
-        # is optimistic, not the rule.
+        # DO reaches 1.12 mg/L against a `normal_low` of 1.5. The contract's
+        # normal band is optimistic, not the rule -- and a threshold that matches
+        # the band faithfully will always inherit that.
         "aeration_do_low",
-        # Influent flow reaches 2 249 m3/h and the contract's range_max is 2 200.
+        # A trip is three orders of magnitude away from a healthy blower's
+        # control-loop hunting, so this one is 0 % false positive over eight
+        # *settled* hours. It appears here because the coverage harness measures
+        # from the plant's first sample, where the loop is still finding its
+        # operating point.
+        "aeration_blower_speed_drop",
+        # Influent flow reaches 2 249 m3/h against a `range_max` of 2 200 --
+        # the same optimism, on the same kind of band. Threshold is now 2 000,
+        # measured.
         "influent_flow_ceiling",
-        # Lift pump current is noisy; a 25 % deviation from a 1 800 s window mean
-        # is well inside its ordinary scatter.
+        # Cavitation's upward signature is 0.043 against a healthy 0.039: a 10 %
+        # margin. That is thin, and the rule is on the list because the margin is
+        # thin, not because it is comfortable.
         "influent_lift_current_anomaly",
-        # The clarifier blanket genuinely moves less than its deadband.
+        # The clarifier blanket genuinely moves less than its deadband. **Not
+        # fixable by tuning** -- this is the deadband's blind spot, and the rule
+        # reports "no movement" rather than "broken" for exactly that reason.
         "secondary_blanket_stuck",
     ]), (
         "the set of rules that fire on a healthy plant changed. If one of these "
-        "has been tuned, remove it from this list — and say so in "
-        "`docs/ALARMS.md`. If a rule has been *added* to this list, it needs "
-        "measuring before it ships."
+        "has been tuned, remove it from this list -- and record the measurement "
+        "in `docs/ALARM-TUNING.md`. If a rule has been *added* to this list, it "
+        "needs measuring before it ships."
     )
-    assert len(raised) == 6, f"false-positive rate moved: {len(raised)} rules"
+    assert len(raised) == 5, (
+        f"false-positive rate moved: {len(raised)} rules fire on a healthy plant"
+    )
 
 
 @pytest.mark.slow

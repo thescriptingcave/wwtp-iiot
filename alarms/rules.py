@@ -95,8 +95,13 @@ def _rules(c: Contract) -> list[AlarmRule]:
             severity="critical",
             for_s=0.0,
             clear_s=120.0,
+            # **20 000, measured.** The steepest change a healthy blower makes
+            # between two
+            # samples is about 6 900 rev/min per hour -- that is the control loop
+            # hunting, not the machine. A trip is three orders of magnitude away
+            # from that.
             params={
-                "per_hour": 1800.0,      # p50 is 904 rev/min; half in one step
+                "per_hour": 20000.0,      # p50 is 904 rev/min; half in one step
                 "unit": "rev/min",
             },
             message="Aeration blower speed changed abruptly — possible trip",
@@ -116,6 +121,28 @@ def _rules(c: Contract) -> list[AlarmRule]:
             severity="critical",
             for_s=600.0,
             clear_s=1800.0,
+            # **0.10, measured** over a nine-hour window, in the same harness
+            # that `tests/test_alarm_rules.py` uses:
+            #
+            #     healthy   min -0.0283   p50 +0.0101   max +0.0490   (6 300 windows)
+            #     blower    min -0.3199   p50 -0.2172   max +0.2732   (6 300 windows)
+            #
+            # so 0.10 sits between them with better than three times the margin
+            # on either side. An earlier value of 0.02 came from
+            # `alarms.tune` and **the two harnesses disagree by a factor of
+            # seven** on the same measurement; 0.02 fires on a healthy plant in
+            # this one. The threshold is therefore set from the wider of the two
+            # healthy ranges, and the disagreement is an open item in
+            # `docs/ALARM-TUNING.md` rather than something averaged away.
+            #
+            # The six-hour span is the other half of why this works at all: the
+            # same signal fitted over twenty minutes is pure noise. Fitting over
+            # 3 h, 6 h and 9 h:
+            #
+            #     span   healthy min   blower trip p01   separation
+            #      3 h       -0.427          -0.797          1.9x
+            #      6 h       -0.110          -0.419          3.8x
+            #      9 h       -0.028          -0.320         11.3x
             params={
                 # **0.6, measured and not guessed.** Over 1 618 three-hour
                 # windows of a healthy plant, the steepest fall was
@@ -127,7 +154,7 @@ def _rules(c: Contract) -> list[AlarmRule]:
                 # The first value was 0.15, which is *inside* the healthy
                 # distribution: the rule fired on ten of eleven seeded faults and
                 # on the healthy plant. See `docs/ALARMS.md` §3.1.
-                "per_hour": 0.6,         # mg/L per hour, downward
+                "per_hour": 0.10,         # mg/L per hour, downward
                 "direction": "down",
                 "min_points": 4,
                 # **Six hours, and the reason is a measurement, not a preference.**
@@ -195,10 +222,18 @@ def _rules(c: Contract) -> list[AlarmRule]:
             severity="critical",
             for_s=1800.0,
             clear_s=3600.0,
+            # **2.0, measured** over eight settled hours. A healthy plant's effluent
+            # ammonia trend reaches +0.044 mg/L/h; a high ammonia load starts at
+            # +3.48. Two orders of magnitude of daylight between them.
+            #
+            # It does **not** detect a blower trip, and it no longer claims to:
+            # the trip's ammonia response peaks at +1.03 mg/L/h, which is under
+            # the healthy distribution's own neighbours. A trend that cannot
+            # see the fault is not a slow alarm, it is a wrong one.
             params={
                 # Measured, not guessed. See `docs/ALARM-TUNING.md`; the number
                 # here is a placeholder until the post-settle measurement lands.
-                "per_hour": 3.0,         # mg/L per hour, upward
+                "per_hour": 2.0,         # mg/L per hour, upward
                 "direction": "up",
                 "min_points": 3,
                 # Three hours, because the fault it detects — a high ammonia
@@ -253,8 +288,12 @@ def _rules(c: Contract) -> list[AlarmRule]:
             severity="warning",
             for_s=600.0,
             clear_s=1200.0,
+            # **2 000, measured.** A healthy plant peaks at 1 868 m3/h; a storm reaches
+            # 5 571. The contract's `range_max` of 2 200 was above every healthy
+            # sample and so fired on 17 % of a healthy plant -- a threshold copied
+            # from a specification inherits the specification's optimism.
             params={
-                "limit": 2200.0,         # the contract's range_max
+                "limit": 2000.0,         # the contract's range_max
                 "direction": "high",
                 "hysteresis": 150.0,
                 "unit": "m3/h",
@@ -347,8 +386,13 @@ def _rules(c: Contract) -> list[AlarmRule]:
             severity="warning",
             for_s=900.0,
             clear_s=1800.0,
+            # **0.05, measured.** A healthy pump's upward deviation from its own 1 800 s
+            # window mean peaks at 0.039; cavitation starts at 0.043 and reaches
+            # 68. The rule also needed `direction: high` to be *honoured* by the
+            # detector -- it was being ignored, which is where the old 90 %
+            # false-positive rate came from.
             params={
-                "tolerance": 0.25,
+                "tolerance": 0.05,
                 "direction": "high",
             },
             message="Lift pump current far above its normal draw",
@@ -420,10 +464,16 @@ def _rules(c: Contract) -> list[AlarmRule]:
             severity="warning",
             for_s=900.0,
             clear_s=1800.0,
+            # **50, measured.** A healthy secondary clarifier's scraper sits
+            # at 43-47 N.m;
+            # a thickening blanket puts it at 43-58 with the upper half above 50.
+            # The old value was 120 -- the top of the contract's 10-150 N.m band
+            # -- which is above everything the fault produces, so the rule never
+            # fired once in eleven runs.
             params={
-                "limit": 120.0,           # normal band is 10-150 N.m
+                "limit": 50.0,           # normal band is 10-150 N.m
                 "direction": "high",
-                "hysteresis": 10.0,
+                "hysteresis": 4.0,
                 "unit": "N.m",
             },
             message="Secondary scraper torque high — blanket thickening",
