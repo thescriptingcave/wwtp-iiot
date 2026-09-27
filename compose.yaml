@@ -243,6 +243,21 @@ services:
   # 5. web — the custom Next.js dashboard
   # ═══════════════════════════════════════════════════════════════════════════
   web:
+    # Profile `ui`. There is no source for this yet — Phase 5 has not been
+    # written — and a service whose image cannot build is worse than no service,
+    # because `docker compose up` fails on a fresh machine for a reason that has
+    # nothing to do with the project.
+    #
+    # That is not a hypothetical: this file listed `web` unconditionally, and the
+    # first `docker compose up` after the Postgres migration died in the build
+    # step with `failed to calculate cache key: "/package.json": not found`. The
+    # fourth time this project has shipped a compose file that cannot start, after
+    # three of which were found by running it.
+    #
+    # The `Dockerfile` is kept, and it is correct — it is the Next.js image with
+    # `NEXT_TELEMETRY_DISABLED` and a non-root user. What is missing is
+    # `package.json` and the app, which is Phase 5.
+    profiles: ["ui"]
     build:
       context: ./ui/web
       dockerfile: Dockerfile

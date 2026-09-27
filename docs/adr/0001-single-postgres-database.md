@@ -61,7 +61,7 @@ for a reason that had nothing to do with the project.
 * Referential integrity across metadata and time series. `reading.signal_id` is a
   foreign key, so a reading cannot name a signal that does not exist. There was no
   mechanism for that before. It found a real contract bug on first run.
-* Five services instead of seven, and no licence key.
+* Four services instead of seven, and no licence key.
 * The whole `sql/02` stage became writable, and `CASE` / `HAVING` / `INTERVAL` /
   subqueries are now used without comment.
 * The weighted-average bug in the rollup worker is gone, because both aggregate

@@ -585,7 +585,7 @@ argument for having both.
 ## Phase 3g — Leaving InfluxDB and Couchbase
 
 **What was built.** The storage layer ported from InfluxDB 3 plus Couchbase to
-one PostgreSQL 16 database with TimescaleDB 2.30. Five services instead of seven,
+one PostgreSQL 16 database with TimescaleDB 2.30. Four services instead of seven,
 no licence key, and a `sql/02-intermediate` stage that was previously unwritable.
 
 **What was expected.** A translation exercise. Replace the encoder, delete the
@@ -717,6 +717,69 @@ Three other drafts of that lesson contained invented numbers as well. The checke
 now runs every query in the course, which is the only reason those were caught
 before anyone read them.
 
+
+### And then I ran the actual stack, and found three more
+
+Every entry above this one came from tests or from a single component. Bringing
+up `docker compose up -d` and then *watching it* found three more bugs in about
+twenty minutes. All three had been invisible to 384 passing tests.
+
+**`docker compose up` could not start.** `ui/web` has a Dockerfile and no
+`package.json`, because Phase 5 has not been written. The build died with
+`failed to calculate cache key: "/package.json": not found`. This is the fourth
+time this project has shipped a compose file that cannot start, and the third
+time the cause was found by running it rather than by reading it. The service is
+now behind a `ui` profile with a comment explaining that the Dockerfile is
+correct and the app is missing.
+
+**The gateway wrote nothing, and reported itself healthy.** The spool is designed
+around hourly files, and `pending()` deliberately excludes the file currently
+being written — so **nothing reached the database for up to an hour.** Worse, the
+`rotate_s` parameter existed, was documented, was configurable, and was **never
+read**: the rotation keyed on the wall-clock hour from the record's own
+timestamp.
+
+An hour of un-drainable data is invisible in every test that does not run a real
+stack for an hour. It is also an hour of data lost to any crash, in the one
+component whose entire job is not losing data. Rotation is now on elapsed time,
+defaulting to 60 seconds, which is the project's maximum exposure and says so in
+the constant's docstring.
+
+**The plant ran 29 times too fast and starved its own Modbus server.** This is
+the one worth reading twice.
+
+`softplc/main.py` steps the loop with `scan_once()` — it has to, because it
+interleaves physics, control and publishing around each scan — and therefore never
+calls `ScanLoop.run()`, which is where the pacing lived. The line it used instead:
+
+```python
+await self._step(sim_dt)
+# No extra pacing: the scan loop already accounts for its own period,
+# and adding a second sleep would double-count the timing.
+await asyncio.sleep(0)
+```
+
+`sleep(0)` yields; it does not wait. The comment was a plausible-sounding
+rationalisation of a real bug, and **the comment is the lesson**. The PLC ran at
+**1452 scans/second against a 50 Hz target**, pegged a core, and starved the
+Modbus thread serving it so badly that the gateway's polls took **10.7 seconds**
+and the link dropped after three failures. Every one of the 384 tests passed,
+because every test drives `run()` or `scan_once()` and never the path that was
+broken.
+
+A comment asserting *where* a responsibility lives deserves exactly the same
+scepticism as one asserting *what* it does. "The scan loop already accounts for
+it" was a claim about a call graph, and nobody checked the call graph.
+
+Two things came out of the fix that are worth having regardless:
+
+* `ScanLoop.pace()` is now the single source of truth for the scan period, so
+  every path that steps the loop paces itself the same way.
+* It takes a `speed` argument, because `scan_ms` is a period in *plant* time and
+  the sleep has to be in wall time. Without that, the backfill tests time out
+  rather than failing a comparison — which is how the first fix broke
+  `test_end_to_end.py` and why the division is now pinned by its own test.
+
 ---
 
 ## Open threads
@@ -813,6 +876,20 @@ before anyone read them.
     illustrative numbers age out is a test that gets deleted rather than fixed, so
     the right fix is pinning the seeder's seed and checking the outputs — which is
     a piece of work, not a patch.
+
+11. **`web` has no source.** `ui/web/Dockerfile` is correct and
+    `ui/web/package.json` does not exist, because Phase 5 has not been written.
+    The service is behind a `ui` profile so the rest of the stack starts. Every
+    document's service count is now accurate; anything that implies a dashboard
+    is available is not, and `ui/grafana/dashboards/` is an empty directory for
+    the same reason.
+
+12. **The soft PLC's Modbus link is single-threaded against its own scan loop.**
+    Even correctly paced at 50 Hz, one scan per 20 ms and a blocking Modbus
+    server thread share a container. It is comfortable now, but it is the same
+    shape as the bug above and it would surface first on a smaller machine. The
+    fix is a separate concern — a scan budget check, or a lower default rate —
+    and is not done.
 
 ## What I would do next, in order
 

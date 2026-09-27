@@ -55,8 +55,8 @@ GRAFANA_ADMIN_PASSWORD=…      # only if you use the observability profile
 docker compose up -d
 ```
 
-Five services come up: `db`, `softplc`, `init-db` (which runs once and exits),
-`gateway` and `web`. Watch it work:
+Four services come up: `db`, `softplc`, `init-db` (which runs once and exits) and
+`gateway`. Watch it work:
 
 ```bash
 docker compose logs -f softplc gateway
@@ -194,9 +194,13 @@ uv run python tools/check_sql.py sql/    # 57 queries, all against a live server
 docker compose --profile observability up -d
 ```
 
-Grafana on <http://localhost:3000>, the Next.js dashboard on
-<http://localhost:3001>. Grafana reads the hypertable through TimescaleDB's
+Grafana on <http://localhost:3000>. It reads the hypertable through TimescaleDB's
 Postgres datasource.
+
+**There is no Next.js dashboard yet.** `ui/web` has a Dockerfile and no
+application, because Phase 5 has not been written, so the service sits behind a
+`ui` profile and is not started. The port is reserved (`WEB_PORT=3001`) and the
+Dockerfile is correct; what is missing is `package.json` and the app.
 
 ---
 

@@ -9,6 +9,7 @@ time budget.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from softplc.scanloop import (
@@ -379,3 +380,113 @@ def test_repr_is_readable() -> None:
     assert "softplc" in repr(plc)
     assert "blocks=1" in repr(plc)
     assert "disabled" in repr(LogicBlock("d", lambda i: None, enabled=False))
+
+
+# ─── the rate of the path the PLC actually runs ──────────────────────────────
+#
+# Everything above tests `ScanLoop.run()`. The PLC does not use it: `SoftPlc._run`
+# interleaves physics, control and publishing around each scan, so it calls
+# `scan_once()` and has to pace itself. That path was unthrottled -- the plant ran
+# at 1452 scans/second against a 50 Hz target, pegged a core, and starved its own
+# Modbus server until the gateway's polls took 10.7 seconds and the link dropped.
+#
+# It is pinned here, against the real `_run`, because a test that only exercises
+# the loop in isolation cannot see a pacing bug in the caller.
+
+
+def test_the_plant_runs_at_its_configured_scan_rate() -> None:
+    """`SoftPlc._run` paces itself, and the rate is the configured one.
+
+    Synchronous, and it drives the real object: `start()` and `stop()` are
+    blocking wrappers that dispatch onto the PLC's own loop thread, which is how
+    they are meant to be called and is the only way to exercise the path at all.
+    An `async` test on the test's own loop cannot await them, and an earlier
+    version of this test tried and produced `object NoneType can't be used in
+    'await' expression`.
+
+    The window is generous on purpose. The assertion is "roughly 50 Hz", not
+    "exactly 50 Hz", because `asyncio.sleep` on a loaded machine is not a
+    real-time primitive. The bound that matters is the upper one -- an unthrottled
+    loop is 29x over, which no amount of scheduling noise could look like.
+    """
+    import socket
+
+    from softplc.main import SoftPlc, SoftPlcConfig
+
+    def _free_port() -> int:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return sock.getsockname()[1]
+
+    # The PLC binds both protocol servers on start, so the ports have to be ones
+    # nothing is using -- including the compose stack, which is usually up while
+    # the tests run. That is a real hazard rather than a hypothetical one: the
+    # first version of this test bound 4840 and failed on a machine with the
+    # stack running, which is the normal state of this repository.
+    plc = SoftPlc(SoftPlcConfig(
+        scan_ms=20,
+        modbus_host="127.0.0.1",
+        modbus_port=_free_port(),
+        opcua_endpoint=f"opc.tcp://127.0.0.1:{_free_port()}/wwtp/test/",
+    ))
+    plc.start()
+    try:
+        started = time.perf_counter()
+        plc._call(plc._run(duration_s=1.0), timeout=30.0)
+        elapsed = time.perf_counter() - started
+    finally:
+        plc.stop()
+
+    # `duration_s` is *simulated*, so 1.0 s of plant time is 50 scans and about
+    # one wall second.
+    assert 40 <= plc.cycles <= 60, (
+        f"{plc.cycles} scans in {elapsed:.2f}s; the loop is not pacing itself"
+    )
+
+
+def test_a_busy_scan_shortens_the_sleep_rather_than_stretching_the_period() -> None:
+    """The other half of the pacing contract.
+
+    A slow block must not make the next scan late. `ScanLoop.pace` returns zero
+    once the budget is spent, so a scan that overruns is followed immediately by
+    the next one rather than by an extra period's sleep -- which is what "a PLC
+    that drifts is a PLC whose sampling interval is a lie" is about.
+    """
+    from softplc.scanloop import ScanLoop
+
+    loop = ScanLoop(scan_ms=20, name="t")
+
+    started = time.perf_counter()
+    time.sleep(0.05)                     # two and a half times the period
+    assert loop.pace(started) == 0.0
+
+    started = time.perf_counter()
+    assert 0.0 < loop.pace(started) <= 0.02
+
+
+def test_pace_divides_by_speed_so_a_backfill_is_not_throttled() -> None:
+    """`scan_ms` is a period in *plant* time; the sleep has to be in wall time.
+
+    At `speed = 600` a 20 ms scan is 33 microseconds of wall clock, and the loop
+    should be free-running. This is invisible at `speed = 1` and destructive at
+    `speed = 600`: a backfill that sleeps the full plant-time period runs 600
+    times slower than asked, and the symptom is a *timeout* in a test rather than
+    a failed comparison — which is why it is pinned here.
+    """
+    from softplc.scanloop import ScanLoop
+
+    loop = ScanLoop(scan_ms=20, name="t")
+
+    started = time.perf_counter()
+    real_time = loop.pace(started, speed=1.0)
+    assert 0.0 < real_time <= 0.02
+
+    started = time.perf_counter()
+    backfill = loop.pace(started, speed=600.0)
+    assert 0.0 < backfill <= 0.02 / 600, backfill
+
+    # And a scan that overran its budget still gets zero, at any speed, rather
+    # than a negative sleep.
+    started = time.perf_counter()
+    time.sleep(0.05)
+    assert loop.pace(started, speed=600.0) == 0.0

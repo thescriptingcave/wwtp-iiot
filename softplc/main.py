@@ -33,6 +33,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Coroutine, TypeVar
 
@@ -179,10 +180,18 @@ class SoftPlc:
         while self._running:
             if duration_s is not None and (self.faults.now_s - start) >= duration_s:
                 return
+            started = time.perf_counter()
             await self._step(sim_dt)
-            # No extra pacing: the scan loop already accounts for its own period,
-            # and adding a second sleep would double-count the timing.
-            await asyncio.sleep(0)
+            # Pace through the scan loop, which owns the period. This used to be
+            # `await asyncio.sleep(0)` under a comment saying the scan loop
+            # already accounted for it -- and it did not, because this path calls
+            # `scan_once()` rather than `run()`. The plant ran 29x too fast and
+            # starved its own Modbus server into dropping the link. See
+            # `ScanLoop.pace`, which divides the plant-time period by `speed`
+            # so a backfill at 600x is not throttled to real time.
+            remaining = self.loop.pace(started, self.config.speed)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
 
     async def _step(self, dt: float) -> None:
         """One scan: physics, then control, then publish, then corrupt."""

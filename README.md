@@ -150,7 +150,7 @@ then written down as though it were a principle.
 - [x] **Phase 1** — contracts, process model, scan loop, control blocks, fault engine
 - [x] **Phase 2** — Modbus TCP server, OPC UA server, browser tool, runnable soft PLC
 - [x] **Phase 3** — gateway (deadband, spool, both protocol readers), Postgres +
-  TimescaleDB storage, metadata seeder, five-stage SQL course through intermediate
+  TimescaleDB storage, metadata seeder, SQL course through `02-intermediate`
 - [ ] **Phase 4** — alarm engine with detection by what the fault does *not* show
 - [ ] **Phase 5** — Grafana dashboards, the custom Next.js page, Node-RED SCADA flows
 

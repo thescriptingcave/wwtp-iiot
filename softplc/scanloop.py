@@ -93,8 +93,7 @@ class CycleMetrics:
     def record_cycle(self, micros: float) -> None:
         self.cycles += 1
         self.last_us = micros
-        if micros > self.worst_case_us:
-            self.worst_case_us = micros
+        self.worst_case_us = max(self.worst_case_us, micros)
         # Running mean without a growing sample buffer.
         n = self.cycles
         self.mean_us += (micros - self.mean_us) / n
@@ -189,7 +188,7 @@ class LogicBlock:
     they gate, and the order is part of the design, not an implementation detail.
     """
 
-    __slots__ = ("name", "fn", "order", "enabled")
+    __slots__ = ("enabled", "fn", "name", "order")
 
     def __init__(
         self,
@@ -301,10 +300,48 @@ class ScanLoop:
 
     # ─── the loop ────────────────────────────────────────────────────────────
 
+    def pace(self, started: float, speed: float = 1.0) -> float:
+        """Seconds left in this cycle, for the caller to sleep.
+
+        The single source of truth for the scan period, so every path that steps
+        the loop paces itself the same way.
+
+        ``speed`` is simulated seconds per real second, and it divides the sleep.
+        ``scan_ms`` is a period in *plant* time, so at ``speed = 600`` twenty
+        milliseconds of scan is 33 microseconds of wall clock and the loop should
+        run 30 000 scans a second -- or as near as the interpreter allows.
+
+        Getting this wrong is invisible at ``speed = 1`` and catastrophic at
+        ``speed = 600``: a backfill that sleeps the full plant-time period runs
+        600 times slower than asked, and the test that catches it times out rather
+        than failing a comparison. See :meth:`run` for the other half of this
+        story.
+
+        This method exists because of a bug worth reading about. ``softplc.main``
+        steps the loop with ``scan_once()`` -- it has to, because it interleaves
+        physics, control and publishing around each scan -- and so it never calls
+        :meth:`run`, which is where the pacing lived. The alternative in
+        ``softplc.main`` was ``await asyncio.sleep(0)``, under a comment claiming
+        that "the scan loop already accounts for its own period".
+
+        It did not. The PLC ran at **1452 scans/second against a 50 Hz target**,
+        pegged a core, and starved its own Modbus server badly enough that the
+        gateway's polls took 10.7 seconds and the link dropped. Every test passed,
+        because every test drives ``run()`` or ``scan_once()`` and never the path
+        that was broken.
+
+        The lesson is the comment, not the code: a comment asserting that a
+        responsibility lives elsewhere is a claim, and this one was plausible
+        enough to survive being written. Anything that asserts *where* a
+        behaviour comes from deserves the same scepticism as anything that
+        asserts *what* it does.
+        """
+        wall_period = (self.scan_ms / 1000.0) / max(speed, 1e-9)
+        return max(0.0, wall_period - (time.perf_counter() - started))
+
     async def run(self, max_cycles: int | None = None) -> None:
         """Run the scan loop until stopped, or for ``max_cycles`` scans."""
         self.running = True
-        interval = self.scan_ms / 1000.0
 
         try:
             while self.running:
@@ -319,7 +356,7 @@ class ScanLoop:
                 # Sleep the *remainder* of the cycle, so a slow block shortens
                 # the sleep rather than stretching the period. A PLC that drifts
                 # is a PLC whose sampling interval is a lie.
-                remaining = interval - (time.perf_counter() - started)
+                remaining = self.pace(started)
                 if remaining > 0:
                     await asyncio.sleep(remaining)
         except asyncio.CancelledError:

@@ -75,6 +75,10 @@ class GatewayConfig:
     opcua_endpoint: str = "opc.tcp://softplc:4840/wwtp/server/"
     spool_dir: str = "/srv/spool"
     spool_max_mb: int = 512
+    #: Seconds per spool file — the gateway's maximum data loss on a crash, and
+    #: how long a reading waits before it is durable. See
+    #: ``gateway/spool/store.py:DEFAULT_ROTATE_S``.
+    spool_rotate_s: int = 60
     poll_interval_s: float = 1.0
     deadband_default: float = 0.0
     #: Left empty in tests and in ``--no-postgres`` runs. An absent DSN means
@@ -119,7 +123,8 @@ class Gateway:
         self.config = config or GatewayConfig()
         self.c = self.config.contract or get_contract()
         self.deadband = Deadband.from_contract(self.c, self.config.deadband_default)
-        self.spool = Spool(self.config.spool_dir, max_mb=self.config.spool_max_mb)
+        self.spool = Spool(self.config.spool_dir, max_mb=self.config.spool_max_mb,
+                           rotate_s=self.config.spool_rotate_s)
         self.stats = GatewayStats()
 
         self.modbus: ModbusReader | None = None
@@ -345,6 +350,11 @@ def build_parser() -> argparse.ArgumentParser:
                                                          "/srv/spool"))
     p.add_argument("--spool-max-mb", type=int,
                    default=_env_int("GATEWAY_SPOOL_MAX_MB", 512))
+    p.add_argument("--spool-rotate-s", type=int,
+                   default=_env_int("GATEWAY_SPOOL_ROTATE_S", 60),
+                   help="seconds per spool file; the gateway's maximum data "
+                        "loss on a crash, and how long a reading waits to be "
+                        "durable")
     p.add_argument("--poll-interval", type=float, default=1.0)
     p.add_argument("--deadband-default", type=float,
                    default=_env_float("GATEWAY_DEADBAND_DEFAULT", 0.0))
@@ -365,6 +375,7 @@ async def _run(args: argparse.Namespace) -> int:
         opcua_endpoint=args.opcua_endpoint,
         spool_dir=args.spool_dir,
         spool_max_mb=args.spool_max_mb,
+        spool_rotate_s=args.spool_rotate_s,
         poll_interval_s=args.poll_interval,
         deadband_default=args.deadband_default,
         postgres_dsn=postgres_dsn() if os.environ.get("POSTGRES_HOST") else "",
