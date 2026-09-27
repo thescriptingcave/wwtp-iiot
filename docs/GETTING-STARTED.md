@@ -15,7 +15,8 @@ anything from outside this repository.
 * About 2 GB of disk for a seeded week
 
 ```bash
-docker --version      # v2 or later
+# v2 or later
+docker --version
 docker compose version
 uv --version
 ```
@@ -28,8 +29,8 @@ uv --version
 cp .env.example .env
 ```
 
-There is **nothing marked REQUIRED**, and that is the single biggest change from
-the previous version of this stack. It used to begin with
+The big improvement on the previous version of this stack is that there is **no
+licence key**. It used to begin with
 
 ```
 INFLUX_LICENSE_KEY=replace-me-with-your-home-use-licence-key
@@ -40,12 +41,39 @@ one, that the licence is non-commercial and home-use only, and that the key had 
 be obtained from InfluxData by a human. Every fresh `docker compose up` on a new
 machine started by failing, for a reason that had nothing to do with the project.
 
-At minimum, change the two passwords:
+**But three variables are now genuinely required, and this section was wrong
+about that for a phase.** It used to say "nothing marked REQUIRED" and then list
+two passwords. It now says three, because making the per-service credentials
+mandatory is the whole point of having them — and it is worth being honest that
+the paragraph above is now arguing partly against its own author:
+
+| variable | who uses it | must differ? |
+|---|---|---|
+| `POSTGRES_PASSWORD` | `db`, `init-db`, `seed` — the **owner** | the root of the two below |
+| `GATEWAY_DB_PASSWORD` | the gateway, as `wwtp_gateway` | **yes** from the owner |
+| `WEB_DB_PASSWORD` | the dashboard, as `wwtp_ui` | **yes** from both |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana's own login | only with the `observability` profile |
+
+So:
 
 ```bash
 POSTGRES_PASSWORD=…
-GRAFANA_ADMIN_PASSWORD=…      # only if you use the observability profile
+# not the same as the owner's
+GATEWAY_DB_PASSWORD=…
+# not the same as either
+WEB_DB_PASSWORD=…
+# only if you use the observability profile
+GRAFANA_ADMIN_PASSWORD=…
 ```
+
+`.env.example` already contains all four, so `cp .env.example .env` starts the
+stack as-is. What it does **not** do is make them different — and three services
+sharing one password is a working configuration that defeats the point of a
+scoped credential while looking like you set one up. Two lines of `.env` is the
+price.
+
+**Changing a password later needs `--force-recreate`, not `restart`** — see
+[section 7](#the-custom-dashboard).
 
 ---
 
@@ -184,7 +212,8 @@ Then work through [`sql/`](../sql/README.md). Start with
 foundation for everything else.
 
 ```bash
-uv run python tools/check_sql.py sql/    # 64 queries, all against a live server
+# 64 queries, all against a live server
+uv run python tools/check_sql.py sql/
 ```
 
 ---
@@ -201,8 +230,10 @@ Postgres datasource.
 ### The custom dashboard
 
 ```bash
-docker compose --profile ui up -d web     # or: make web
+docker compose --profile ui up -d web
 ```
+
+or just `make web`, which is the same thing.
 
 On <http://127.0.0.1:3001> (`WEB_PORT`). Three pages — overview, permit, alarms —
 server-rendered, reading the database through a server-side pool as the
@@ -280,8 +311,10 @@ already destroyed one.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `POSTGRES_USER` | `wwtp` | database user |
-| `POSTGRES_PASSWORD` | — | **set this** |
+| `POSTGRES_USER` | `wwtp` | database user, and the **owner** |
+| `POSTGRES_PASSWORD` | — | **required.** the owner's; used by `db`, `init-db`, `seed` |
+| `GATEWAY_DB_PASSWORD` | — | **required.** the gateway's, as `wwtp_gateway` in `wwtp_writer` |
+| `WEB_DB_PASSWORD` | — | **required.** the dashboard's, as `wwtp_ui` in `wwtp_reader` |
 | `POSTGRES_DB` | `wwtp` | database name |
 | `POSTGRES_PORT` | `5432` | host port mapping |
 | `RETENTION_RAW_DAYS` | `7` | retention on `reading`; `0` disables |
@@ -291,7 +324,32 @@ already destroyed one.
 | `DEMO_STORM_AT_HOURS` | `2` | hours before the *end* of the run to arm the storm; negative to skip |
 | `GATEWAY_DEADBAND_DEFAULT` | `0.0` | deadband for signals the contract does not specify; `0` disables filtering |
 | `GATEWAY_SPOOL_MAX_MB` | `512` | spool size cap before the oldest data is dropped |
+| `GRAFANA_ADMIN_PASSWORD` | — | **required** with the `observability` profile |
 | `GATEWAY_LOG_LEVEL` | `INFO` | |
+
+**The three password rows are the ones to get right.** `init-db` creates both
+login roles from them and each service authenticates with its own, so a mismatch
+is an authentication failure at startup:
+
+```bash
+docker compose logs init-db | grep 'password for'
+```
+
+```text
+password for wwtp_gateway taken from GATEWAY_DB_PASSWORD
+password for wwtp_ui      taken from WEB_DB_PASSWORD
+```
+
+(The second block is what the log **prints**, not something to run — hence
+`text` rather than `bash`. An automated pass over this file once rewrote those two
+lines as shell comments, which is perfectly pasteable and completely meaningless.
+It is the reason the fence languages here are deliberate.)
+
+That log line is the fastest way to see which variable a role actually used, and
+it exists because the alternative — a silent fallback to the owner's password —
+defeated the point invisibly for a phase. `tests/test_readme_claims.py` asserts
+that every variable compose marks required appears in the table above, which is
+how the two that were missing got found.
 
 ---
 

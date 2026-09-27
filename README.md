@@ -47,7 +47,8 @@ the Grafana dashboards, the web page and the tests all derive from them, so a
 signal renamed in one place is renamed everywhere. To see the current list:
 
 ```bash
-git grep -l 'tags\.yaml' -- '*.py' | grep -v '^tests/'   # the plant contract
+# the plant contract
+git grep -l 'tags\.yaml' -- '*.py' | grep -v '^tests/'
 git grep -l 'fault-scenarios' -- '*.py' | grep -v '^tests/'
 ```
 
@@ -137,9 +138,11 @@ Requires Docker with Compose v2 and `uv`. **No licence key, no account, nothing
 from outside this repository** — about five minutes.
 
 ```bash
-cp .env.example .env          # set POSTGRES_PASSWORD
+# set POSTGRES_PASSWORD
+cp .env.example .env
 docker compose up -d
-docker compose --profile demo run --rm seed   # 4.3 M readings, ~2 min
+# 4.3 M readings, ~2 min
+docker compose --profile demo run --rm seed
 ```
 
 Then browse the plant and query it:
@@ -176,7 +179,8 @@ Full walkthrough, including troubleshooting, in
 ## The alarm engine
 
 ```bash
-make coverage     # the fault × rule matrix, about eight minutes
+# the fault × rule matrix, about eight minutes
+make coverage
 ```
 
 The fault library was built to feed an alarm engine, and for three phases it fed
@@ -230,7 +234,8 @@ the questions the plant exists to answer.
 Every ````sql` block is executed against a live server:
 
 ```bash
-uv run python tools/check_sql.py sql/    # 64 queries across 21 files
+# 64 queries across 21 files
+uv run python tools/check_sql.py sql/
 ```
 
 The checker runs each query three times inside a transaction it rolls back, fails

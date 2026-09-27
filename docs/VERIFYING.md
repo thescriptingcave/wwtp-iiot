@@ -14,15 +14,18 @@ Run it from the repository root. If you use a virtualenv rather than `uv`, the
 
 ```bash
 cd /Users/dev/Developer/wwtp-iiot
-git log --oneline -1          # expect: 767fcfc
-git status --short            # expect: nothing
+# expect: 767fcfc
+git log --oneline -1
+# expect: nothing
+git status --short
 ```
 
 **This destroys the seeded week if you run it.** The seeder takes about two
 minutes to rebuild, so it is cheap, but it is not free:
 
 ```bash
-make clean                   # stops everything and deletes the volumes
+# stops everything and deletes the volumes
+make clean
 ```
 
 `make clean` deletes the database volume, which is where the 4.29 M seeded
@@ -247,8 +250,10 @@ the unit is `mg/L` and not an area name, the band is the contract's, and
 **Both identifier forms work**, and both are worth typing once:
 
 ```bash
-uv run python tools/opcua_browser.py read AERATION.AHU-1.do_mg_l   # dotted path
-uv run python tools/opcua_browser.py read AHU-1.do_mg_l             # short form
+# dotted path
+uv run python tools/opcua_browser.py read AERATION.AHU-1.do_mg_l
+# short form
+uv run python tools/opcua_browser.py read AHU-1.do_mg_l
 ```
 
 The dotted path is `Area.Equipment.field` — the *field* name, not the id's third
@@ -561,9 +566,12 @@ docker compose logs scada --tail 20
 The three things to check, because all three of these have shipped broken:
 
 ```bash
-docker compose logs scada 2>&1 | grep -ci error     # expect: 0
-docker exec wwtp-scada sh -c 'grep -c "\"type\"" /data/flows.json'   # expect: 45
-docker compose ps scada --format '{{.Status}}'       # expect: healthy
+# expect: 0
+docker compose logs scada 2>&1 | grep -ci error
+# expect: 45
+docker exec wwtp-scada sh -c 'grep -c "\"type\"" /data/flows.json'
+# expect: healthy
+docker compose ps scada --format '{{.Status}}'
 ```
 
 **A bug would be:** any non-zero error count, a node count other than 45, or a
@@ -612,9 +620,12 @@ docker compose ps web --format '{{.Status}}'
 page can reach the database — not merely that a port is open.
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/            # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/permit      # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/alarms      # 200
+# 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/
+# 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/permit
+# 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/alarms
 curl -s http://127.0.0.1:3001/api/health
 ```
 
@@ -639,7 +650,8 @@ authenticates as `wwtp_ui` in `wwtp_reader`.
 And the role really is read-only:
 
 ```bash
-docker exec wwtp-web sh -c "echo \\"SELECT 1;\\" | true"  # (no-op, for shell habit)
+# (no-op, for shell habit)
+docker exec wwtp-web sh -c "echo \\"SELECT 1;\\" | true"
 ```
 
 Better, through the health endpoint's own connection — or just trust step 4.6's
@@ -675,8 +687,10 @@ make check
 Then the two that are not in `make check`:
 
 ```bash
-.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider   # 46 passed
-make integration                                                            # or this
+# 46 passed
+.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider
+# or this
+make integration
 ```
 
 **Expect:** 46 passed.

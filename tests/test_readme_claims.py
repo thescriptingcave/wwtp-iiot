@@ -474,7 +474,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 35,
+    "tests/test_readme_claims.py": 40,
     "tests/test_alarm_engine.py": 17,
 }
 
@@ -668,3 +668,244 @@ def test_getting_started_does_not_deny_a_service_exists() -> None:
         )
     # And it should tell the reader how to start it.
     assert "--profile ui up -d web" in body
+
+
+# ── the getting-started configuration reference, against compose ────────────
+
+
+def _compose_variables() -> tuple[set[str], set[str]]:
+    """Every variable compose interpolates, split into required and optional.
+
+    `${VAR:?msg}` is required — compose **refuses to start** without it.
+    `${VAR:-default}` and `${VAR-default}` are optional.
+
+    Read out of `compose.yaml` as text rather than via `docker compose config`,
+    because the required-ness *is* the interpolation syntax and `config` resolves
+    it away. Running the `config` command in a test would also need every
+    variable set, which is the very thing being tested.
+    """
+    text = Path("compose.yaml").read_text(encoding="utf-8")
+    required: set[str] = set()
+    optional: set[str] = set()
+    for var, suffix in re.findall(r"\$\{(\w+)(:\?|:\?|-|:-)", text):
+        (required if suffix in (":?", ":?") else optional).add(var)
+    return required, optional
+
+
+def test_every_required_compose_variable_is_in_the_configuration_reference() -> None:
+    """`GETTING-STARTED.md` said "nothing marked REQUIRED" and listed two passwords.
+
+    It was wrong for a phase, and wrong in the most damaging place in the
+    document: the section whose entire purpose is to stop a fresh clone failing
+    for a reason that has nothing to do with the project.
+
+    `GATEWAY_DB_PASSWORD` and `WEB_DB_PASSWORD` are `${VAR:?…}` — compose refuses
+    to start without them — and neither appeared in the configuration table. A
+    reader who edited `.env` from the table alone would have hit
+
+        error while interpolating services.gateway.environment.POSTGRES_PASSWORD:
+        required variable GATEWAY_DB_PASSWORD is missing a value
+
+    on their first `docker compose up`.
+
+    To be fair to `.env.example`: it supplies all of them, so `cp .env.example .env`
+    starts the stack and no reader actually hit that. **The table was still
+    wrong**, and a table that omits two required variables is worse than no table,
+    because it looks authoritative.
+    """
+    required, _ = _compose_variables()
+
+    reference = Path("docs/GETTING-STARTED.md").read_text(encoding="utf-8")
+    table = reference[reference.index("## Configuration reference"):]
+    table = table[: table.index("## Troubleshooting")]
+
+    missing = sorted(v for v in required if f"`{v}`" not in table)
+    assert not missing, (
+        f"compose requires {sorted(required)} but GETTING-STARTED.md's "
+        f"configuration table does not mention: {missing}"
+    )
+
+
+def test_getting_started_does_not_claim_nothing_is_required() -> None:
+    """The sentence, and the reason it matters.
+
+    *"There is nothing marked REQUIRED"* was a deliberate design decision — the
+    previous stack began with an InfluxDB licence key that a human had to fetch,
+    and every fresh `docker compose up` failed because of it. Removing that was a
+    real improvement and is still true: **no licence key, no account, nothing to
+    obtain.**
+
+    What became false is the absolute. Three `${VAR:?…}` variables exist, and the
+    fix for the per-service credentials is precisely that they are mandatory
+    rather than silently defaulting to the owner's password.
+
+    So the test does not demand the words "nothing marked REQUIRED" stay. It
+    demands the *licence key* claim stays, because that is the part that is still
+    true and still worth saying, and because a test that pinned the false absolute
+    would be pinning the bug.
+    """
+    body = "\n".join(
+        ln for ln in Path("docs/GETTING-STARTED.md").read_text(encoding="utf-8")
+        .splitlines() if not ln.lstrip().startswith(">")
+    )
+    assert "INFLUX_LICENSE_KEY" in body, (
+        "the previous stack's licence-key failure is the reason this document "
+        "exists; losing it loses the point of section 1"
+    )
+    # Whitespace-insensitive, because the sentence is wrapped by the formatter
+    # and pinning the wrapping would be a test about typography. The first
+    # version of this assertion looked for the literal "no licence key" and
+    # failed on a line break — which is the third time in this review that a check
+    # has been defeated by the shape of the text rather than its content.
+    flat = re.sub(r"\s+", " ", body).lower()
+    assert "no licence key" in flat
+    required, _ = _compose_variables()
+    assert required, "no required variables found — the regex has stopped matching"
+    for var in sorted(required):
+        assert var in body, f"{var} is required by compose and absent from the guide"
+
+
+# ── commands in a getting-started document must be pasteable ────────────────
+
+#: The documents a reader follows *while a terminal is open*, as opposed to the
+#: ones they read. Only these are held to the pasteability rule, because only
+#: these are copied line by line.
+FOLLOW_ALONG = ["docs/GETTING-STARTED.md", "docs/VERIFYING.md", "README.md"]
+
+
+def _fenced_blocks(path: Path) -> list[tuple[str, list[str]]]:
+    """(fence language, lines) for every closed block. Unbalanced fences raise."""
+    out: list[tuple[str, list[str]]] = []
+    language: str | None = None
+    body: list[str] = []
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        if language is None:
+            if line.startswith("```"):
+                language = line[3:].strip()
+                body = []
+            continue
+        if line.startswith("```"):
+            out.append((language, body))
+            language = None
+            continue
+        body.append(f"{lineno}: {line}")
+    assert language is None, f"{path} has an unclosed code fence"
+    return out
+
+
+def test_no_command_line_carries_a_trailing_comment() -> None:
+    """`docker compose --profile ui up -d web     # or: make web` reached the shell.
+
+    A reader pasted that line from this file and got
+
+        no such service: #
+
+    **I could not reproduce the precise shell mechanism**, and that is the reason
+    for this rule rather than a diagnosis of it. A `#` starts a comment only at
+    the start of a word, and only when the shell is parsing comments at all, so a
+    trailing comment is *unreliable in exactly the way that matters* — it worked
+    when I tested it, in bash and in zsh, and it failed for the reader.
+
+    So this is not an argument about which shell did what. **A command in a
+    getting-started document is not a snippet, it is something to paste**, and a
+    line that parses differently in two shells is a defect even when it works most
+    of the time. The note belongs on its own line, where it cannot be mistaken for
+    part of the command.
+
+    25 of these were fixed. Note the corollary in the docstring of the block below:
+    **log output and expected values are not commands**, which an automated pass
+    over this file got wrong by turning two log lines into shell comments.
+    """
+    offenders: list[str] = []
+    for name in FOLLOW_ALONG:
+        path = Path(name)
+        if not path.exists():
+            continue
+        for language, body in _fenced_blocks(path):
+            if language not in ("bash", "sh", "make", "console"):
+                continue
+            for line in body:
+                content = line.split(": ", 1)[1] if ": " in line else line
+                stripped = content.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if re.search(r"\S\s+#", content):
+                    offenders.append(f"{name}: {line}")
+
+    assert not offenders, (
+        "these command lines have a trailing # comment, which reaches the shell "
+        "as an argument in some contexts:\n  " + "\n  ".join(offenders)
+    )
+
+
+#: What a line has to look like before this file treats it as *something to run*.
+#: Deliberately narrow. A block of expected output is allowed to go unnamed,
+#: because naming ten psql tables and log excerpts `text` is churn that buys
+#: nothing — the rule exists to stop a **command** escaping the checks, not to
+#: enforce tidiness.
+_COMMAND_SHAPED = re.compile(
+    r"^\s*(?:"
+    r"docker|make|uv|git|npm|node|\.venv/bin/python|python3?|psql|curl|cat|ls|cd|"
+    r"for |while |if |export |source |grep |awk |sed |rm |mv |cp "
+    r")"
+)
+
+
+def test_a_block_containing_a_command_is_named() -> None:
+    """A fence with no language escapes the pasteability rules — and silently.
+
+    The failure mode of a regex over documentation is silence: a pattern that
+    stops matching reports "no problems found", indistinguishable from a clean
+    file. So this test is about **commands going unnamed**, not about tidiness.
+
+    The first version demanded a language on *every* block and immediately
+    objected to ten unnamed blocks that were all psql tables, log excerpts and
+    the architecture diagram. Those are output, and naming them `text` is churn
+    that buys nothing. The rule is now the precise one: a block must be named
+    **iff it contains something a reader might run**.
+
+    An unclosed fence is the other half, and it is worse: the page still renders,
+    it just renders everything after the stray ``` as code. `_fenced_blocks`
+    asserts on that, so this test cannot pass against a malformed file.
+    """
+    for name in FOLLOW_ALONG:
+        path = Path(name)
+        if not path.exists():
+            continue
+        for language, body in _fenced_blocks(path):
+            if language:
+                continue
+            for line in body:
+                content = line.split(": ", 1)[-1]
+                if content.strip().startswith("#"):
+                    continue
+                if _COMMAND_SHAPED.match(content):
+                    pytest.fail(
+                        f"{name}:{line.split(':')[0]} — a block containing a "
+                        f"command has no language, so it escapes the "
+                        f"pasteability rules: {content.strip()[:60]!r}"
+                    )
+
+
+def test_the_fence_helper_would_notice_a_command_it_cannot_see() -> None:
+    """Self-check on the extractor, so the test above is not vacuous.
+
+    The failure mode for a regex over documentation is silence: a pattern that
+    stops matching reports "no problems found", which is indistinguishable from a
+    clean file. This asserts the extractor sees blocks, sees commands, and would
+    flag one if it were there.
+    """
+    path = Path("docs/VERIFYING.md")
+    bash_blocks = [b for lang, b in _fenced_blocks(path) if lang == "bash"]
+    assert len(bash_blocks) > 20, (
+        f"only {len(bash_blocks)} bash blocks found in VERIFYING.md — the fence "
+        f"parser has stopped matching"
+    )
+    commands = [
+        ln for body in bash_blocks for ln in body
+        if ln.split(": ", 1)[-1].strip()
+        and not ln.split(": ", 1)[-1].strip().startswith("#")
+    ]
+    assert len(commands) > 50, f"only {len(commands)} command lines seen"
