@@ -523,6 +523,65 @@ The scoped user is now what the tests run against, and the two properties
 `docs/SECURITY.md` claims are asserted rather than hoped for: writes to its own
 bucket succeed, and `users().get_all_users()` is **denied**.
 
+## Phase 3f — the SQL course, and how wrong it was
+
+`sql/` was nine empty directories. It is now the foundations and beginner stages,
+and the process of writing them found more about the dialect than a month of
+reading would have.
+
+### The course is checked, because a course of untested SQL is not a course
+
+`tools/check_sql.py` extracts every ```sql block and runs it against a live
+InfluxDB. It runs each query **five times**, because "this query is broken" and
+"this database is having a bad minute" are indistinguishable from the outside —
+both are an exception.
+
+So outcomes are classified. A consistent *parse* error is a real dialect violation
+and fails. Anything intermittent is reported and not failed, because a course that
+cannot be checked is a course nobody checks.
+
+### Six constructs I used that this dialect does not have
+
+Every one of them is in every SQL-for-metrics tutorial, and every one is standard
+SQL:
+
+| Written | Error |
+|---|---|
+| `time_bucket(INTERVAL '1 hour', time)` | parsing error — no `INTERVAL`; use `1h` |
+| `now() - INTERVAL '24 hours'` | parsing error — use `now() - 24h` |
+| `max(CASE WHEN source='opcua' THEN value END)` | parsing error — **no `CASE` at all** |
+| `ORDER BY signal` | invalid ORDER BY, expected TIME column |
+| `signal IN ('a','b')` | parsing error — no `IN` |
+| `HAVING count(value) >= 30` | parsing error — no `HAVING` |
+| `WHERE time >= (SELECT max(time) …)` | invalid conditional expression |
+
+**The absence of `CASE` is the one that reshapes the course.** The pivot idiom —
+`mean(CASE WHEN signal='do_mg_l' THEN value END)` — is how every tutorial puts two
+signals side by side in one row, and it is a parse error here. The dialect's answer
+is **long format**: `GROUP BY time(10m), signal` returns one row per bucket per
+signal, stacked. Which turns out to be the honest shape anyway, because that is how
+the data is stored and the aggregates you want are all computed in it without any
+reshaping. You reshape in the application.
+
+`GROUP BY time(1h)` also needs a **tag** named alongside it, or it parses and then
+fails at planning — one of the least helpful failure modes in the whole exercise,
+because the statement is valid and the complaint is about the data.
+
+Everything is written up in `sql/_shared/DIALECT.md`, which is now the most useful
+file in `sql/`.
+
+### The value of running it
+
+Writing the lessons from the contract produced SQL that was *plausible, idiomatic
+and wrong in six ways*. Not one of the six would have been found by reading
+InfluxDB's documentation, because the documentation describes 1.x and 2.x.
+
+And the two bugs in this section that were mine rather than the dialect's: a
+`SELECT SELECT` left by a bulk string replacement, and a `SELECT`-by-field test
+that returned two rows because a document from an earlier run shared an `id`. Both
+were found by the checker and the integration suite respectively, which is the
+argument for having both.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net

@@ -140,6 +140,7 @@ asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
 markers = [
     "contract: tests that validate contracts/tags.yaml against consumers",
+    "sql: the course's SQL, checked against a live InfluxDB",
     "integration: tests requiring running services",
     "chaos: tests that deliberately break things",
     "slow: tests taking more than a few seconds",
