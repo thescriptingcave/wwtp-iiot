@@ -1,8 +1,13 @@
 # CI
 
-`.github/workflows/gates.yml`. Five jobs. This document says what each one is
+`.github/workflows/gates.yml`. **Six jobs.** This document says what each one is
 for, what it deliberately does **not** cover, and why the exclusions are
 exclusions rather than oversights.
+
+It said "five jobs" until a test caught it: `lint-debt` was added after this
+sentence was written, which is the ordinary way a number goes stale — the change
+was real, the prose was simply not revisited. `tests/test_readme_claims.py` now
+asserts it.
 
 `make check` runs the fast gates locally in the order that fails fastest. The
 workflow is the thin YAML that runs them on a machine that is not mine.
@@ -80,6 +85,10 @@ from them, because a named volume over `/data` silently shadows the image's
 | `images` | every push | the three images build, and the two non-core node types resolve |
 | `lint-debt` | every push | 159 findings is the baseline; going up fails |
 | `nightly` | 04:17 UTC | the fault × rule coverage matrix and the four slow tests |
+
+That is five on every push and one on a schedule, and the count is asserted by
+`tests/test_readme_claims.py::test_no_document_says_the_ci_workflow_has_five_jobs`
+— which found the wrong number in *this file* the day it was written.
 
 ### Why the database tests run in CI
 

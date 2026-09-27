@@ -213,6 +213,72 @@ down in `ui/web/README.md`. That is a materially worse position than the other
 twelve components are in, and the honest fix is a test runner, not another
 assertion about the source text.
 
+## Phase 6b — The review before the push
+
+**Expected:** a read-through before pushing, to catch anything embarrassing.
+
+**What happened:** five false claims in `README.md`, a security document
+asserting a regression that had been fixed two phases earlier, and three tests of
+mine that were passing for the wrong reason.
+
+**Learned:**
+
+- **The headline claim was false.** `README.md` said `contracts/tags.yaml` holds
+  the plant *and* the eleven faults and six scenarios, and that "all" of the PLC,
+  gateway, database, alarm engine, dashboards and tests "read that one file". There
+  are **two** contract files. `fault-scenarios.yaml` holds the faults, and four
+  source files read that instead. It was the first paragraph after the diagram —
+  the first thing a reviewer reads — and it was wrong about the project's
+  central design claim.
+- **`docs/SECURITY.md` said the database was unprotected.** A whole section titled
+  "One database, so one credential — and that is a regression", asserting the
+  gateway "can `DROP TABLE`" and that the three-role arrangement was "not
+  implemented here" — while printing the exact SQL that has existed since Phase
+  3g. It was also out of date in the other direction: `scada` and `grafana`
+  authenticate as the owner and do not need to, which was nowhere.
+  **A security document that understates its own protections is as dangerous as
+  one that overstates its own risks.** A reader assessing this project would have
+  reached the opposite conclusion about the part of it that is the most carefully
+  built.
+- **A count in prose is a measurement or it is nothing** — and it is now a
+  *documented rule with a test*, because I replaced "all of them read one file"
+  with "nineteen source files read the first" and **that was wrong in the same
+  commit**. `git grep -l 'tags.yaml'` gives twelve; grepping the loader too gives
+  twenty-five, four of which are a comment, a JSON import and a page footer. So
+  the README now names consumers by role and prints the command, and
+  `tests/test_readme_claims.py` asserts the *structure* rather than a number.
+- **Three of my own tests were passing for the wrong reason, and it took a live
+  database to find out.** While writing the corrected security section I checked
+  "the gateway cannot change the contract" with `UPDATE signal SET name = name`.
+  It was **refused** — because `signal` has no `name` column. Two more the same
+  way (`signal.eu` does not exist either; it is `unit`). So three security claims
+  had green ticks on them for entirely the wrong reason.
+  `REFUSALS` in `tests/integration/test_postgres_roles.py` now matches each
+  refusal against the phrase the server must give, so a typo'd column name turns
+  a test red instead of leaving it green for ever. **A test that cannot fail is
+  worse than no test, because it is trusted.**
+- **And the mirror image: the allowed set is a decision, not the complement of the
+  refused one.** The same test also asserts what the gateway *may* do, and its
+  first version read `reading_1m` — which is refused, on purpose, because
+  `login_role.py` says the gateway does not need the rollups. The test was
+  asserting the opposite of the design. Both directions are now asserted, and the
+  refusal carries a note saying why.
+- **The stale number is not in one file, it is in five.** The same "57 queries"
+  was in `README.md`, `docs/GETTING-STARTED.md`, `docs/TESTING.md`,
+  `docs/adr/0001-…md` and `scada/README.md`; "31 tests" in a sixth; "five jobs" in
+  `docs/CI.md` and the learning log. **A count is only checked in the document you
+  happened to read**, so the tests now sweep every markdown file — and
+  `test_no_document_says_the_ci_workflow_has_five_jobs` failed on its own
+  correction note, because it could not tell a *claim* from a *quotation*. That
+  is three times in one review that a check caught the record of a mistake rather
+  than the mistake. Double-quoted text is now excluded, with the reason written
+  down: a number in quotation marks is somebody being cited.
+- **The ratchet was checked by hand and was wrong.** Adding the new test file added
+  two findings; `lint-debt-baseline.txt` was not moved with it. So
+  `test_the_lint_debt_baseline_matches_the_files` now counts the tree and compares,
+  and a ratchet nobody re-reads is a ratchet that is wrong on the day somebody adds
+  a file.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.
@@ -1317,7 +1383,7 @@ code. Each is recorded because something else depends on it:
    reading the code.** Three would have been found by `docker compose up`.
 
 7. **decided, ratcheted.** **Lint debt in the older test files.** `ruff check tests/`
-   reports ~60 findings, nearly all in the Phase 1–2 test files: import ordering,
+   reports ~60 findings in the test files alone, nearly all import ordering:
    function-local imports, unused unpacked variables. The files are correct and
    the findings are cosmetic. Left visible rather than swept in a commit that
    claims to be about something else.
@@ -1553,7 +1619,7 @@ finished now, so the list is short enough to actually mean something.
 
 Dropped from the list, and why:
 
-* ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, five jobs. And
+* ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, six jobs. And
   writing it found that `make lint`, `make types` and `make test` **had all been
   failing, or not doing what their labels said**, the whole time: I had been
   reporting the subsets that pass. See `docs/CI.md`.

@@ -41,7 +41,7 @@ So:
 * `python -m scada.build_flows` → `scada/flows/0*.json`, three flows.
 * Both are **committed**, because a build step that only runs inside one
   container is a build step that will not run.
-* `tests/test_scada_contract.py` has 31 tests, and the ones that matter are not
+* `tests/test_scada_contract.py` has 37 tests, and the ones that matter are not
   the drift check — they are the structural ones, which catch a *bug in the
   generator*, which produces confidently wrong flows.
 

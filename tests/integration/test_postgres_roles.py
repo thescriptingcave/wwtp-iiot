@@ -253,3 +253,110 @@ def test_roles_are_created_nologin() -> None:
     for name in GRANTS:
         assert name in rows, f"{name} does not exist"
         assert rows[name] is False, f"{name} can log in; it is a group role"
+
+
+# ── a refusal has to be a refusal for the *right reason* ─────────────────────
+
+
+#: Each entry is (SQL, a phrase the error must contain). The phrase is the whole
+#: point of the test.
+#:
+#: **A permission-denied test that passes because the SQL was invalid proves
+#: nothing.** While writing `docs/SECURITY.md` I checked "the gateway cannot
+#: change the contract" with
+#:
+#:     UPDATE signal SET name = name
+#:
+#: and it was *refused* — but because `signal` has no `name` column, not because
+#: of any grant. The same mistake twice more: `signal.eu` does not exist either
+#: (the column is `unit`), so "cannot change a unit" and "cannot invent a signal"
+#: both "passed" for the wrong reason.
+#:
+#: A test that cannot fail is worse than no test, because it is trusted. Every
+#: refusal below is matched against the reason the server gives, so a typo in a
+#: column name turns a green test red instead of leaving it green for ever.
+REFUSALS: list[tuple[str, str, str]] = [
+    ("wwtp_gateway", "DELETE FROM reading WHERE false", "permission denied"),
+    ("wwtp_gateway", "TRUNCATE reading", "permission denied"),
+    ("wwtp_gateway", "DROP TABLE reading", "must be owner"),
+    ("wwtp_gateway", "CREATE ROLE probe_role", "permission denied"),
+    # Deliberate, and stated in `storage/postgres/login_role.py`: the gateway does
+    # not need the rollups, and a compromised gateway reading a pre-aggregated
+    # trend is a smaller prize than one that can.
+    ("wwtp_gateway", "SELECT 1 FROM reading_1m LIMIT 1", "permission denied"),
+    ("wwtp_gateway", "SELECT 1 FROM reading_1h LIMIT 1", "permission denied"),
+    # The three that were passing for the wrong reason. `unit`, not `eu`.
+    ("wwtp_gateway", "UPDATE signal SET unit = 'm3/h' WHERE false",
+     "permission denied"),
+    ("wwtp_gateway", "DELETE FROM signal WHERE false", "permission denied"),
+    ("wwtp_gateway", "INSERT INTO signal (id, unit) VALUES ('probe:x','m3/h')",
+     "permission denied"),
+    ("wwtp_ui", "DELETE FROM reading WHERE false", "permission denied"),
+    ("wwtp_ui", "TRUNCATE reading", "permission denied"),
+    ("wwtp_ui", "UPDATE signal SET unit = 'm3/h' WHERE false", "permission denied"),
+    ("wwtp_ui", "CREATE TABLE probe_t (i int)", "permission denied"),
+]
+
+
+@pytest.mark.parametrize(("role", "sql", "reason"), REFUSALS,
+                         ids=[f"{r}-{sql.split()[0]}" for r, sql, _ in REFUSALS])
+def test_a_refusal_is_refused_for_the_right_reason(
+    role: str, sql: str, reason: str, db, roles
+) -> None:
+    """Each withheld grant, refused *and* for the stated reason.
+
+    `SET LOCAL ROLE` inside a transaction, so the check cannot leave the session
+    as a different role, and `rollback()` so the `INSERT` attempts leave nothing.
+
+    The `WHERE false` on the UPDATEs and DELETEs is not a safety measure — the
+    statements are expected to fail before they execute — it is so that if the
+    grant ever *is* given, this test finds out from the assertion below rather
+    than from the state of the table afterwards.
+    """
+    from storage.postgres.schema import connect
+
+    with connect() as conn, conn.cursor() as cur:
+        with pytest.raises(Exception) as exc:
+            cur.execute(f"SET LOCAL ROLE {role}")
+            cur.execute(sql)
+        conn.rollback()
+
+    message = str(exc.value).lower()
+    assert reason in message, (
+        f"{role} was refused {sql!r}, but not for {reason!r}: {message.strip()[:200]}. "
+        f"A refusal for the wrong reason means this test would pass even if the "
+        f"grant were given — check the column names."
+    )
+
+
+def test_the_one_update_the_gateway_is_granted_is_the_one_it_needs(db, roles) -> None:
+    """The mirror image: the grants that *are* made, verified by using them.
+
+    A file of refusals proves nothing on its own — a role with no grants at all
+    would pass every test above. So the allowed operations are exercised too, and
+    `UPDATE reading` is included deliberately: it is the grant that looks like a
+    mistake, it is required by the gateway's `ON CONFLICT DO UPDATE` re-send
+    path, and a reader of `docs/SECURITY.md` deserves to see it asserted rather
+    than explained.
+
+    The first version of this test also read `reading_1m`, and it was refused. The
+    gateway has no `SELECT` on the rollups on purpose, so the test was asserting
+    the opposite of the design — a reminder that "the allowed set" is a decision
+    and not the complement of "the refused set". Both are now asserted, and the
+    refusal is in `REFUSALS` with a note saying why.
+    """
+    from storage.postgres.schema import connect
+
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SET LOCAL ROLE wwtp_gateway")
+        cur.execute("SELECT 1 FROM reading LIMIT 1")
+        cur.execute(
+            "INSERT INTO reading (ts, signal_id, value, source) "
+            "VALUES (now(), 'AERATION:AHU-1:DO', 1.0, 'seed') ON CONFLICT DO NOTHING"
+        )
+        cur.execute("UPDATE reading SET value = value WHERE false")
+        cur.execute(
+            "INSERT INTO event (kind, severity, message) "
+            "VALUES ('probe', 'info', 'probe')"
+        )
+        conn.rollback()

@@ -110,7 +110,7 @@ from raw — not the absence of an extension.
 docker compose up -d db
 docker compose run --rm init-db
 docker compose --profile demo run --rm seed     # 4.3 M readings, about 2 min
-uv run python tools/check_sql.py sql/           # 57 queries, all passing
+uv run python tools/check_sql.py sql/           # 64 queries, all passing
 ```
 
 If a future change reinstates a second database, the question to ask is not

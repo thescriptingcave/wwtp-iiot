@@ -16,7 +16,7 @@ not**.
 |---|---|---|
 | Unit | 378 | no |
 | Integration | 17 | yes, and refuses a seeded one |
-| SQL course | 57 queries | yes |
+| SQL course | 64 queries | yes |
 | Alarm detectors | 58 | no — pure functions over hand-built windows |
 | Alarm engine | 17 | no — a list for a sink, an injected clock |
 | Alarm rules | 12 fast + 4 slow | the slow ones run the plant model |

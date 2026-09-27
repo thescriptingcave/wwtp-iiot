@@ -322,3 +322,107 @@ def test_the_readme_states_its_own_stale_numbers() -> None:
         "the README should record that its contract-file claim was wrong, in the "
         "README — otherwise the correction lives only in git history"
     )
+
+
+# ── the same discipline across every other document ──────────────────────────
+
+#: Every markdown file a reader might open, and the counts each of them states.
+#:
+#: The five false claims were all in `README.md` because that is what I read. The
+#: same sweep then found the identical stale number — "57 queries" — in four more
+#: files, and "31 tests" in a fifth. **A count is only checked in the document you
+#: happened to read**, so this is the whole set.
+DOCS = sorted(
+    p for p in Path().rglob("*.md")
+    if not any(x in p.parts for x in ("node_modules", ".next", ".git"))
+)
+
+
+def test_no_document_quotes_a_stale_query_count() -> None:
+    """"57 queries" appeared in five files. None of them now does.
+
+    Not "the README is right" — *no document* is wrong, because a reader who
+    finds the number in `docs/TESTING.md` has no way to know the README says
+    something different. Every copy has to be right or the claim is unreliable
+    wherever it is found.
+    """
+    offenders = [
+        f"{p}: {ln.strip()}"
+        for p in DOCS
+        for ln in p.read_text(encoding="utf-8").splitlines()
+        if re.search(r"\b57 (queries|course)", ln)
+        # The README quotes the wrong number in order to say it was wrong.
+        and "had 64" not in ln
+    ]
+    assert not offenders, (
+        "these documents quote 57 course queries; it is 64:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_no_document_quotes_a_stale_test_count() -> None:
+    """"31 tests" on the Node-RED flows; it is 37."""
+    offenders = [
+        f"{p}: {ln.strip()}"
+        for p in DOCS
+        for ln in p.read_text(encoding="utf-8").splitlines()
+        if re.search(r"\b31 tests\b", ln)
+    ]
+    assert not offenders, (
+        "these documents quote 31 tests for the Node-RED flows; it is 37:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_no_document_says_the_ci_workflow_has_five_jobs() -> None:
+    """Six, including the lint-debt ratchet added after the prose was written.
+
+    **Quoted text does not count as a claim.** `docs/CI.md` now says *"It said
+    'five jobs' until a test caught it"*, and the first version of this test
+    failed on its own correction — which is the third time in this review that a
+    check has caught the record of the mistake rather than the mistake. So double
+    quotes are stripped before matching: a number inside quotation marks is
+    somebody being cited, not the document asserting something.
+
+    That is a rule with a failure mode — a document could hide a wrong claim in
+    quotes — and the alternative is a test that cannot be fixed without deleting
+    the explanation of what it is for.
+    """
+    offenders = []
+    for path in DOCS:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            # Drop anything in double quotes, and markdown code spans.
+            line = re.sub(r"`[^`]*`", "", raw)
+            line = re.sub(r"\"[^\"]*\"", "", line)
+            if re.search(r"\b(?:five|5) jobs\b", line, re.I):
+                offenders.append(f"{path}: {raw.strip()}")
+    assert not offenders, (
+        "the workflow has six jobs; these lines claim five:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_lint_debt_baseline_matches_the_files() -> None:
+    """`lint-debt-baseline.txt` holds the number `make lint-debt` compares to.
+
+    The ratchet is only as good as the number in it. A baseline that has drifted
+    from reality either blocks everything (too low, once findings are fixed) or
+    permits an increase (too high) — and both are silent, because the ratchet
+    prints a comparison rather than a verdict on the count itself.
+
+    This is the test that keeps the ratchet honest, and it is worth noting that
+    **it failed the first time it ran**, because adding this file added two
+    findings and the baseline had not been moved with them. A ratchet checked by
+    hand is a ratchet that will be wrong on the day somebody adds a file.
+    """
+    out = subprocess.run(
+        ["uv", "run", "--no-sync", "ruff", "check", ".",
+         "--output-format", "concise"],
+        capture_output=True, text=True, check=False,
+    )
+    actual = len(re.findall(r":\d+:\d+:", out.stdout))
+    baseline = int(Path("lint-debt-baseline.txt").read_text().strip())
+    assert actual == baseline, (
+        f"lint-debt-baseline.txt says {baseline} and the tree has {actual}. "
+        f"Lower the baseline in the same commit as any fix."
+    )

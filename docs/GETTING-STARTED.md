@@ -183,7 +183,7 @@ Then work through [`sql/`](../sql/README.md). Start with
 foundation for everything else.
 
 ```bash
-uv run python tools/check_sql.py sql/    # 57 queries, all against a live server
+uv run python tools/check_sql.py sql/    # 64 queries, all against a live server
 ```
 
 ---
