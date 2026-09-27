@@ -618,19 +618,27 @@ argument for having both.
    read — which could not disagree loudly: a register renamed in the contract
    would keep working on the server and break every client. It is derived from the
    contract now, and a test asserts the two agree.
-6. **Storage now runs against a live database — partially.** InfluxDB is done:
-   eight integration tests, and the schema was rebuilt around six measured
-   constraints. **Couchbase is not.** Its container starts and initialises, but no
-   test has yet written a document or run a N1QL query, so
-   `storage/couchbase/client.py` and every SDK call in `metadata.py` remain
-   unexecuted — the same position the InfluxDB half was in an hour before it
-   turned out to hide six bugs. `tests/integration/test_couchbase.py` does not
-   exist yet, and that is the next thing to write.
+6. **Storage runs against live databases — both halves, and both were wrong.**
+   Seventeen integration tests: eight against InfluxDB 3, nine against Couchbase.
+   Between them they found **fifteen bugs** — six in the InfluxDB schema and
+   transport, four in the Couchbase SDK wrapper, and five in `compose.yaml`, three
+   of which would each have stopped the stack from starting at all.
 
-   The other half of this thread: **InfluxDB 3 Core is not usable.** Query
-   results were observed to be non-deterministic, so two integration tests are
-   xfail and the recommendation is Enterprise with the home-use licence key the
-   project already assumes.
+   Two of those five were found only by writing a *read*: the Query service was
+   never enabled, and port 8093 was never published, so every write and every
+   `get` succeeded while every query failed. A write-only test suite would have
+   found neither.
+
+   **The remaining problem is InfluxDB 3 Core itself.** Its query results are
+   non-deterministic — the same statement returns rows on one call and an error on
+   the next, with no writes in between — and its planner fails intermittently on
+   `GROUP BY time(...)`. Two integration tests are `xfail` and nine of the
+   course's 23 queries are intermittently failing, all for that reason.
+
+   The recommendation is unchanged and is the highest-value thing anyone can do
+   for this project: **an InfluxDB 3 Enterprise home-use licence key.** The schema
+   work transfers unchanged — it is all InfluxDB 3, Core is the same engine — and
+   what Enterprise buys is a query engine that returns the same answer twice.
 7. **Lint debt in the older test files.** `ruff check tests/` reports ~60
    findings, nearly all in the Phase 1–2 test files: import ordering, function-
    local imports, unused unpacked variables. The files are correct and the
