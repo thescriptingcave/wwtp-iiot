@@ -458,6 +458,31 @@ it looks like an environment problem rather than a project bug, but it is not
   the new index and fails with a `ServiceUnavailableException` that never mentions
   indexing.
 
+### The gap I could not close, and did not paper over
+
+The gateway authenticates as a bucket-scoped application user. Creating that user
+is part of initialisation, and it is **not working**:
+
+    --roles=wwtp              -> "unknown, malformed or role parameters are
+                                  undefined: [wwtp]"
+    --roles=bucket_admin:wwtp -> the same
+
+So the role spelling this Couchbase Community build accepts is not known. I tried
+three forms and stopped rather than guess at a fourth and ship an init that fails
+on a clean machine.
+
+The init step is therefore **non-fatal and loud**: it prints a five-line warning
+and exits 0, because a stack that refuses to start is worse than one that starts
+with a stated limitation. `COUCHBASE_APP_USER_ROLE` is a variable so the correct
+value can be dropped in without editing the compose file.
+
+**The consequence, stated plainly:** until this is fixed, the gateway has to be
+given the *admin* credentials. That is a real downgrade from the bucket scoping
+described in `docs/SECURITY.md`, and it is the one place in this project where
+the documented security posture is not what actually runs. It is recorded in
+SECURITY.md too, because a security document that describes an aspiration rather
+than a configuration is worse than no security document.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net
