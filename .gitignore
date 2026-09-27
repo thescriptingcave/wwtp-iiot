@@ -85,6 +85,12 @@ ui/web/node_modules/
 ui/web/.next/
 ui/web/out/
 ui/web/.turbo/
+# `tsc --noEmit` with `incremental: true` writes this, and it is a cache of the
+# check rather than anything about the project. It also goes stale against
+# `node_modules`, so committing it produces a `tsc` that trusts a lockfile
+# version nobody has.
+ui/web/tsconfig.tsbuildinfo
+ui/web/next-env.d.ts
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

@@ -159,6 +159,11 @@ ignore = [
 # storage, so the awkward cases are testable with no database. The two
 # database-touching entry points import lazily for that reason.
 "alarms/replay.py" = ["PLC0415"]
+# The two database-touching tests import `storage.postgres.schema` lazily, so the
+# other twenty run with no database and no storage extras installed. Same
+# reasoning as `tests/integration/`, and it is why 21 of these 22 are green on a
+# machine that has never run Postgres.
+"tests/test_web_page.py" = ["PLC0415"]
 "storage/postgres/roles.py" = ["PLC0415"]
 "storage/postgres/login_role.py" = ["PLC0415"]
 # `_evaluate_one` is a state machine with one branch per state; splitting it up

@@ -114,6 +114,7 @@ Full walkthrough, including troubleshooting, in
 | [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
 | [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) | Every threshold, the measurement it came from, and the four that still do not work |
 | [`scada/README.md`](scada/README.md) | The Node-RED operator flows, and how they are kept in step with the contract |
+| [`ui/web/README.md`](ui/web/README.md) | The custom dashboard, its four decisions, and what is *not* verified |
 | [`docs/CI.md`](docs/CI.md) | The five CI jobs, and the three broken things writing the file found |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
@@ -208,13 +209,18 @@ then written down as though it were a principle.
   generated from the contract**, including the only place a discharge-permit
   number is computed. 15 tests, two of which run every dashboard query against a
   live database. `python -m ui.grafana.generate_dashboards`
-- [ ] **Phase 5b** — the custom Next.js page. `ui/web/` has a correct Dockerfile
-  and no source.
+- [x] **Phase 5b** — the custom Next.js dashboard: overview, permit and alarm
+  pages, server-rendered, **no credential in the browser**, generated read model,
+  a read-only Postgres role, and a read-only container. 22 tests from Python; the
+  rendering verified by building and running it. [`ui/web/README.md`](ui/web/README.md)
+- [x] **Phase 6** — CI: five jobs, and writing the file found that two of the
+  four local gates had been failing the whole time. [`docs/CI.md`](docs/CI.md)
 
-Phase 3 is complete and exercised against a live database: 378 unit tests, 17
-integration tests, 57 course queries, all passing. The open threads are in
-[`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) and the most important is that the
-fault library currently feeds nothing — there is no alarm engine yet.
+Every phase is exercised against a live database. The open threads are in
+[`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md), triaged into **five things to do,
+six properties of the design that will not change, and eleven finished** — and
+the first of the five is the one that undermines work already done: the two alarm
+harnesses disagree by a factor of seven and nobody has explained why.
 
 ## Licence
 

@@ -1,0 +1,19 @@
+# Excluded from the build context.
+#
+# `COPY . .` in the build stage copies whatever is here, and without this file a
+# local `node_modules` from `npm run dev` lands *on top of* the pruned dependency
+# tree the `deps` stage produced — with devDependencies in it, on Alpine, built
+# for whatever platform the developer happens to be on. The image then differs
+# from the one that was tested, silently, and only in production.
+#
+# The same class of bug as the stale Docker layer: something that looks like it
+# worked and the only difference is what was in the context.
+
+node_modules
+.next
+npm-debug.log*
+.env
+.env.*
+Dockerfile
+.dockerignore
+README.md

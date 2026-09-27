@@ -102,6 +102,99 @@ other two items were shorter than expected and found more.
   the sixth time in this project that the only difference between working and
   apparently working was ownership.
 
+## Phase 5c — The custom dashboard
+
+**Expected:** a `package.json`, three pages, an hour.
+
+**What happened:** the hour was the easy part. The interesting finding is that
+**the test caught the exact bug this log already documents, in code I had built
+and run ten minutes earlier.**
+
+**Learned:**
+
+- **The permit page named two signals that do not exist.** `EFFLUENT:FLOW:BOD` and
+  `EFFLUENT:FLOW:NH4_IN`, written from memory of what a permit page usually
+  shows. The page compiled, started, and rendered "no data" for both — correctly,
+  because a query for a signal that is not there returns nothing rather than
+  failing. The real ids are `EFFLUENT:FLOW:NH4` and
+  `EFFLUENT:FLOW:TURBIDITY`.
+
+  That is **thread 22, happening again**, and the repetition is the lesson. The
+  first time, a Grafana dashboard read pH from the TSS signal. The second time, a
+  page I wrote *after writing the test for exactly that* did it anyway. So the
+  lesson is not "write the test" — the test existed, in
+  `tests/test_web_page.py`, and caught it on the first run. **The lesson is that
+  the test has to be in the default suite rather than something you remember to
+  run**, because the failure mode is not a wrong number appearing on a page
+  nobody checked; it is a plausible number on a document-shaped page, produced by
+  the same person who wrote the test.
+- **`$1` is not a universal placeholder, and now it has happened twice.** `pg`
+  (node-postgres) speaks the server-side protocol and takes `$1`. psycopg3 does
+  not — it uses pyformat, and given `$1` with a parameter it says `the query has
+  0 placeholders but 1 parameters was passed`, which is a message about the
+  *driver* and sends you looking in the wrong place. The Node-RED flows' `$name`
+  dialect had the same property one commit earlier.
+
+  So the project now has **two** SQL dialects that exactly one runtime in the
+  world can execute, and both have a Python test that translates. That is the
+  pattern; the first occurrence was an anecdote.
+
+  And the translation has a subtlety worth recording: bare `%s` binds *left to
+  right*, while `$n` binds *by number*, and in `trend()` the two are not in the
+  same order — the numbers follow the function signature
+  (`trend(signalId, hours)`) and `make_interval(hours => $2::int)` appears
+  **above** `a.signal_id = $1` in the text. Translating `$1`→`%s`, `$2`→`%s`
+  silently swapped them and produced `operator does not exist: text = smallint`
+  in a query that was correct. The translation uses `%(p1)s` / `%(p2)s` now, so
+  it is faithful to the numbering rather than to the text.
+- **A setpoint's `normal_low` and `normal_high` are the same number.** Two of the
+  57 signals have a zero-width band: `AERATION:AHU-1:SETPOINT_DO` at 2.0–2.0 and
+  `SITE:WEATHER:STORM` at 0.0–0.0. Shading a zero-height region draws a *line*,
+  and for the setpoint that line sits exactly on the commanded value — so the
+  panel would say "outside band" for a setpoint sitting precisely where it was
+  told to sit. A zero-width band is a rendering bug and the fix belongs in the
+  generator, because the contract is right: a setpoint does not have a healthy
+  range.
+- **The Dockerfile said "the browser cannot keep a secret" while the compose file
+  handed it a database URL.** `NEXT_PUBLIC_POSTGRES_URL` was a build argument. It
+  was a host and a port, so nothing leaked, and a reviewer reading the name has no
+  way to know which it is — the *pattern* is one argument from the password. The
+  connection details are runtime environment variables now, `lib/db.ts` is marked
+  `server-only` (which throws at build time if a client component imports it), and
+  three tests assert the absence.
+- **Three tests failed on their first run because they read the comments.** Three
+  separate assertions — no `NEXT_PUBLIC_`, no `'use server'`, no `NEXT_PUBLIC_` in
+  the compose service — matched the *explanations* of why those things are wrong.
+  The fix was to strip comments before scanning, which is the right direction: a
+  false positive is a comment to reword and a false negative is a credential leak.
+  The same test also sliced the compose file to the next comment banner, so it was
+  asserting on **Grafana's** environment and would have passed no matter what the
+  web service said.
+- **`as const` proved a branch unreachable that I still wanted.** The permit
+  page's `'none'` case (a parameter with no limit at all) narrowed every
+  candidate to `never` under `as const`, because no entry in the list currently
+  has neither a min nor a max. `tsc` was right about the list and wrong about the
+  code. An explicit `PermitParameter` interface keeps the branch, and the compiler
+  still catches a typo'd signal id — which is the check that matters.
+- **A read-only role and a read-only filesystem are free.** The page has no write
+  path at all, so `wwtp_ui` in `wwtp_reader` costs nothing and is exactly the
+  right grant, and `read_only: true` makes "this service cannot be talked into
+  writing" a property of the container rather than a claim in a comment. It needed
+  a tmpfs for `.next/cache`, which is the whole cost.
+- **Verified the gap handling by breaking the data on purpose.** 40 readings
+  inserted with 6 removed: the response contained **two** `<path>` elements, which
+  is a break rather than a straight line across the gap. Then deleted the probe
+  rows. A sparkline's correctness is a thing you can only see by looking at the
+  path data, and it was the only assertion in this phase that no test makes.
+
+**What is still weak, and it is the weakest part of the project:** there is no
+TypeScript test runner, so "the JSX renders" is a manual claim — `npm run build`,
+`next start`, a `curl` per route, all four 200, zero errors in the log. The data
+path is tested from Python; the rendering is verified by running it and written
+down in `ui/web/README.md`. That is a materially worse position than the other
+twelve components are in, and the honest fix is a test runner, not another
+assertion about the source text.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.

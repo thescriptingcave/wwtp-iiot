@@ -154,6 +154,27 @@ dashboards:  ## regenerate the Grafana dashboards from the contract
 dashboards-check:  ## report drift between the contract and the dashboards
 	$(PY) -m ui.grafana.generate_dashboards --check
 
+page:  ## regenerate the web dashboard's read model from the contract
+	$(PY) -m ui.web.generate_page
+
+page-check:  ## report drift between the contract and the web page
+	$(PY) -m ui.web.generate_page --check
+
+web:  ## the custom dashboard, on http://127.0.0.1:$${WEB_PORT:-3001}
+	@echo "── web on http://127.0.0.1:$${WEB_PORT:-3001} ──"
+	docker compose --profile ui up -d web
+	@echo "   read-only role wwtp_ui; no credential reaches the browser"
+
+# `npm ci` rather than `npm install`: it installs from the lockfile and *fails*
+# if the lock and the manifest disagree, so a hand-edited package.json is an
+# error instead of a silently different build. `--ignore-scripts` because none of
+# these dependencies needs a postinstall and one of them (sharp) would otherwise
+# fetch a platform binary at build time.
+web-build:  ## typecheck and build the dashboard image contents
+	cd ui/web && npm ci --ignore-scripts --no-audit --no-fund
+	cd ui/web && npx tsc --noEmit
+	cd ui/web && npm run build
+
 grafana:  ## Grafana, provisioned from files in git
 	@echo "── Grafana on http://127.0.0.1:$${GRAFANA_PORT:-3000} ──"
 	docker compose --profile observability up -d grafana

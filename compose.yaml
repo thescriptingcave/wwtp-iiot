@@ -181,6 +181,11 @@ services:
         set -eu
         python -m storage.postgres.schema
         python -m storage.postgres.login_role --name "$${GATEWAY_DB_ROLE}"
+        # The dashboard's read-only role. Created here for the same reason as
+        # the gateway's and with the same mechanism; the only difference is the
+        # group, so the web page cannot write a reading even if someone finds a
+        # way to make it try.
+        python -m storage.postgres.login_role --name "$${WEB_DB_ROLE}"
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
@@ -196,6 +201,10 @@ services:
       # `storage/postgres/login_role.py` because Compose cannot nest
       # `${A:-${B}}` — it turns the whole thing into a literal string.
       GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
+      # The dashboard's read-only role: LOGIN, member of wwtp_reader, and
+      # nothing else. No INSERT, no UPDATE, no DELETE, no TRUNCATE.
+      WEB_DB_ROLE: ${WEB_DB_ROLE:-wwtp_ui}
+      WEB_DB_PASSWORD: ${WEB_DB_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
@@ -386,32 +395,71 @@ services:
   # 5. web — the custom Next.js dashboard
   # ═══════════════════════════════════════════════════════════════════════════
   web:
-    # Profile `ui`. There is no source for this yet — Phase 5 has not been
-    # written — and a service whose image cannot build is worse than no service,
-    # because `docker compose up` fails on a fresh machine for a reason that has
-    # nothing to do with the project.
+    # Profile `ui`. The custom operator dashboard — Next.js, server-rendered,
+    # reading the database through a server-side pool.
     #
-    # That is not a hypothetical: this file listed `web` unconditionally, and the
-    # first `docker compose up` after the Postgres migration died in the build
-    # step with `failed to calculate cache key: "/package.json": not found`. The
-    # fourth time this project has shipped a compose file that cannot start, after
-    # three of which were found by running it.
+    # **The two `NEXT_PUBLIC_` build args are gone**, and their removal is the
+    # design. They were `NEXT_PUBLIC_POSTGRES_URL` and `NEXT_PUBLIC_MODBUS_PORT`,
+    # baked into the client bundle, and the Dockerfile's own comment said "the
+    # browser cannot keep a secret" while the compose file handed it a database
+    # URL. It was only a host and a port, so nothing leaked — but the *pattern*
+    # is one argument away from leaking the password, and a reviewer reading
+    # `NEXT_PUBLIC_POSTGRES_URL` has no way to know which it is.
     #
-    # The `Dockerfile` is kept, and it is correct — it is the Next.js image with
-    # `NEXT_TELEMETRY_DISABLED` and a non-root user. What is missing is
-    # `package.json` and the app, which is Phase 5.
+    # So the connection details are runtime environment variables, read by the
+    # server, and `lib/db.ts` refuses to start without them rather than defaulting
+    # to `localhost` — which inside a container resolves to the container, and
+    # surfaces as "the database is down" when the truth is "you configured
+    # nothing".
+    #
+    # A note on what this service used to be: it had a correct Dockerfile and no
+    # `package.json`, behind this profile, with an accurate service count in
+    # every document. **A placeholder that is accounted for is the easiest kind of
+    # missing thing to forget** — there was never a moment where anything looked
+    # wrong. It also cost this project a compose file that could not start
+    # (`failed to calculate cache key: "/package.json": not found`), the fourth
+    # such file, all four found by running `docker compose up` rather than by
+    # reading the YAML.
     profiles: ["ui"]
     build:
       context: ./ui/web
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_POSTGRES_URL: http://localhost:${POSTGRES_PORT:-5432}
-        NEXT_PUBLIC_MODBUS_PORT: ${MODBUS_PORT:-5020}
+        # No database arguments. There is nothing to bake, which is the point.
+        NEXT_TELEMETRY_DISABLED: "1"
+    environment:
+      # Server-side only. Never `NEXT_PUBLIC_` — see above and docs/SECURITY.md.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      # `wwtp_ui`, which is a `LOGIN` role in `wwtp_reader` and nothing else. It
+      # cannot INSERT, UPDATE, DELETE or TRUNCATE — each proved by attempting it
+      # and reading the refusal in `storage/postgres/roles.py::check`.
+      #
+      # The Node-RED service authenticates as the *owner*, which is the open
+      # thread at the top of `docs/LEARNING-LOG.md`. This one is the example of
+      # how to close it: the page has no write path at all, so a read-only role
+      # costs nothing and is exactly the right grant.
+      POSTGRES_USER: ${WEB_DB_ROLE:-wwtp_ui}
+      POSTGRES_PASSWORD: ${WEB_DB_PASSWORD:?set WEB_DB_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wwtp}
     container_name: wwtp-web
     restart: unless-stopped
     init: true
     security_opt:
       - no-new-privileges:true
+    # The app writes nothing. `next start` needs a cache directory and nothing
+    # else, and a read-only root filesystem is the cheapest way to make "this
+    # service cannot be talked into writing" a property of the container rather
+    # than a claim in a comment.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+      # `next start` writes its image cache under `.next/cache`, and a
+      # read-only root filesystem makes that a startup failure. A tmpfs rather
+      # than a writable mount, so the cache is still memory and still discarded
+      # on restart — which is correct, because the *build* output is baked in the
+      # image and this cache only holds revalidation state.
+      - /app/.next/cache:size=64m
     ports:
       - "${WEB_PORT:-3001}:3000"
     networks: [plant]
@@ -421,6 +469,9 @@ services:
       init-db:
         condition: service_completed_successfully
     healthcheck:
+      # `/api/health`, not `/`. An open port proves the process bound a socket;
+      # the endpoint runs `SELECT 1`, so "healthy" means the page can reach the
+      # database — which is the failure an operator needs told about.
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s

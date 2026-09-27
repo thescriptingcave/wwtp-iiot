@@ -30,16 +30,21 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Baked in at build time, which is why these are NEXT_PUBLIC_*: they are visible
-# to the browser. Nothing secret goes here — the browser cannot keep a secret,
-# and a token in a client bundle is a token in every user's cache. The dashboard
-# reads through a server-side proxy for anything that needs a credential, and
-# docs/SECURITY.md says so.
-ARG NEXT_PUBLIC_POSTGRES_URL=http://localhost:5432
-ARG NEXT_PUBLIC_MODBUS_PORT=5020
-ENV NEXT_PUBLIC_POSTGRES_URL=$NEXT_PUBLIC_POSTGRES_URL \
-    NEXT_PUBLIC_MODBUS_PORT=$NEXT_PUBLIC_MODBUS_PORT \
-    NEXT_TELEMETRY_DISABLED=1
+# Baked in at build time: only `NEXT_TELEMETRY_DISABLED`, which is not a secret
+# and is a build-time decision rather than a run-time one.
+#
+# **The two `NEXT_PUBLIC_POSTGRES_*` arguments this file used to take are gone**,
+# and the reason is worth the two lines. `NEXT_PUBLIC_` means "baked into the
+# JavaScript the browser downloads", which was fine for a host and a port and is
+# catastrophically wrong for a password. The comment below this used to say "the
+# browser cannot keep a secret" while the compose file handed it a database URL —
+# only a mistake away from handing it a credential.
+#
+# The connection details are now runtime environment variables read by
+# `lib/db.ts`, which is marked `server-only` and throws at build time if a client
+# component imports it. `docs/SECURITY.md` has the threat model.
+ARG NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=$NEXT_TELEMETRY_DISABLED
 
 # `npm ci` without --omit=dev here: the Next.js compiler and its plugins are
 # devDependencies and are needed to build. The *runtime* image above does not

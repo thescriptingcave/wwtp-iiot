@@ -281,6 +281,12 @@ jobs:
         run: uv run python -m scada.build_flows --check
       - name: dashboards
         run: uv run python -m ui.grafana.generate_dashboards --check
+      - name: the web page's read model
+        # The seventh consumer of `contracts/tags.yaml`, and the one most likely
+        # to name a signal that does not exist: a hand-written page holds signal
+        # ids somebody typed, and a wrong id is a wrong number rather than an
+        # error. The permit page shipped with two of its five signals invented.
+        run: uv run python -m ui.web.generate_page --check
       - name: compose parses
         # A compose file that cannot parse fails `docker compose up` on a fresh
         # machine for a reason that has nothing to do with the project. This file
@@ -297,6 +303,19 @@ jobs:
 
       - name: python image
         run: docker compose build db
+      - name: web image
+        # The dashboard's image, which has never been built: `ui/web` had a
+        # Dockerfile and no `package.json` for two phases. `npm ci` inside the
+        # build is the assertion — it fails if the lock and the manifest
+        # disagree, which is the one way this image can be wrong.
+        run: docker compose --profile ui build web
+      - name: the read model survived the build context
+        # `.dockerignore` is easy to get wrong in a way that changes the image
+        # silently: without `node_modules` in it, a developer's local tree lands
+        # on top of the pruned one. The image is the only place that shows.
+        run: |
+          docker compose --profile ui run --rm --no-deps --entrypoint sh web \
+            -c "test -f /app/.next/BUILD_ID && echo 'next build output present'"
       - name: node-red image
         # The one that needs the network and the most time, and the one that has
         # failed for reasons invisible in the Dockerfile: the base image is
