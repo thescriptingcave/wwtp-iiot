@@ -135,7 +135,7 @@
         "type": "postgresql",
         "z": "a28500f63be1a",
         "name": "read unacknowledged criticals",
-        "query": "SELECT id, ts, kind, severity, message, signal_id, equipment_id, detail\nFROM event\nWHERE severity = 'critical'\n  AND kind = 'alarm_raised'\n  AND ts >= now() - interval '24 hours'\n  AND NOT EXISTS (\n      SELECT 1 FROM event ack\n      WHERE ack.kind = 'alarm_acknowledged'\n        AND ack.detail->>'rule' = e.detail->>'rule'\n  )\nORDER BY ts DESC\nLIMIT 200",
+        "query": "SELECT r.id,\n       r.ts                                            AS raised_at,\n       r.severity,\n       r.message,\n       r.signal_id,\n       r.equipment_id,\n       r.detail->>'rule'                                AS rule,\n       (a.id IS NOT NULL)                              AS acknowledged,\n       a.ts                                            AS acknowledged_at,\n       now() - r.ts                                    AS age_s\nFROM event r\nLEFT JOIN LATERAL (\n    SELECT ack.id, ack.ts\n    FROM event ack\n    WHERE ack.kind = 'alarm_acknowledged'\n      AND ack.detail->>'rule' = r.detail->>'rule'\n      AND ack.ts > r.ts\n    ORDER BY ack.ts\n    LIMIT 1\n) a ON TRUE\nWHERE r.kind = 'alarm_raised'\n  AND r.severity = 'critical'\n  AND r.ts >= now() - interval '24 hours'\n  AND a.id IS NULL                       -- nobody has seen it since it raised\n  AND NOT EXISTS (\n      SELECT 1 FROM event c\n      WHERE c.kind = 'alarm_cleared'\n        AND c.detail->>'rule' = r.detail->>'rule'\n        AND c.ts > r.ts\n  )\nORDER BY r.ts DESC\nLIMIT 200",
         "mydb": "wwtp-db",
         "maxsize": "0",
         "params": [],
@@ -169,10 +169,82 @@
         ]
     },
     {
+        "id": "abfe71ab5ddcb",
+        "type": "function",
+        "z": "a28500f63be1a",
+        "name": "acknowledge what the operator pressed",
+        "func": "\n// The operator pressed a row. This is the path that `AlarmEngine.acknowledge()`\n// never had for three phases: a method that existed, was tested, and was called\n// by nothing because there was no operator.\n//\n// The write is bound, not interpolated -- the rule id comes from a row the\n// operator clicked, and a rule id is machine-generated today but a message is\n// not. An INSERT built by concatenation is a SQL injection one mistyped row away.\n//\n// `detail->>'rule'` is the join key because the engine puts the rule there and\n// there is no column for it. See alarms/replay.py for why that is a cost being\n// paid knowingly.\nconst rule = msg.payload.rule;\nconst alarm = msg.payload.orig || msg.payload;\n\nmsg.payload = {\n    msg: `acknowledged: ${alarm.message || rule}`,\n    rule: rule,\n    signal: alarm.signal_id || null,\n};\nmsg.topic = 'acknowledge';\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 100,
+        "wires": [
+            [
+                "acbd51a6f808e"
+            ]
+        ]
+    },
+    {
+        "id": "acbd51a6f808e",
+        "type": "postgresql",
+        "z": "a28500f63be1a",
+        "name": "record the acknowledgement",
+        "query": "\nINSERT INTO event (ts, kind, severity, message, signal_id, detail)\nVALUES (now(), 'alarm_acknowledged', 'critical', $msg, $signal,\n        jsonb_build_object('rule', $rule::text, 'acknowledged_at', now()))\nRETURNING id\n",
+        "mydb": "wwtp-db",
+        "maxsize": "0",
+        "params": [
+            {
+                "type": "msg",
+                "name": "msg"
+            },
+            {
+                "type": "msg",
+                "name": "signal"
+            },
+            {
+                "type": "msg",
+                "name": "rule"
+            }
+        ],
+        "x": 360,
+        "y": 100,
+        "wires": [
+            [],
+            [
+                "ad35cfe687962"
+            ]
+        ]
+    },
+    {
         "id": "a77c191ee3474",
         "type": "debug",
         "z": "a28500f63be1a",
         "name": "annunciator panel",
+        "active": true,
+        "tosidebar": "console",
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 400,
+        "y": 100,
+        "wires": [
+            [
+                "abfe71ab5ddcb"
+            ]
+        ]
+    },
+    {
+        "id": "ad35cfe687962",
+        "type": "debug",
+        "z": "a28500f63be1a",
+        "name": "acknowledged",
         "active": true,
         "tosidebar": "console",
         "console": false,

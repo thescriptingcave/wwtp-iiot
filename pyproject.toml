@@ -155,6 +155,10 @@ ignore = [
 # `tune` imports the plant model and the detectors together, and the detectors
 # are the half that must stay importable without the storage extras.
 "alarms/tune.py" = ["PLC0415"]
+# `replay()` is a pure function of the event rows and imports nothing from
+# storage, so the awkward cases are testable with no database. The two
+# database-touching entry points import lazily for that reason.
+"alarms/replay.py" = ["PLC0415"]
 "storage/postgres/roles.py" = ["PLC0415"]
 "storage/postgres/login_role.py" = ["PLC0415"]
 # `_evaluate_one` is a state machine with one branch per state; splitting it up

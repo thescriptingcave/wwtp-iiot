@@ -275,8 +275,21 @@ next piece of work and it is measurement rather than design.
 
 ## What is not built
 
-* **Acknowledgement from an operator.** `AlarmEngine.acknowledge()` exists and is
-  tested; nothing calls it. There is no UI, so there is nobody to acknowledge.
+* ~~**Acknowledgement from an operator.**~~ **Done.**
+  `alarms/replay.py` rebuilds the state from the event log and
+  `scada/flows/02-annunciator.json` now writes an `alarm_acknowledged` row. The
+  two halves are separate on purpose and the reason is the interesting part:
+
+  * the **engine** decides whether something is happening now, and holds only
+    what it has evaluated;
+  * the **replay** holds what the log says is outstanding, and the panel reads
+    that.
+
+  They cannot disagree, and a Node-RED flow restart loses nothing, because nothing
+  was in memory to lose. See `alarms/replay.py` for the design decision it
+  forced: acknowledgement is per *rule* and clears when the condition clears,
+  because an operator acknowledges what they can see on a panel, and a recurrence
+  is a new event that deserves a new acknowledgement.
 * **`correlation` and `oscillation_detection`.** Declared in the contract, named
   in the vocabulary, absent from the registry.
 * **Alarm suppression and shelving.** Two blowers tripping at once produce two

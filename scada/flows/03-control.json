@@ -235,7 +235,7 @@
         "type": "postgresql",
         "z": "a1833fd9abcff",
         "name": "audit trail",
-        "query": "\nINSERT INTO event (ts, kind, severity, message, signal_id, detail)\nVALUES (now(), 'setpoint_written', 'info', $msg, $tag,\n        jsonb_build_object('value', $value, 'write_range', $range))\nRETURNING id\n",
+        "query": "\nINSERT INTO event (ts, kind, severity, message, signal_id, detail)\nVALUES (now(), 'setpoint_written', 'info', $msg, $tag,\n        jsonb_build_object('value', $value::float8,\n                           'write_range', $range::jsonb))\nRETURNING id\n",
         "mydb": "wwtp-db",
         "maxsize": "0",
         "params": [

@@ -16,7 +16,7 @@ clear, and a setpoint to change. Three flows, and each one closes a gap that
 | Flow | What it is | What it closes |
 |---|---|---|
 | `01-mimic.json` | newest reading per watched tag, every 5 s | — |
-| `02-annunciator.json` | unacknowledged criticals, with staleness | `AlarmEngine.acknowledge()` existed and **nothing called it** |
+| `02-annunciator.json` | unacknowledged criticals, with staleness, **and acknowledgement** | `AlarmEngine.acknowledge()` existed and **nothing called it** |
 | `03-control.json` | a setpoint, range-checked, written over Modbus | the contract's `writable` surface and `permit_limits` |
 
 It is **not** a historian, **not** an alarm system, and **not** a place to put
@@ -161,9 +161,14 @@ mimic that works and one that is empty.
   audit row; it does not read the value back to confirm the plant accepted it. A
   write to a soft PLC that silently failed leaves an audit trail saying it
   succeeded, which is the same class of problem as the missing aggregates.
-* **The acknowledge statement is written but not wired.** `02-annunciator.json`
-  reads unacknowledged alarms; acknowledging is a call into the alarm engine's
-  state, and the engine holds that state in memory. A flow that wrote an
-  `alarm_acknowledged` event would be writing a fact the engine does not read
-  back. That needs the engine to reload its state from the `event` table, which
-  is a real piece of work and is not done.
+* **The engine does not read its own acknowledgements back.** The flow writes an
+  `alarm_acknowledged` row and the *panel* query excludes acknowledged alarms, so
+  the operator path works. But `AlarmEngine.acknowledge()` is still in-memory: a
+  restarted engine re-raises a critical it was already acknowledged on, and
+  writes a second `alarm_raised` row. The panel then shows it as outstanding
+  again, because the replay's newest raise is unacknowledged.
+  `alarms/replay.py` exists and is wired into `alarms serve`, which restores the
+  acknowledgements — **but only for rules the engine has itself raised since it
+  started**, because `acknowledge()` refuses anything it has not seen. The
+  durable fix is for the engine to *raise* from replayed history rather than to be
+  told about it afterwards.

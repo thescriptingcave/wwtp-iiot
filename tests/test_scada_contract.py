@@ -43,6 +43,27 @@ TERMINALS = {"debug", "comment", "tab"}
 #: edit here rather than a string in a flow file.
 ALLOWED_TABLES = {"reading", "event", "signal", "equipment", "site"}
 
+#: Words that follow `FROM`/`JOIN` in SQL and are not tables. The regex cannot
+#: tell them apart, and the first version of this test reported
+#: `query touches 'LATERAL'` — which is a keyword, and a test that cries wolf
+#: about `LATERAL` is a test people learn to ignore.
+SQL_KEYWORDS_AFTER_FROM = {
+    "lateral",     # LEFT JOIN LATERAL (...) — a row subquery
+    "select",      # FROM (SELECT ...) AS t
+    "unnest",      # FROM unnest(...)
+    "generate_series",
+    "values",
+}
+
+
+def _tables_in(sql: str) -> set[str]:
+    import re as _re
+
+    return {
+        t for t in _re.findall(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+(\w+)", sql, _re.I)
+        if t.lower() not in SQL_KEYWORDS_AFTER_FROM
+    }
+
 
 @pytest.fixture(scope="module")
 def c() -> Contract:
@@ -547,7 +568,7 @@ def _sql_in(flows: dict) -> list[tuple[str, str]]:
 
 def test_flow_sql_only_touches_reviewed_tables(flows: dict) -> None:
     for name, query in _sql_in(flows):
-        for table in re.findall(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+(\w+)", query, re.I):
+        for table in _tables_in(query):
             assert table in ALLOWED_TABLES, (
                 f"{name}: query touches {table!r}, which is not in the reviewed "
                 f"set {sorted(ALLOWED_TABLES)}. Add it here deliberately, or do "
@@ -777,3 +798,114 @@ def test_the_entrypoint_fails_loudly_with_no_password() -> None:
         )
         assert result.returncode != 0
         assert "POSTGRES_PASSWORD" in result.stderr, result.stderr
+
+
+# ── the flow SQL, executed ───────────────────────────────────────────────────
+
+
+def _to_pyformat(query: str, names: list[str]) -> tuple[str, list[str]]:
+    """Rewrite Node-RED's ``$name`` placeholders into psycopg's ``%s``.
+
+    `node-red-contrib-postgresql` takes named bind parameters and rewrites them
+    before sending. The query in the flow file is therefore in **Node-RED's own
+    dialect**, and that dialect is spoken by nothing else:
+
+    * ``psql`` and libpq understand ``$1``, the server-side prepared-statement
+      syntax, not ``$name``;
+    * **psycopg3 does not understand ``$1`` at all.** It uses pyformat — ``%s`` or
+      ``%(name)s`` — and given ``$1`` with a parameter it says
+      ``the query has 0 placeholders but 1 parameters were passed``, which is a
+      message about the *driver*, not about the query, and sends you looking in
+      the wrong place.
+
+    So there is **exactly one implementation in the world that can run these four
+    queries**, it is a node inside a container, and it reports failures as a red
+    box. That is a real risk and it is the reason this translation exists at all:
+    the queries are now executed on every test run, by a second implementation,
+    which is the only thing that makes "it runs" a claim rather than a hope.
+
+    Rewritten to ``%s`` rather than ``%(name)s`` because the order of the values
+    is what the node preserves and what the test has to match; the names are
+    carried alongside so a mismatch between the two is visible.
+    """
+    out = query
+    order: list[str] = []
+    for name in names:
+        if f"${name}" in out and name not in order:
+            order.append(name)
+    for name in order:
+        out = out.replace(f"${name}", "%s")
+    return out, order
+
+
+def test_every_named_placeholder_is_declared_in_the_params_list(flows: dict) -> None:
+    """A placeholder with no matching entry in `params` is a runtime error.
+
+    Node-RED sends the values in `params` and the placeholders in `query`; if one
+    side names something the other does not, the query is rejected at run time
+    and the panel shows nothing.
+    """
+    import re
+
+    for name, nodes in flows.items():
+        for node in nodes:
+            if node["type"] != "postgresql":
+                continue
+            declared = {p["name"] for p in node.get("params", [])}
+            used = set(re.findall(r"\$([a-z_]+)", node["query"]))
+            assert used <= declared, (
+                f"{name}: {node['name']!r} uses {sorted(used - declared)}, which "
+                f"is not in params {sorted(declared)}"
+            )
+            assert declared == used, (
+                f"{name}: {node['name']!r} declares {sorted(declared - used)}, "
+                "which the query never uses"
+            )
+
+
+@pytest.mark.integration
+def test_every_flow_query_runs_against_a_live_database(flows: dict) -> None:
+    """The check that cannot be done statically, and the one that matters.
+
+    Every `postgresql` node's query is executed with its placeholders bound, and
+    **every statement is rolled back** — including the two `INSERT`s, which would
+    otherwise leave a probe acknowledgement and a probe setpoint in the event log
+    of a running plant.
+
+    The rollback is not defensive. `tools/check_sql.py` and the integration suite
+    have both destroyed real data in this project's history by running SQL from a
+    directory, and the discipline that came out of it is that a program which runs
+    SQL it did not author must not leave anything behind.
+    """
+    from storage.postgres.schema import connect
+
+    ok = total = 0
+    for name, nodes in flows.items():
+        for node in nodes:
+            if node["type"] != "postgresql":
+                continue
+            names = [p["name"] for p in node.get("params", [])]
+            sql, order = _to_pyformat(node["query"], names)
+            total += 1
+            # Values that satisfy the foreign keys. A probe row with a signal id
+            # that does not exist would fail on the constraint and be reported as
+            # a query bug, which is the wrong lesson.
+            values = [
+                {"msg": f"probe from {name}", "signal": "AERATION:AHU-1:DO",
+                 "tag": "AERATION:AHU-1:DO", "value": 1.0, "rule": "probe_rule",
+                 "range": "[0.5, 6.0]"}
+            ]
+            params = [values[0][n] for n in order]
+            try:
+                with connect() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, params) if order else cur.execute(sql)
+                        cur.fetchall()
+                    conn.rollback()
+                ok += 1
+            except Exception as exc:  # noqa: BLE001
+                pytest.fail(
+                    f"{name} / {node['name']!r} does not run: {exc}\n\n{sql}"
+                )
+    assert total > 0, "no postgresql nodes found; the flow files are not parsing"
+    assert ok == total

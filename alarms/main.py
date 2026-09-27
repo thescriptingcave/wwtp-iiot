@@ -93,6 +93,26 @@ def do_coverage(args: argparse.Namespace) -> int:
 # ─── serve ───────────────────────────────────────────────────────────────────
 
 
+def _replay_view(lookback_h: float) -> Any:
+    """The replay result, refreshed on each tick, for the summary line.
+
+    The engine cannot supply this — it holds only what it has evaluated — so the
+    panel and the log line read the replay, and the engine is left to do the one
+    thing only it can: decide whether something is happening now.
+    """
+    from storage.postgres.schema import connect
+
+    from alarms.replay import load
+
+    try:
+        return load(connect(autocommit=True), lookback_h=lookback_h)
+    except Exception:
+        # A summary line is not worth an outage, and a missing table on a fresh
+        # database is not an error worth stopping for.
+        log.debug("replay view unavailable", exc_info=True)
+        return None
+
+
 def do_serve(args: argparse.Namespace) -> int:
     """Evaluate the rules against the live historian and write events."""
     from storage.postgres.schema import connect, dsn
@@ -105,6 +125,41 @@ def do_serve(args: argparse.Namespace) -> int:
     source = PostgresWindowSource(conn, rule_set)
     sink = PostgresEventSink(conn)
     engine = AlarmEngine(rule_set, sink)
+
+    # Rebuild the acknowledgements from the event log before the first tick.
+    #
+    # Without this the engine starts with a clean slate: every latched critical
+    # from before the restart is unknown to it, and the operator's panel asks
+    # them to acknowledge a fault they have already acknowledged. Worse, if the
+    # panel is built from the engine, an *acknowledgement* is silently lost --
+    # and an acknowledgement that does not survive a restart is not an
+    # acknowledgement.
+    #
+    # `apply_to_engine` restores the acknowledgements and nothing else. Alarms it
+    # cannot yet confirm are deliberately left alone: the engine has not watched
+    # the plant since it started, and a reconstructed alarm is a claim about a
+    # process that is not running. See `alarms/replay.py`.
+    if args.replay:
+        from alarms.replay import apply_to_engine, load
+
+        try:
+            result = load(conn, lookback_h=args.replay_hours)
+            applied = apply_to_engine(engine, result)
+            log.info(
+                "replayed %s: %d alarms, %d waiting for a human, %d "
+                "acknowledgement(s) re-applied",
+                args.replay_hours, len(result.alarms),
+                len(result.unacknowledged), applied,
+            )
+        except Exception:
+            # A missing table on a fresh database must not stop the engine
+            # running: an operator would rather have no history than no alarms.
+            log.exception("replay failed; starting with an empty history")
+
+    # Refreshed on each reporting tick rather than once at startup: an alarm
+    # acknowledged through the Node-RED flow writes a row, and the engine is not
+    # going to see it.
+    history = _replay_view(args.replay_hours) if args.replay else None
 
     running = True
 
@@ -133,10 +188,21 @@ def do_serve(args: argparse.Namespace) -> int:
                     f"{s}={d / 3600:.1f}h"
                     for s, d in stale.items() if d > args.stale_seconds
                 )
+                # Two different numbers, on purpose. `engine.active` is what the
+                # engine has *evaluated* this tick. `history` is what the event
+                # log says is outstanding, which is what an operator is looking
+                # at. They differ after a restart, and the difference is the whole
+                # reason the replay exists — so the log line shows both rather
+                # than the one that is easy.
+                if tick % 1 == 0 and history is not None:
+                    outstanding = (f"{len(history.unacknowledged)} waiting for a "
+                                   f"human (log)")
+                else:
+                    outstanding = "history unavailable"
                 log.info(
-                    "tick=%d rules=%d active=%d events=%d %s",
+                    "tick=%d rules=%d active=%d %s events=%d %s",
                     tick, len(rule_set), len(engine.active_alarms()),
-                    sink.written,
+                    outstanding, sink.written,
                     f"silent: {', '.join(quiet)}" if quiet else "all signals talking",
                 )
             for t in transitions:
@@ -181,6 +247,14 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--report-every", type=float, default=300.0)
     srv.add_argument("--stale-seconds", type=float, default=900.0,
                      help="a signal silent for longer than this is reported")
+    srv.add_argument(
+        "--replay", action=argparse.BooleanOptionalAction, default=True,
+        help="rebuild acknowledgements from the event log on start (default: on)",
+    )
+    srv.add_argument(
+        "--replay-hours", type=float, default=24.0,
+        help="how far back to replay (default: 24)",
+    )
     srv.set_defaults(func=do_serve)
     return p
 

@@ -197,26 +197,59 @@ ORDER BY signal_id, ts DESC
 
 
 def annunciator_query() -> str:
-    """Unacknowledged critical alarms, newest first.
+    """Alarms still on the operator's list, and whether a human has seen them.
 
-    `severity = 'critical'` because that is the class that latches: a warning
-    auto-clears, so it is not something an operator can acknowledge. The window
-    is bounded at 24 hours so the panel does not grow without limit, and the
-    cutoff is in the query rather than in a node so it is visible to whoever
-    reads the flow later.
+    The predicate is the one `alarms/replay.py` uses, and it is not "not
+    cleared". A `critical` alarm **latches** — the engine never writes an
+    `alarm_cleared` for one, because acknowledging it is what takes it off the
+    list — so an acknowledged critical has no clear event *ever* and a naive
+    "still active" test would show it forever.
+
+    Two independent reasons an alarm leaves the panel, and the query has to know
+    about both:
+
+    * somebody acknowledged it, or
+    * the condition cleared (a `warning` auto-clears, so this only happens for
+      non-latching severities — kept anyway, because the day a rule is
+      reclassified this query should already be right).
+
+    The `severity = 'critical'` filter is because a warning auto-clears and so is
+    never something an operator can acknowledge. The window is bounded so the
+    panel does not grow without limit, and the bound is in the query rather than
+    in a node so it is visible to whoever reads the flow next.
     """
     return """
-SELECT id, ts, kind, severity, message, signal_id, equipment_id, detail
-FROM event
-WHERE severity = 'critical'
-  AND kind = 'alarm_raised'
-  AND ts >= now() - interval '24 hours'
+SELECT r.id,
+       r.ts                                            AS raised_at,
+       r.severity,
+       r.message,
+       r.signal_id,
+       r.equipment_id,
+       r.detail->>'rule'                                AS rule,
+       (a.id IS NOT NULL)                              AS acknowledged,
+       a.ts                                            AS acknowledged_at,
+       now() - r.ts                                    AS age_s
+FROM event r
+LEFT JOIN LATERAL (
+    SELECT ack.id, ack.ts
+    FROM event ack
+    WHERE ack.kind = 'alarm_acknowledged'
+      AND ack.detail->>'rule' = r.detail->>'rule'
+      AND ack.ts > r.ts
+    ORDER BY ack.ts
+    LIMIT 1
+) a ON TRUE
+WHERE r.kind = 'alarm_raised'
+  AND r.severity = 'critical'
+  AND r.ts >= now() - interval '24 hours'
+  AND a.id IS NULL                       -- nobody has seen it since it raised
   AND NOT EXISTS (
-      SELECT 1 FROM event ack
-      WHERE ack.kind = 'alarm_acknowledged'
-        AND ack.detail->>'rule' = e.detail->>'rule'
+      SELECT 1 FROM event c
+      WHERE c.kind = 'alarm_cleared'
+        AND c.detail->>'rule' = r.detail->>'rule'
+        AND c.ts > r.ts
   )
-ORDER BY ts DESC
+ORDER BY r.ts DESC
 LIMIT 200
 """.strip()
 
@@ -229,11 +262,20 @@ def acknowledge_query() -> str:
     occurrence. The consequence is that acknowledging one occurrence of a
     flapping rule acknowledges the rule, which is the behaviour an operator
     expects and the opposite of what an occurrence-based system does.
+
+    The `::text` cast on `$rule` is not decoration. A bind parameter inside
+    `jsonb_build_object` has **no inferable type**, and Postgres says so:
+
+        could not determine data type of parameter $3
+
+    Which is only visible by running it, and which was found by running it. The
+    parameters in the `VALUES` list infer fine from the column types; the ones
+    inside a function call have nothing to infer from.
     """
     return """
 INSERT INTO event (ts, kind, severity, message, signal_id, equipment_id, detail)
 VALUES (now(), 'alarm_acknowledged', 'critical', $msg, $sig, $eq,
-        jsonb_build_object('rule', $rule, 'acknowledged_at', now()))
+        jsonb_build_object('rule', $rule::text, 'acknowledged_at', now()))
 RETURNING id
 """.strip()
 
@@ -766,12 +808,59 @@ msg.payload = {
 return msg;
 """,
         ),
+        function(
+            "acknowledge what the operator pressed", tab_id,
+            """
+// The operator pressed a row. This is the path that `AlarmEngine.acknowledge()`
+// never had for three phases: a method that existed, was tested, and was called
+// by nothing because there was no operator.
+//
+// The write is bound, not interpolated -- the rule id comes from a row the
+// operator clicked, and a rule id is machine-generated today but a message is
+// not. An INSERT built by concatenation is a SQL injection one mistyped row away.
+//
+// `detail->>'rule'` is the join key because the engine puts the rule there and
+// there is no column for it. See alarms/replay.py for why that is a cost being
+// paid knowingly.
+const rule = msg.payload.rule;
+const alarm = msg.payload.orig || msg.payload;
+
+msg.payload = {
+    msg: `acknowledged: ${alarm.message || rule}`,
+    rule: rule,
+    signal: alarm.signal_id || null,
+};
+msg.topic = 'acknowledge';
+return msg;
+""",
+        ),
+        postgres(
+            "record the acknowledgement", tab_id,
+            """
+INSERT INTO event (ts, kind, severity, message, signal_id, detail)
+VALUES (now(), 'alarm_acknowledged', 'critical', $msg, $signal,
+        jsonb_build_object('rule', $rule::text, 'acknowledged_at', now()))
+RETURNING id
+""",
+            params=[
+                {"type": "msg", "name": "msg"},
+                {"type": "msg", "name": "signal"},
+                {"type": "msg", "name": "rule"},
+            ],
+        ),
         debug("annunciator panel", tab_id, active=True),
+        debug("acknowledged", tab_id, active=True),
     ]
     wire(nodes,
          ("refresh the panel", 0, "read unacknowledged criticals"),
          ("read unacknowledged criticals", 1, "mark staleness"),
-         ("mark staleness", 0, "annunciator panel"))
+         ("mark staleness", 0, "annunciator panel"),
+         # The operator path. Separate from the refresh path, deliberately: a
+         # refresh is a timer and must never be able to acknowledge anything.
+         ("annunciator panel", 0, "acknowledge what the operator pressed"),
+         ("acknowledge what the operator pressed", 0,
+          "record the acknowledgement"),
+         ("record the acknowledgement", 1, "acknowledged"))
     return nodes
 
 
@@ -919,7 +1008,8 @@ return msg;
             """
 INSERT INTO event (ts, kind, severity, message, signal_id, detail)
 VALUES (now(), 'setpoint_written', 'info', $msg, $tag,
-        jsonb_build_object('value', $value, 'write_range', $range))
+        jsonb_build_object('value', $value::float8,
+                           'write_range', $range::jsonb))
 RETURNING id
 """,
             params=[
