@@ -197,14 +197,14 @@ services:
       # The gateway's login role: LOGIN, member of wwtp_writer, and nothing
       # else. It can insert readings and it cannot delete them.
       GATEWAY_DB_ROLE: ${GATEWAY_DB_ROLE:-wwtp_gateway}
-      # Passed through possibly-empty, and the fallback is decided in
-      # `storage/postgres/login_role.py` because Compose cannot nest
-      # `${A:-${B}}` — it turns the whole thing into a literal string.
-      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
+      # Both passwords are required, and `init-db` is the only service that needs
+      # both — it creates both login roles. The services themselves each get one
+      # (see the `gateway` block below), so there is a single meaning per variable.
+      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:?set GATEWAY_DB_PASSWORD in .env}
       # The dashboard's read-only role: LOGIN, member of wwtp_reader, and
       # nothing else. No INSERT, no UPDATE, no DELETE, no TRUNCATE.
       WEB_DB_ROLE: ${WEB_DB_ROLE:-wwtp_ui}
-      WEB_DB_PASSWORD: ${WEB_DB_PASSWORD:-}
+      WEB_DB_PASSWORD: ${WEB_DB_PASSWORD:?set WEB_DB_PASSWORD in .env}
     depends_on:
       db:
         condition: service_healthy
@@ -241,8 +241,28 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${GATEWAY_DB_ROLE:-wwtp_gateway}
-      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # **The gateway's password comes from `GATEWAY_DB_PASSWORD` and nothing
+      # else, and it is required.**
+      #
+      # This used to be two variables — `GATEWAY_DB_PASSWORD` for the role and
+      # `POSTGRES_PASSWORD` for the connection — and the two disagreed the moment
+      # anyone set the first, because `storage/postgres/schema.py::dsn()` reads
+      # `POSTGRES_PASSWORD` while `login_role.py` reads `GATEWAY_DB_PASSWORD`.
+      # Setting the *documented, correct* variable therefore **broke the gateway**:
+      #
+      #     FATAL: password authentication failed for user "wwtp_gateway"
+      #
+      # while `init-db` cheerfully logged that it had refreshed the password. The
+      # stack only worked because both variables happened to be unset, so both
+      # paths used the owner's password and matched by coincidence.
+      #
+      # One variable, one meaning. `${A:-${B}}` is not used because Compose cannot
+      # nest it — it turns the value into a literal string, which this project has
+      # already been bitten by — and a *required* variable is the honest answer
+      # anyway: a silent fallback to the owner's password is a working
+      # configuration that defeats the point of having a scoped credential, and it
+      # defeats it invisibly.
+      POSTGRES_PASSWORD: ${GATEWAY_DB_PASSWORD:?set GATEWAY_DB_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-wwtp}
     volumes:
       # The spool must outlive the container. Without this volume, every restart

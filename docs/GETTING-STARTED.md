@@ -225,8 +225,13 @@ database's `wwtp_ui` password disagree. **`init-db` is a one-shot service, so
 changing it in `.env` does nothing until you re-run it:**
 
 ```bash
-docker compose up -d --force-recreate init-db && docker compose restart web
+docker compose up -d --force-recreate init-db
+docker compose up -d --force-recreate gateway web
 ```
+
+**`--force-recreate`, not `restart`.** A restart reuses the container's existing
+environment, so a changed password never reaches the service and the symptom is
+still an authentication failure. This cost an hour of "the fix did not work".
 
 `init-db` logs which variable each role's password came from, which is the
 fastest way to see this:

@@ -521,6 +521,36 @@ one purpose, generalised in its signature and not in its behaviour.
   documentation — which is why the auth-failure branch of the getting-started
   page now leads with it.
 
+- **Setting the documented, correct variable *broke* the gateway.** With the
+  password bug fixed, the next attempt was to give each service its own
+  credential — which `.env.example` has recommended since Phase 3g. It failed at
+  once:
+
+      FATAL: password authentication failed for user "wwtp_gateway"
+
+  Because **there were two notions of "the password" and they disagreed.**
+  `login_role.py` set the role's password from `GATEWAY_DB_PASSWORD` while
+  `schema.dsn()` connected with `POSTGRES_PASSWORD`, and compose passed *both* to
+  the gateway. The stack had only ever worked because both variables were unset,
+  so both paths used the owner's password and **matched by coincidence** — which
+  is why the first bug hid the second.
+
+  Now: **one variable, one meaning.** Each service gets exactly one
+  `POSTGRES_PASSWORD`, taken from its own `.env` variable, and
+  `${VAR:?set VAR in .env}` makes it **required**. A silent fallback to the owner's
+  password is a working configuration that defeats the point of a scoped
+  credential, and it defeats it invisibly — so the fallback is gone rather than
+  documented. `${A:-${B}}` is not used, because Compose cannot nest it (this
+  project has been bitten by that already) and a required variable is the honest
+  answer anyway.
+
+- **And `docker compose restart` does not re-read the environment.** After
+  changing a password, `restart` reuses the container's existing env, so the
+  service never sees the new value and the symptom is an authentication failure
+  that looks exactly like a code bug. It cost an hour of "the fix did not work".
+  `--force-recreate` is required, and both `init-db` (one-shot) *and* the services
+  need it. In `.env.example` and `GETTING-STARTED.md`.
+
 - **And `docs/ARCHITECTURE.md` was missing a service.** The new test asserts the
   service table against `compose.yaml`, and immediately found that **`scada` was
   in compose and absent from the table**. So the table had *two* problems: a row
