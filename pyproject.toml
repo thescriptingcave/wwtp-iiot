@@ -150,6 +150,9 @@ ignore = [
 "alarms/main.py" = ["PLC0415"]
 "alarms/scenarios.py" = ["PLC0415"]
 "alarms/store.py" = ["PLC0415"]
+# `tune` imports the plant model and the detectors together, and the detectors
+# are the half that must stay importable without the storage extras.
+"alarms/tune.py" = ["PLC0415"]
 "storage/postgres/roles.py" = ["PLC0415"]
 "storage/postgres/login_role.py" = ["PLC0415"]
 # `_evaluate_one` is a state machine with one branch per state; splitting it up

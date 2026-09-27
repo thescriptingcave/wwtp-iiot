@@ -30,6 +30,47 @@
 #   targets      equipment ids, instrument ids, or literal:*
 #   expects      the signature a correct detector should find — used by the
 #                tests as the specification of what "working" means
+#
+# ── the detection vocabulary, and what `not_sufficient_alone` means ─────────
+#
+# `expects.detectable_by` and `expects.not_sufficient_alone` are the
+# *specification* for the alarm engine: the first says how the fault is findable,
+# the second says which methods cannot be relied on to find it. Every name in
+# either list must appear in `alarms/base.py::DETECTION_VOCABULARY`, and
+# `tests/test_alarm_rules.py` checks it.
+#
+# **The field used to be called `NOT_detectable_by`, and that name was wrong.**
+#
+# It read as an absolute — "this method cannot detect this fault" — and the alarm
+# coverage audit (`make coverage`) proved it false three times. A
+# `single_point_threshold` rule *did* fire on `storm_inflow`,
+# `blower_failure` and `digester_souring`, all of which this file listed the
+# threshold under as undetectable.
+#
+# None of those three findings is a mistake about the method. Each is a fault
+# that a limit check finds **eventually**, and the whole point of the
+# `detectable_by` list is the ones that find it *early*:
+#
+#   - `blower_failure`  DO sags within its 1.5-3.0 band for the first hour or
+#                      two. On the six-hour trip the contract actually declares,
+#                      DO does eventually cross 1.5. Hours after the cause.
+#   - `digester_souring` Souring develops over days, has a limit, and the
+#                      operator is already watching the digester. The threshold
+#                      is not early, it is *adequate* — for this fault.
+#   - `storm_inflow`    Flow passes `range_max` during the worst storms, which
+#                      are the ones an operator already knows about from the rain
+#                      gauge.
+#
+# So the claim is now stated as what it is. A method is not sufficient **alone**
+# when you cannot rely on it being the thing that tells you first, and the
+# faults where a threshold does fire late say so in
+# `expects.threshold_eventually_fires` rather than leaving the reader to infer it
+# from an absence.
+#
+# The faults with no `threshold_eventually_fires` key are ones where a threshold
+# rule was never written, so the question is **unmeasured** rather than answered.
+# That is a different state from "answered: no", and the field is left absent
+# deliberately.
 # ═════════════════════════════════════════════════════════════════════════════
 
 version: 1
@@ -61,7 +102,13 @@ faults:
         torque rises; effluent TSS climbs *after* the flow peak, because the
         solids wash out of a deepened blanket; the DO loop opens up.
       detectable_by: [trend, correlation, deviation_from_baseline]
-      NOT_detectable_by: [single_point_threshold]
+      not_sufficient_alone: [single_point_threshold]
+      threshold_eventually_fires: >-
+        Yes, during the heaviest storms. `influent_flow_ceiling` fires when flow
+        passes 2 200 m3/h, and flow reaches 2 249 m3/h at p95. That is the
+        worst weather, which is the weather the operator already knows about
+        from the rain gauge — so the threshold confirms something rather
+        than announcing it, and `influent_flow_surge` catches the rest.
 
   - id: blower_failure
     kind: process
@@ -99,7 +146,13 @@ faults:
         thing this library models, and it is why the test asserts the
         *ordering* of the two responses, not just their magnitudes.
       detectable_by: [deviation_from_baseline, state_change, trend]
-      NOT_detectable_by: [single_point_threshold]
+      not_sufficient_alone: [single_point_threshold]
+      threshold_eventually_fires: >-
+        Yes, on a trip this long. `aeration_do_low` fires — DO reaches 1.40 mg/L
+        against a `normal_low` of 1.5 — hours after `aeration_do_sagging`
+        and after the cause is over. The trend is not a better detector
+        than the threshold; it is an *earlier* one, and early is the only
+        thing the delay costs you.
 
   - id: sludge_blanket_thickening
     kind: process
@@ -122,7 +175,7 @@ faults:
         blanket approaches the water surface; return sludge concentration
         falls as the sludge is diluted.
       detectable_by: [trend, rate_of_change, deviation_from_baseline]
-      NOT_detectable_by: [single_point_threshold]
+      not_sufficient_alone: [single_point_threshold]
 
   - id: digester_souring
     kind: process
@@ -145,7 +198,14 @@ faults:
         methane fraction drops toward 45 %; gas flow falls; boiler duty falls
         with it. The *order* matters: VFA rises first, gas falls last.
       detectable_by: [trend, ratio_derived_alarm, deviation_from_baseline]
-      NOT_detectable_by: [single_point_threshold]
+      not_sufficient_alone: [single_point_threshold]
+      threshold_eventually_fires: >-
+        Yes, and adequately, which is why this is the one genuine exception to
+        "a limit is the wrong tool". `digester_vfa_high` and
+        `digester_ph_low` are both `single_point_threshold` rules and both
+        fire. Souring develops over *days*, has a limit, and the digester
+        is watched anyway — so the threshold is late but sufficient. Set a
+        fast ammonia load instead and pH is the wrong signal entirely.
 
   - id: lift_pump_cavitation
     kind: process
@@ -169,7 +229,7 @@ faults:
         compensates by bringing another pump on, so level stays normal. The
         fault is invisible in the level and visible only in the current.
       detectable_by: [oscillation_detection, deviation_from_baseline]
-      NOT_detectable_by: [single_point_threshold, state_change]
+      not_sufficient_alone: [single_point_threshold, state_change]
 
   - id: lift_pump_failure
     kind: process
@@ -190,7 +250,7 @@ faults:
         pump starts; total lift flow is maintained and the wet-well level does
         not move. Duty rotation is suspended while no pump is available.
       detectable_by: [state_change, single_point_threshold]
-      NOT_detectable_by: []
+      not_sufficient_alone: []
 
   - id: high_ammonia_load
     kind: process
@@ -213,7 +273,7 @@ faults:
         permit limit with a lag; the chlorine dose rises with it, because
         ammonia dominates chlorine demand.
       detectable_by: [trend, deviation_from_baseline, correlation]
-      NOT_detectable_by: [single_point_threshold]
+      not_sufficient_alone: [single_point_threshold]
 
   # ─── sensor faults ─────────────────────────────────────────────────────────
   # The process is healthy in all of these. Only the reported value is wrong.
@@ -242,7 +302,7 @@ faults:
         oxygen consumption implied by air flow does not. Detect it by
         cross-checking against transfer, not by threshold.
       detectable_by: [model_based, cross_validation, correlation]
-      NOT_detectable_by: [single_point_threshold, deviation_from_baseline]
+      not_sufficient_alone: [single_point_threshold, deviation_from_baseline]
       note: >
         The bias is deliberately small enough that the indicated value stays
         inside the normal operating band. A larger drift would be caught by a
@@ -271,7 +331,7 @@ faults:
         around it does. Note this is *not* the same as a gap: a gap is missing
         data, a flatline is plausible data.
       detectable_by: [flatline_detection, cross_validation, expected_sample_count]
-      NOT_detectable_by: [deadband, single_point_threshold, deviation_from_baseline]
+      not_sufficient_alone: [deadband, single_point_threshold, deviation_from_baseline]
 
   - id: sensor_stuck_high
     kind: sensor
@@ -293,7 +353,7 @@ faults:
         detector: the *total* lift current summed from per-pump values no longer
         agrees with the plant power, because the per-pump reading is wrong.
       detectable_by: [cross_validation, single_point_threshold]
-      NOT_detectable_by: []
+      not_sufficient_alone: []
 
   - id: effluent_tss_stuck
     kind: sensor
@@ -318,7 +378,7 @@ faults:
         blanket disagree with it. This is the fault that motivates the whole
         argument for keeping raw signals alongside their alarm state.
       detectable_by: [cross_validation, flatline_detection, correlation]
-      NOT_detectable_by: [single_point_threshold, deadband]
+      not_sufficient_alone: [single_point_threshold, deadband]
 
 # ─── scenarios ──────────────────────────────────────────────────────────────
 # Named sequences used by the demo runner and the tests. A scenario is a list

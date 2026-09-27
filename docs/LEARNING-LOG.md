@@ -1116,19 +1116,19 @@ the same name.*
 
 ## What I would do next, in order
 
-1. **Tune the six false-positive alarm rules** (thread 13). Measure each healthy
+1. **Tune the six false-positive alarm rules** (thread 10). Measure each healthy
    distribution the way `aeration_do_sagging` was measured — 1 618 windows, two
    minutes — and set the threshold above it. An alarm system that pages on a
    healthy plant is worse than no alarm system, and this one currently pages on
    six. This is the single highest-value thing in the project.
-2. **Reword the contract's `NOT_detectable_by`** (thread 14), as a deliberate
+2. **Reword the contract's `NOT_detectable_by`** (thread 11), as a deliberate
    change with the disagreement recorded alongside it. Not a code change and not
    a silent one.
 3. **Verify the four rules that have never fired.** `lift_pump_flow_lost` and
    `secondary_scrape_torque_high` claim two faults that are currently blind, and
    two `cross_validation` rules cannot fire in simulation at all. A rule that is
    written, claimed and unverified looks like coverage and provides none.
-4. **Pin the seeder's seed and check the course's shown outputs** (thread 11).
+4. **Pin the seeder's seed and check the course's shown outputs** (thread 12).
 5. **`sql/03-advanced`**: continuous aggregates, retention, `EXPLAIN`, chunk
    behaviour. The material is available and the stage is no longer blocked by a
    dialect.

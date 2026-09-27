@@ -88,7 +88,22 @@ class FaultCoverage:
     #: an incidental catch, and worth knowing about.
     incidental: list[str] = field(default_factory=list)
     contract_detectable_by: list[str] = field(default_factory=list)
-    contract_not_detectable_by: list[str] = field(default_factory=list)
+    #: The fault's `expects.not_sufficient_alone` list.
+    #:
+    #: The field was `NOT_detectable_by` and was renamed in this phase, because
+    #: the coverage report proved three of its eleven entries false: a
+    #: `single_point_threshold` rule fires on `storm_inflow`, `blower_failure` and
+    #: `digester_souring`, all of which the contract listed the threshold under as
+    #: undetectable.
+    #:
+    #: The claim is true as *"not sufficient on its own"* and false as *"cannot
+    #: detect"*, and the difference is the whole point of the fault library: a
+    #: limit check on digester pH finds souring adequately and days late, which is
+    #: fine for a fault that develops over days and useless for one that develops
+    #: in an hour. The rename makes that reading the only one available.
+    contract_not_sufficient_alone: list[str] = field(default_factory=list)
+    #: `expects.threshold_eventually_fires`, where the contract says one exists.
+    contract_threshold_fires_late: str = ""
 
     @property
     def detected(self) -> bool:
@@ -145,6 +160,9 @@ class CoverageReport:
     rows: list[FaultCoverage]
     unused_rules: list[str]
     disagreements: list[str]
+    #: Expected findings: a rule using a not-sufficient-alone method where the
+    #: contract explicitly says a threshold fires eventually.
+    explained: list[str] = field(default_factory=list)
     evaluated_transitions: int = 0
 
     @property
@@ -182,6 +200,7 @@ class CoverageReport:
             "untested": self.untested,
             "unused_rules": self.unused_rules,
             "contract_disagreements": self.disagreements,
+            "contract_explained": self.explained,
             "matrix": [
                 {
                     "fault": r.fault_id,
@@ -190,7 +209,9 @@ class CoverageReport:
                     "blind_spot": r.blind_spot,
                     "claimed_by": dict(r.claimed),
                     "incidental": r.incidental,
-                    "not_detectable_by": r.contract_not_detectable_by,
+                    "not_sufficient_alone": r.contract_not_sufficient_alone,
+                    "threshold_eventually_fires":
+                        r.contract_threshold_fires_late,
                 }
                 for r in self.rows
             ],
@@ -215,7 +236,7 @@ class CoverageReport:
                 rid.replace("aeration_", "").replace("influent_", "")
                 for rid, fired in r.claimed.items() if fired
             ) or "—"
-            note = ", ".join(r.contract_not_detectable_by) or "—"
+            note = ", ".join(r.contract_not_sufficient_alone) or "—"
             verdict = (
                 "YES" if r.detected
                 else ("by luck" if r.incidentally_caught
@@ -246,8 +267,18 @@ class CoverageReport:
             f"rules that never fired: {', '.join(self.unused_rules) or 'none'}"
         )
         if self.disagreements:
-            lines.append("contract disagreements:")
+            lines.append(
+                "unexplained contract disagreements (one of the two is wrong):"
+            )
             lines.extend(f"  {d}" for d in self.disagreements)
+        if self.explained:
+            lines.append(
+                f"expected: {len(self.explained)} rule(s) using a "
+                "not-sufficient-alone method, where the contract says a threshold "
+                "fires eventually"
+            )
+            for d in self.explained:
+                lines.append(f"  {d}")
         return "\n".join(lines)
 
     def _rule_names(self) -> list[str]:
@@ -295,6 +326,7 @@ def audit(
     rows: list[FaultCoverage] = []
     unused = {r.id for r in engine.rules}
     disagreements: list[str] = []
+    late: list[str] = []
 
     for fault in faults:
         fid = fault["id"]
@@ -305,8 +337,11 @@ def audit(
             title=fault.get("title", ""),
             evaluated=fid in transitions_by_fault,
             contract_detectable_by=list(expects.get("detectable_by", [])),
-            contract_not_detectable_by=list(
-                expects.get("NOT_detectable_by", [])
+            contract_not_sufficient_alone=list(
+                expects.get("not_sufficient_alone", [])
+            ),
+            contract_threshold_fires_late=str(
+                expects.get("threshold_eventually_fires", "")
             ),
         )
         transitions = transitions_by_fault.get(fid, [])
@@ -338,17 +373,35 @@ def audit(
             if not row.claimed[rid]:
                 continue
             method = rule_index[rid].detector
-            if method in row.contract_not_detectable_by:
-                disagreements.append(
-                    f"{fid}: rule {rid} uses {method!r}, which the contract "
-                    "lists under NOT_detectable_by, and it fired. Either the "
-                    "contract is wrong or the rule is."
-                )
+            if method in row.contract_not_sufficient_alone:
+                # This is no longer necessarily a contradiction. A limit check on
+                # DO *does* find a six-hour blower trip — hours late — and the
+                # contract now says so under `threshold_eventually_fires`. So the
+                # report distinguishes the two cases rather than reporting both as
+                # "either the contract is wrong or the rule is".
+                if row.contract_threshold_fires_late:
+                    late.append(
+                        f"{fid}: rule {rid} uses {method!r}, which the contract "
+                        "lists under not_sufficient_alone, and it fired. The "
+                        "contract also says a threshold fires here eventually, so "
+                        "this is the expected case: the rule works but is later "
+                        "than the method the contract prefers."
+                    )
+                else:
+                    disagreements.append(
+                        f"{fid}: rule {rid} uses {method!r}, which the contract "
+                        "lists under not_sufficient_alone, and it fired. The "
+                        "contract has no threshold_eventually_fires note for this "
+                        "fault, so either the contract is wrong or the rule is — "
+                        "and the fix is to record which, not to delete a working "
+                        "rule."
+                    )
         rows.append(row)
 
     return CoverageReport(
         rows=rows,
         unused_rules=sorted(unused),
         disagreements=disagreements,
+        explained=late,
         evaluated_transitions=sum(len(v) for v in transitions_by_fault.values()),
     )

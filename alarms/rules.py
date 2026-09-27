@@ -325,7 +325,7 @@ def _rules(c: Contract) -> list[AlarmRule]:
             rationale=(
                 "Cavitation is a *performance* loss, not a state change: the pump "
                 "is still nominally running, which is why the contract lists "
-                "`state_change` under NOT_detectable_by. A stuck-high current "
+                "`not_sufficient_alone`. A stuck-high current "
                 "sensor produces the same signature, and the two are genuinely "
                 "hard to tell apart from one signal — see the cross-validation "
                 "rule below."
@@ -374,7 +374,7 @@ def _rules(c: Contract) -> list[AlarmRule]:
                 "The one place in this rule set where a plain limit is genuinely "
                 "the right tool, and the contract agrees: it names "
                 "`state_change` as the method rather than listing a threshold "
-                "under NOT_detectable_by. A failed pump does not produce a "
+                "under `not_sufficient_alone`. A failed pump does not produce a "
                 "*deviation*, it produces an absence, and an absence has a "
                 "threshold. Dwell is three minutes because a pump trip and a wet-"
                 "well level swing both show up here briefly and neither is a "

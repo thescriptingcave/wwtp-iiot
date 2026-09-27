@@ -85,7 +85,7 @@ def test_library_has_the_hard_cases() -> None:
     hard = [
         s
         for s in sensors
-        if "single_point_threshold" in s.expects.get("NOT_detectable_by", [])
+        if "single_point_threshold" in s.expects.get("not_sufficient_alone", [])
     ]
     assert len(hard) >= 3, "expected several faults a threshold alarm cannot catch"
 

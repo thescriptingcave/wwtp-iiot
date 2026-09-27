@@ -196,15 +196,19 @@ def test_the_report_counts_a_rule_as_used_when_it_fired_incidentally() -> None:
     assert "aeration_do_low" not in report.unused_rules
 
 
-def test_the_report_names_a_contract_disagreement() -> None:
-    """Where the contract and a rule contradict each other, say so.
+def test_the_report_separates_a_real_contradiction_from_an_explained_one() -> None:
+    """The distinction the rewording created, and the reason for it.
 
-    The contract lists `single_point_threshold` under NOT_detectable_by for nine
-    of its eleven faults. That is a strong claim, and the report is where it gets
-    tested — because it turns out to be true as *"not sufficient alone"* and
-    false as *"impossible"*. `digester_souring` is detected by exactly the kind of
-    rule the contract says cannot detect it, and the honest resolution is to
-    change the contract's wording rather than to delete a working rule.
+    `digester_souring` lists `single_point_threshold` under `not_sufficient_alone`
+    *and* carries a `threshold_eventually_fires` note saying a limit check does
+    find it, late. A threshold rule firing on it is therefore **expected**, and the
+    report says so under `explained`.
+
+    A fault with the `not_sufficient_alone` entry and *no* such note is different:
+    a threshold firing there is a genuine contradiction and belongs in
+    `disagreements`. Before the rewording the two cases produced the same message,
+    which is why the report told me "either the contract is wrong or the rule is"
+    three times about three faults where the contract was fine.
     """
     from alarms.base import Verdict
     from alarms.engine import Transition
@@ -212,10 +216,69 @@ def test_the_report_names_a_contract_disagreement() -> None:
     engine = AlarmEngine(rules())
     vfa = next(r for r in engine.rules if r.id == "digester_vfa_high")
     t = Transition("raised", vfa, engine.states[vfa.id], 100.0, Verdict.firing(0.7))
-    report = audit(engine, {"digester_souring": [t]})
-    assert report.disagreements, "the contradiction was not reported"
-    assert "single_point_threshold" in report.disagreements[0]
-    assert "digester_souring" in report.disagreements[0]
+
+    explained = audit(engine, {"digester_souring": [t]})
+    assert not explained.disagreements, (
+        "digester_souring carries a threshold_eventually_fires note, so this is "
+        "not a contradiction"
+    )
+    assert explained.explained, "but it is still worth reporting"
+    assert "not_sufficient_alone" in explained.explained[0]
+    assert "eventually" in explained.explained[0]
+
+    # A fault whose contract entry has no such note *is* a contradiction. The
+    # rule has to be one that *claims* that fault, because the report only
+    # cross-checks claimed pairs — an incidental fire is reported under
+    # `incidental` instead, which is the other half of the same distinction.
+    torque = next(r for r in engine.rules
+                  if "sludge_blanket_thickening" in r.detects)
+    assert torque.detector == "single_point_threshold", (
+        "this test is about a threshold rule contradicting the contract, so the "
+        f"rule it picks has to be one; {torque.id} is {torque.detector}"
+    )
+    contradicted = audit(engine, {"sludge_blanket_thickening": [
+        Transition("raised", torque, engine.states[torque.id], 100.0,
+                   Verdict.firing(140.0))
+    ]})
+    assert contradicted.disagreements, (
+        "sludge_blanket_thickening lists the threshold as not sufficient alone "
+        "and carries no threshold_eventually_fires note, so a threshold rule "
+        "firing on it is a real contradiction and must be reported as one"
+    )
+    assert not contradicted.explained
+    assert "no threshold_eventually_fires note" in contradicted.disagreements[0]
+
+
+def test_the_rewording_only_claims_late_faults_the_audit_actually_confirmed() -> None:
+    """The contract must not assert a `threshold_eventually_fires` on its own say-so.
+
+    The three notes in `contracts/fault-scenarios.yaml` exist because the coverage
+    run *observed* a threshold rule firing on those faults. If someone adds a
+    fourth note from reasoning alone, it is a claim in a file this project treats
+    as a source of truth, and it should have to be earned.
+
+    The check is that every fault carrying a note is one the report has placed in
+    `explained` for — which needs a simulation and so lives with the slow tests.
+    Here it asserts the weaker, always-true half: that the notes are well-formed
+    and reference a method the engine actually has.
+    """
+    from alarms.base import DETECTION_VOCABULARY
+
+    noted = [f for f in load_faults() if f["expects"].get("threshold_eventually_fires")]
+    assert noted, "the rewording removed every note; the audit found three"
+
+    for fault in noted:
+        expects = fault["expects"]
+        note = expects["threshold_eventually_fires"]
+        assert len(note) > 80, f"{fault['id']}: the note is too short to be a note"
+        # A note about a threshold must sit on a fault that lists a threshold as
+        # not sufficient alone, or the two fields are contradicting each other.
+        assert "single_point_threshold" in expects["not_sufficient_alone"], (
+            f"{fault['id']} has a threshold_eventually_fires note but does not "
+            "list single_point_threshold as not sufficient alone"
+        )
+
+    assert all("single_point_threshold" in DETECTION_VOCABULARY for _ in noted)
 
 
 def test_the_report_renders_a_table_a_person_can_read() -> None:
@@ -261,15 +324,18 @@ def test_the_blower_trip_is_caught_by_a_trend_not_by_a_threshold() -> None:
         "the DO trend did not fire; the contract says a threshold cannot find "
         "this fault, and the trend is the alternative"
     )
-    # The contract claims `single_point_threshold` cannot find this fault, and on
-    # a *short* trip it is right. On the six-hour trip the contract actually
-    # declares, DO does eventually cross 1.5 and the threshold fires. The
-    # simulation wins over the claim, and the disagreement is reported by
-    # `make coverage` rather than asserted away here — which is the whole point
-    # of the tool.
+    # The contract used to claim `single_point_threshold` *cannot* find this
+    # fault, and this assertion is what disproved it: on the six-hour trip the
+    # contract itself declares, DO does cross 1.5 and the threshold fires.
+    #
+    # The contract has since been reworded to `not_sufficient_alone` and given a
+    # `threshold_eventually_fires` note for this fault, so the behaviour below is
+    # now *expected* rather than a contradiction. The assertion stays because the
+    # thing worth pinning is the ordering: `fan_at < do_at` is the warning time,
+    # and it holds however the contract phrases itself.
     assert run.raised("aeration_do_low"), (
-        "a six-hour blower trip drives DO below 1.5, so the threshold does fire; "
-        "the contract's NOT_detectable_by claim is wrong for this duration"
+        "a six-hour blower trip drives DO below 1.5, so the threshold does fire — "
+        "which is why the contract now says a threshold fires here eventually"
     )
 
     fan_at = run.first_raise("aeration_blower_speed_drop")
@@ -374,4 +440,8 @@ def test_coverage_json_round_trips() -> None:
     payload = json.loads(json.dumps(report.as_dict(), default=str))
     assert payload["faults"] == 11
     assert payload["evaluated"] == 1
+    assert "contract_explained" in payload
+    # Every fault row carries the renamed field, so a consumer reading the old
+    # name gets a KeyError rather than a silently empty list.
+    assert all("not_sufficient_alone" in row for row in payload["matrix"])
     assert isinstance(report, CoverageReport)

@@ -8,7 +8,7 @@ without a container running.
 ## The shape of the problem, and why `single_point_threshold` is the wrong default
 
 Nine of the eleven faults in `contracts/fault-scenarios.yaml` list
-`single_point_threshold` under `NOT_detectable_by`. That is the most useful fact
+`single_point_threshold` under `not_sufficient_alone`. That is the most useful fact
 in the contract and it is worth understanding rather than memorising.
 
 A blower trips. The blower's speed drops *immediately*. So does air flow. So a
@@ -244,7 +244,7 @@ def state_change(rule: AlarmRule, window: Window) -> Verdict:
     alarm on the flow would fire late and be ambiguous; an alarm on the state is
     immediate and unambiguous.
 
-    `NOT_detectable_by: state_change` appears on `lift_pump_cavitation` in the
+    `not_sufficient_alone: state_change` appears on `lift_pump_cavitation` in the
     contract, and that is right: cavitation is a *performance* loss, the pump is
     still nominally running. The pump's state never changes, which is exactly why
     the condition had to be written as a deviation in delivered flow rather than
@@ -283,7 +283,7 @@ def flatline_detection(rule: AlarmRule, window: Window) -> Verdict:
     observation.
 
     The contract says so explicitly, twice: `sensor_flatline` and
-    `effluent_tss_stuck` both list `deadband` under `NOT_detectable_by`, and
+    `effluent_tss_stuck` both list `deadband` under `not_sufficient_alone`, and
     `sensor_flatline` also lists `deviation_from_baseline` — because a sensor
     stuck at a plausible value has no deviation.
 
