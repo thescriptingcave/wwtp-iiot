@@ -492,30 +492,36 @@ asked a question it answers wrongly.
 
 Also: `SELECT META().id AS key` is a parse error. `key` is reserved.
 
-### The gap I could not close, and did not paper over
+### The app user: four guesses, then one query
 
-The gateway authenticates as a bucket-scoped application user. Creating that user
-is part of initialisation, and it is **not working**:
+The gateway authenticates as a bucket-scoped application user, and creating it is
+part of initialisation. Four plausible spellings were all rejected:
 
-    --roles=wwtp              -> "unknown, malformed or role parameters are
-                                  undefined: [wwtp]"
+    --roles=wwtp              -> unknown, malformed or role parameters are undefined
     --roles=bucket_admin:wwtp -> the same
+    --roles=wwtp[wwtp]        -> the same
+    --roles=manage_bucket:wwtp-> the same
 
-So the role spelling this Couchbase Community build accepts is not known. I tried
-three forms and stopped rather than guess at a fourth and ship an init that fails
-on a clean machine.
+I stopped guessing and asked the cluster what roles it actually has:
 
-The init step is therefore **non-fatal and loud**: it prints a five-line warning
-and exits 0, because a stack that refuses to start is worse than one that starts
-with a stated limitation. `COUCHBASE_APP_USER_ROLE` is a variable so the correct
-value can be dropped in without editing the compose file.
+    [c.role.name for c in r.users().get_roles()]   -> admin, ro_admin, bucket_full_access
 
-**The consequence, stated plainly:** until this is fixed, the gateway has to be
-given the *admin* credentials. That is a real downgrade from the bucket scoping
-described in `docs/SECURITY.md`, and it is the one place in this project where
-the documented security posture is not what actually runs. It is recorded in
-SECURITY.md too, because a security document that describes an aspiration rather
-than a configuration is worse than no security document.
+Three roles, and none of them is any of the four I had tried. Assignment also uses
+**bracket** syntax rather than a colon, which nothing in the error messages hints
+at:
+
+    bucket_full_access[wwtp]   SUCCESS
+    bucket_full_access         ERROR: unknown role
+
+**The lesson is the one I keep relearning in this project: when four plausible
+guesses all fail, the answer is not a fifth guess, it is a different question.**
+Every other bug in this log came from a wrong assumption about a system I had not
+asked anything. Here, the system could be asked, in one line, and the four
+failures had been the cost of not asking sooner.
+
+The scoped user is now what the tests run against, and the two properties
+`docs/SECURITY.md` claims are asserted rather than hoped for: writes to its own
+bucket succeed, and `users().get_all_users()` is **denied**.
 
 ## Open threads
 

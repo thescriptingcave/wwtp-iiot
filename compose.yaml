@@ -269,34 +269,38 @@ services:
         # had ever created the user the gateway authenticates as. Scoped to the
         # bucket, so a compromise of the gateway cannot reach the admin
         # credential or any other bucket.
-        # UNRESOLVED - see docs/LEARNING-LOG.md.
+        # The bucket-scoped application user. Resolved, after four wrong
+        # spellings, by *asking the cluster what roles it has* rather than
+        # guessing:
         #
-        # Creating the bucket-scoped application user the gateway authenticates as
-        # is wanted, and `couchbase-cli user-manage --set` is the obvious way, but
-        # the role name is not resolving on Couchbase Community 7.6.2:
+        #     cluster.users().get_roles()  ->  admin, ro_admin,
+        #                                     bucket_full_access
         #
-        #   --roles=wwtp              -> "unknown, malformed or role parameters
-        #                                 are undefined: [wwtp]"
-        #   --roles=bucket_admin:wwtp -> the same
+        # and it is assigned with **bracket** syntax, not a colon:
         #
-        # so the role form this build wants is not known. Rather than guess at a
-        # third spelling and ship an init that fails on a clean machine, this is
-        # non-fatal and loud. Consequence, stated plainly: until it is worked out,
-        # give the gateway the *admin* credentials, which is a real downgrade from
-        # the scoping described in docs/SECURITY.md and is the one place in this
-        # project where the documented security posture is not what actually runs.
+        #     bucket_full_access[wwtp]        SUCCESS
+        #     bucket_full_access               ERROR: unknown role
+        #     bucket_admin:wwtp                ERROR: unknown role
+        #     wwtp                            ERROR: unknown role
+        #
+        # `bucket_full_access` is described by Couchbase as "full access to bucket
+        # data; cannot access the cluster", which is exactly the grant this
+        # project wants: the gateway can read and write the plant's documents and
+        # nothing else.
         if couchbase-cli user-manage -c "$$mgmt" "$${auth[@]}" --set \
              --rbac-username="$${COUCHBASE_APP_USER}" \
              --rbac-password="$${COUCHBASE_APP_PASSWORD}" \
              --auth-domain="local" \
-             --roles="$${COUCHBASE_APP_USER_ROLE:-wwtp}" >/dev/null 2>&1; then
+             --roles="$${COUCHBASE_APP_USER_ROLE:-bucket_full_access[$${COUCHBASE_BUCKET}]}"; then
           echo "app user $${COUCHBASE_APP_USER} ready"
         else
-          echo "WARNING: could not create the bucket-scoped user" >&2
-          echo "WARNING:   $${COUCHBASE_APP_USER}. Services using it will fail to" >&2
-          echo "WARNING:   authenticate. Use the admin credentials until this is" >&2
-          echo "WARNING:   fixed, or set COUCHBASE_APP_USER_ROLE to a role name" >&2
-          echo "WARNING:   this build accepts." >&2
+          # Loud and non-fatal. A stack that refuses to start is worse than one
+          # that starts with a stated limitation - but this is a *security*
+          # limitation, so it says so rather than carrying on quietly.
+          echo "WARNING: could not create the bucket-scoped user." >&2
+          echo "WARNING:   Services using it will fail to authenticate, and the" >&2
+          echo "WARNING:   only alternative is the admin credential, which is a" >&2
+          echo "WARNING:   strictly larger grant. See docs/SECURITY.md." >&2
         fi
 
         # Prove it, rather than exiting 0 on the strength of a command that
@@ -314,9 +318,11 @@ services:
       COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
       COUCHBASE_APP_USER: ${COUCHBASE_USER:?set COUCHBASE_USER in .env}
       COUCHBASE_APP_PASSWORD: ${COUCHBASE_PASSWORD:?set COUCHBASE_PASSWORD in .env}
-      # Role name for the app user. Left as a variable because the correct value
-      # is not yet known on this build - see the warning above.
-      COUCHBASE_APP_USER_ROLE: ${COUCHBASE_APP_USER_ROLE:-wwtp}
+      # Role for the app user, in Couchbase's bracket syntax. A variable because
+      # it is the one piece of this that is a naming convention rather than a
+      # fact, and a naming convention is worth being able to change without
+      # editing the compose file.
+      COUCHBASE_APP_USER_ROLE: ${COUCHBASE_APP_USER_ROLE:-bucket_full_access[wwtp]}
     depends_on:
       couchbase:
         condition: service_healthy
