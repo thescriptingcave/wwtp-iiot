@@ -52,16 +52,37 @@ model two real industrial protocols, and the differences are the lesson.
 not measurements — a heartbeat, a fault code, an equipment state bitfield, and the
 two halves of a 32-bit runtime counter.
 
-Each register declares its own word order, and **the neighbours disagree**:
+Each register declares its own word order, and **two of the nineteen disagree
+with the other seventeen**:
 
 ```yaml
-- address: 40101
+- address: 40100
+  name: AERATION_DO
   signal: AERATION:AHU-1:DO
   word_order: big        # high word first
-- address: 40103
-  signal: AERATION:AHU-1:BLOWER_RPM
+- address: 40102
+  name: AERATION_SETPOINT_DO
+  signal: AERATION:AHU-1:SETPOINT_DO
+  word_order: big        # high word first
+- address: 40108
+  name: AERATION_BLOWER_VALVE
+  signal: AERATION:AHU-1:BLOWER_VALVE
   word_order: little     # low word first — read this one wrong and see what happens
 ```
+
+The `little` register is the **fifth** in a run of `big` ones, not the
+neighbour of one, which is the harder case and the point: nothing about the
+address or the ordering gives you a hint. The other is `40304`,
+`AERATION_WASTE_RATE`.
+
+> This example previously showed `40101`/`40103` with the second marked
+> `little`. **Neither address exists** — the real ones are `40100` and `40102`,
+> and both are `big` — and it claimed "the neighbours disagree" about a pair that
+> did not. Three separate errors in four lines of illustrative YAML, in the one
+> document that traces a scan end to end. The addresses are now taken from the
+> contract rather than written by hand, which is what they should have been, and
+> `tests/test_readme_claims.py` asserts the counts so the prose cannot drift from
+> them again.
 
 The wire offset took three shifts to get right, and all three are commented where
 the arithmetic happens:

@@ -337,6 +337,94 @@ for a reason that had nothing to do with documentation.
   inside quotation marks. That is worth paying, because the alternative is a test
   that cannot be fixed without deleting the explanation of what it is for.
 
+## Phase 6d — Writing the verification steps, and running them
+
+**Expected:** to write `docs/VERIFYING.md` — a step-by-step script somebody else
+could follow. About an hour.
+
+**What happened:** writing the steps found a false claim, a **live unrecovered
+outage** on the running stack, and **a design defence that is not implemented.**
+
+**Learned:**
+
+- **The gateway had not written a row for about five hours, and never would have
+  again.** Its own status line said `failures: 29702`,
+  `last_error: 'the connection is closed'`, `pending: 2613776`, and the container
+  was **`healthy`**.
+
+  `storage/postgres/writer.py` opens one connection at construction and never
+  re-establishes it — `grep -c reconnect` is **0**. So a database restart or a
+  terminated backend stops every write permanently, and the only recovery is a
+  container restart.
+
+  The health check is a **privilege** check, not a liveness check: it verifies the
+  gateway *cannot* `TRUNCATE reading`, which is a genuinely good check, and it
+  passes. It never tests that a write succeeds. **The one component whose entire
+  job is not losing data was invisible to the orchestrator**, and the only reason
+  I found it was reading its logs while writing unrelated documentation.
+
+- **No data was lost, and the compensating control did exactly what it is for.**
+  The spool held 515 files throughout and delivered 134 078 rows on restart; the
+  history is continuous hour by hour across the gap. So the durability design
+  held under a five-hour database outage that the code above it could not survive.
+  Which is a strange and rather good sentence: **the layer built for the
+  disaster worked, and the layer built for the ordinary case did not.**
+
+- **`pending: 2 613 776` overstated the data at risk by three orders of
+  magnitude.** It is `len(writer._rows)` — an in-memory buffer fed by *live*
+  polling, whose contents were also on disk in the spool. The status line showed
+  2.6 M queued for data that was never at risk, and there was no way for an
+  operator to tell "queued in RAM" from "exists only in RAM". **The distinction is
+  the entire point of the number**, and a status line that blurs it is worse than
+  one that omits it, because it invites the wrong conclusion in both directions.
+
+- **`source` is always `opcua`, so the project's answer to Modbus's silent
+  corruption is not implemented.** The chain, all of it verified by reading the
+  code and a real spool file:
+
+  1. `poll_once` polls both protocols and merges them into **one dict**. On
+     conflict, *"OPC UA wins"*, because it carries a StatusCode and Modbus does
+     not. Reasonable decision, and the wrong place to make it.
+  2. So by `_publish`, **the protocol a reading came from is no longer
+     information.**
+  3. `SpoolRecord` has four fields — `ts`, `signal`, `value`, `quality`. There is
+     **no source field.** A real record off the volume:
+     `{"ts":1790534563,"s":"SECONDARY:SEC-SCR-1:TORQUE","v":44.84732813,"q":0}`
+  4. `drain()` consequently writes `source="opcua"` unconditionally.
+
+  And that matters because the README's stated answer to the Modbus word-order
+  trap is *"the only defence is to compare two independent observations of the
+  same physical quantity, which is why `source` is part of the primary key."*
+  A wrong word order gives `2.3e-41` — finite, in-range, undetectable. **There is
+  only ever one source in practice**, so the defence is not merely weak, it is
+  absent, and Modbus is a *fallback* rather than a second observation.
+
+  **Every unit test passes**, because the writer's tests and the spool's tests
+  each test their own half and neither knows the provenance does not survive the
+  trip. That is the answer to "why did this survive four phases": the seam
+  between two well-tested components is where the bug lives, and no test in
+  either component's suite can see it. It took a walkthrough and a
+  `SELECT DISTINCT source` to find.
+
+  Not fixed here. The fix is a field on `SpoolRecord` — which changes the on-disk
+  format, so it needs a migration story — plus a decision about whether the
+  primary key survives it. Both deserve their own commit.
+
+- **Writing the steps found a false claim too, and it was a good one to find.**
+  The README said "**Nineteen** of the registers deliberately use low-word-first
+  ordering while their neighbours use high-word-first". It is **two**. The error
+  was in the more interesting direction: it made the *common* case sound like the
+  dangerous one, so a reader would hunt for the trap in the wrong sixteen
+  registers. And `docs/DATA-FLOW.md` illustrated it with two addresses,
+  `40101` and `40103`, that **do not exist** — the real ones are `40100` and
+  `40102`, and both are `big`. Four lines of hand-written YAML about generated
+  data, wrong three ways, in the one document that traces a scan end to end.
+
+  Step 3.2 of the plan printed `0 low-word-first, 19 high-word-first`, which was
+  wrong in a way that pointed straight at the sentence. Both counts are now
+  asserted, and there is a general test: **every 5-digit address in
+  `DATA-FLOW.md` must be a real register address.**
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.

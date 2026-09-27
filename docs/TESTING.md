@@ -36,7 +36,7 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22 | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 31 | that the numbers this document states are the real ones |
+| `test_readme_claims.py` | 33 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 
 **Every number in both tables is asserted by
@@ -250,6 +250,34 @@ threshold in the project is set from the wider of the two, with 3× the margin �
 so the thresholds' provenance is a guess. This is the first item on the open
 list in [`LEARNING-LOG.md`](LEARNING-LOG.md) and the only one that undermines
 work already done.
+
+**The gateway cannot reconnect to Postgres, and did not for five hours.** The
+writer opens one connection at construction and never re-establishes it
+(`grep -c reconnect storage/postgres/writer.py` is **0**), so a database restart
+or a terminated backend stops every write *permanently* — the only recovery is a
+container restart. It was found with `failures: 29702` in the gateway's own
+status line while the container reported **healthy**, because the health check
+verifies that the gateway *cannot* `TRUNCATE reading` and never tests that a
+write succeeds.
+
+No data was lost — the spool held 515 files and delivered 134 078 rows on
+restart, and the history is continuous — so the durability layer held under an
+outage the layer above it could not survive. But `pending: 2 613 776` overstated
+the data at risk by three orders of magnitude, because it counts an in-memory
+buffer whose contents were also on disk. **A status line that blurs "queued in
+RAM" from "exists only in RAM" invites the wrong conclusion in both
+directions.**
+
+**`source` is always `opcua`, so the cross-protocol defence is not implemented.**
+`poll_once` merges both protocols into one dict ("OPC UA wins on conflict") and
+`SpoolRecord` has no source field, so `drain()` hardcodes `"opcua"`. Since
+`source` is part of the primary key and the README's answer to a wrong Modbus
+word order is to compare two independent observations of the same quantity,
+**that defence is absent rather than weak** — there is only ever one source.
+Every unit test passes, because the writer's and the spool's tests each test
+their own half and neither knows the provenance does not survive the trip. Found
+by a walkthrough and one `SELECT DISTINCT source`. Three open threads, all in
+[`LEARNING-LOG.md`](LEARNING-LOG.md).
 
 **The CI gates are only as good as the machine they run on, and the slow half runs
 nightly rather than per push.** The 18-minute coverage matrix and the four slow

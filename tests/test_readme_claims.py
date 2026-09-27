@@ -474,7 +474,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 31,
+    "tests/test_readme_claims.py": 33,
     "tests/test_alarm_engine.py": 17,
 }
 
@@ -527,4 +527,80 @@ def test_testing_md_does_not_deny_the_gates_exist() -> None:
     # also excludes the thing being pointed at.
     assert "gates.yml" in Path("docs/TESTING.md").read_text(encoding="utf-8"), (
         "TESTING.md should point at the workflow it describes"
+    )
+
+
+# ── the Modbus word order, which two documents got wrong ─────────────────────
+
+
+def test_the_word_order_counts_are_right() -> None:
+    """17 big, 2 little — and both documents said otherwise.
+
+    `README.md` said "**Nineteen** of the registers deliberately use low-word-first
+    ordering while their neighbours use high-word-first", and
+    `docs/DATA-FLOW.md` illustrated the trap with a YAML pair at addresses
+    `40101` and `40103` that **do not exist** — the real ones are `40100` and
+    `40102`, and both are `big`.
+
+    Two things are wrong with that, and the second is worse than the count:
+
+    * the count, and
+    * the **direction**. Saying most registers are low-word-first makes the
+      *common* case sound like the dangerous one, so a reader goes looking for the
+      trap in the wrong sixteen registers. The trap is two, and one of them is
+      the fifth in a run of `big` ones rather than the neighbour of one.
+
+    Found by writing the verification steps in `docs/VERIFYING.md` and running
+    step 3.2, which printed `0 low-word-first, 19 high-word-first` — obviously
+    wrong in a way that pointed straight at the sentence.
+    """
+    c = get_contract()
+    little = [r for r in c.registers if r.word_order == "little"]
+    big = [r for r in c.registers if r.word_order == "big"]
+    assert len(c.registers) == 19
+    assert len(little) == 2, [r.name for r in little]
+    assert len(big) == 17
+    assert {r.name for r in little} == {"AERATION_BLOWER_VALVE", "AERATION_WASTE_RATE"}
+
+    assert "Seventeen of the nineteen" in _readme()
+    assert "Nineteen of the registers" not in "\n".join(
+        _claims_only(Path("README.md"))
+    )
+
+    flow = Path("docs/DATA-FLOW.md").read_text(encoding="utf-8")
+    for address in ("40100", "40102", "40108"):
+        assert f"address: {address}" in flow, (
+            f"DATA-FLOW.md should show the real address {address}"
+        )
+    for ghost in ("40101", "40103"):
+        assert f"address: {ghost}" not in flow, (
+            f"DATA-FLOW.md still shows {ghost}, which is not a register address"
+        )
+    assert "two of the nineteen" in flow
+
+
+def test_every_address_in_data_flow_exists_in_the_contract() -> None:
+    """The general rule behind the two fixed examples.
+
+    `docs/DATA-FLOW.md` is the document that traces a scan end to end, and it
+    carried four lines of hand-written YAML naming two registers that do not
+    exist. Hand-written examples of generated data are the same failure as
+    hand-written thresholds: correct on the day they are written and *plausibly*
+    wrong afterwards, with nothing to object.
+
+    So: every 5-digit address in that document must be a real register address.
+    That is a cheap check, and it is the one that would have caught it.
+    """
+    addresses = {r.address for r in get_contract().registers}
+    # `_claims_only`, not the raw text: the correction paragraph quotes the two
+    # addresses that were wrong in order to record them, and code spans are
+    # stripped. The first version of this test failed on its own correction —
+    # the fourth time in this review that a check has caught the record of a
+    # mistake rather than the mistake.
+    flow = "\n".join(_claims_only(Path("docs/DATA-FLOW.md")))
+    mentioned = {int(n) for n in re.findall(r"\b(4\d{4})\b", flow)}
+    unknown = mentioned - addresses
+    assert not unknown, (
+        f"DATA-FLOW.md mentions register addresses that do not exist: "
+        f"{sorted(unknown)}. Real addresses: {sorted(addresses)}"
     )

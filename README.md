@@ -83,14 +83,31 @@ all in [`softplc/process/`](softplc/process), in plain arithmetic, with the
 constants and their calibration history in comments. A library would have hidden
 the lesson.
 
-**Modbus is modelled honestly, including its traps.** Nineteen of the registers
-deliberately use low-word-first ordering while their neighbours use
-high-word-first. Reading a low-word-first register as high-word-first yields
-`2.3e-41` — a finite, in-range, wrong number. Nothing in Modbus will ever tell you
-that happened, and no range check anywhere in the system will catch it, because
-there is nothing wrong with the number *as a number*. The only defence is to
-compare two independent observations of the same physical quantity, which is why
-`source` is part of the primary key of `reading`.
+**Modbus is modelled honestly, including its traps.** Seventeen of the nineteen
+registers are high-word-first, and **two are low-word-first** —
+`AERATION_BLOWER_VALVE` and `AERATION_WASTE_RATE`. Reading one of those as
+high-word-first yields `2.3e-41`: a finite, in-range, wrong number. Nothing in
+Modbus will ever tell you that happened, and no range check anywhere in the
+system will catch it, because there is nothing wrong with the number *as a
+number*. The only defence is to compare two independent observations of the same
+physical quantity, which is why `source` is part of the primary key of `reading`.
+
+> This said "**Nineteen** of the registers deliberately use low-word-first
+> ordering while their neighbours use high-word-first". It is two. And the error
+> was in the more useful direction to be wrong in: it made the *common* case sound
+> like the dangerous one, so a reader would have gone looking for the trap in the
+> wrong sixteen registers.
+>
+> `docs/DATA-FLOW.md` made the same mistake with a YAML example at addresses
+> `40101` and `40103` — **neither of which exists**; the real addresses are
+> `40100` and `40102`, and both of those are `big`. The `little` register is at
+> `40108`, the fifth in a run of `big` ones, so "the neighbours disagree" is not
+> even locally true.
+>
+> Found by writing the verification steps in `docs/VERIFYING.md` and running
+> step 3.2, which printed `0 low-word-first, 19 high-word-first` and was
+> obviously wrong in a way that pointed straight at the claim. The count is now
+> asserted by `tests/test_readme_claims.py`.
 
 **Quality is data, not a footnote.** A fouled DO probe publishes as `Uncertain`
 with a StatusCode, and the *process* stays healthy. The `bad_instrument` scenario
