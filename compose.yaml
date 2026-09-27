@@ -90,242 +90,96 @@ services:
       start_period: 10s
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 2. influxdb — time series. Raw samples, downsampled by the rollup worker.
+  # 2. db — Postgres 16 + TimescaleDB 2.30. One database, not two.
   # ═══════════════════════════════════════════════════════════════════════════
-  influxdb:
+  db:
     <<: *restart
-    # NOT on Docker Hub, and pinned by commit SHA rather than by version.
+    # Pinned by version *and* by Postgres major, which is a pin that means
+    # something. It is worth recording why this line is so much less interesting
+    # than the one it replaced.
     #
-    # InfluxDB 3 is published to Quay, and it publishes **no semver tags at
-    # all** — the full tag list is `latest`, `latest-arm64`, `latest-amd64`,
-    # `arm64`, `intel`, and one commit SHA per build. There is no `3.2` to pin.
-    # The SHA tags are immutable and multi-arch (the bare SHA is the manifest
-    # list; `-arm64`/`-amd64` are the per-architecture manifests), so the bare
-    # SHA is the correct pin here and `latest` is not.
+    # InfluxDB 3 is published to Quay and publishes no semver tags at all — the
+    # full list is `latest`, `latest-arm64`, `latest-amd64`, `arm64`, `intel`,
+    # and one commit SHA per build. There was no `3.2` to pin, so the service
+    # was pinned by commit SHA, which is immutable and correct and tells a
+    # reader nothing about what version they are running.
     #
-    # This is the concrete case that overturns the usual "pin by tag, it is more
-    # readable" advice: whether a tag pin is *possible* depends on what the vendor
-    # publishes. See docs/SECURITY.md.
-    image: quay.io/influxdb/influxdb3:3309ac0bb2c54e8661f48068e4e761561f72756f
-    container_name: wwtp-influxdb
-    # InfluxDB 3 Enterprise refuses to start without a licence. The key is read
-    # from .env, which is gitignored; the `${VAR:?}` form fails loudly at
-    # `docker compose up` rather than producing a container that exits 1 with a
-    # message nobody scrolls to.
+    # This vendor publishes `2.30.1-pg16`, so the version is in the tag, the
+    # Postgres major is in the tag, and the digest is available for the
+    # deployments that want it. The `-oss` variants are Apache-2.0 only; the
+    # plain one is what the continuous aggregates need.
+    image: timescale/timescaledb:2.30.1-pg16
+    container_name: wwtp-db
     environment:
-      DOCKER_INFLUXDB_INIT_MODE: setup
-      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_ADMIN_USER:-admin}
-      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_ADMIN_PASSWORD:?set INFLUX_ADMIN_PASSWORD in .env}
-      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG:-wwtp}
-      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET:-wwtp}
-      DOCKER_INFLUXDB_INIT_RETENTION: 0s
-      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+      POSTGRES_USER: ${POSTGRES_USER:-wwtp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wwtp}
+      # The database is the one thing here that genuinely needs to keep working
+      # across a restart, and the default is off.
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - influx-data:/var/lib/influxdb3
-      - influx-meta:/var/lib/influxdb3-meta
+      - db-data:/var/lib/postgresql/data
     ports:
-      - "${INFLUX_PORT:-8086}:8086"
+      - "${POSTGRES_PORT:-5432}:5432"
     networks: [plant]
     healthcheck:
-      # `/health` is the endpoint InfluxDB documents for this. Polling the UI
-      # instead would work until the UI changes, which is not a health check,
-      # it is a bet.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8086/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-    ulimits:
-      # Bolt/SQLite needs the file lock limits raised or writes fail under
-      # concurrency with a deceptively unhelpful "database is locked".
-      nofile:
-        soft: 65536
-        hard: 65536
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 3. couchbase — documents. Equipment metadata, events, N1QL analytics.
-  # ═══════════════════════════════════════════════════════════════════════════
-  couchbase:
-    <<: *restart
-    image: couchbase/server:community-7.6.2
-    container_name: wwtp-couchbase
-    # Community edition needs no licence. It does need *initialising*, and nothing
-    # does that for you: on a fresh volume the server starts, `/nodes/self` answers,
-    # and every query fails because the cluster and the bucket do not exist. That
-    # is a separate one-shot service below, because doing it here means
-    # overriding `command`, which replaces the image's entrypoint and stops the
-    # server from starting at all. That was tried first, and it produced a
-    # container that waited forever for a node it had never launched.
-    volumes:
-      - couchbase-data:/opt/couchbase/var
-      - couchbase-logs:/opt/couchbase/logs
-    ports:
-      - "${COUCHBASE_PORT:-8091}:8091"    # management / REST
-      - "${COUCHBASE_KV_PORT:-11210}:11210"
-      # 8093 is the **query** port, and omitting it is a trap with a long fuse.
-      # The SDK reaches the KV service on 11210 and every `get` and `upsert` works,
-      # so the stack looks healthy; then a N1QL query is dispatched by the cluster
-      # topology to 8093, which the host cannot see, and it fails after the SDK's
-      # entire retry budget with `Streaming operation failed` - a message that
-      # mentions neither the network nor ports. Only a *read* ever fails, which is
-      # why a write-only test suite would never have found it.
-      - "${COUCHBASE_QUERY_PORT:-8093}:8093"
-    networks: [plant]
-    healthcheck:
-      # `/nodes/self`, **authenticated**. Two traps in one line, both found by
-      # running it:
+      # `pg_isready` with an explicit `-h 127.0.0.1`, and the `-h` is the point.
       #
-      #  * Unauthenticated it answers 401 on a perfectly healthy node. The
-      #    obvious `curl -fsS http://localhost:8091/nodes/self` therefore fails
-      #    forever, and because everything else waits on `service_healthy`, that
-      #    turns a cosmetic bug into a stack that never starts.
-      #  * `/pools/default` is worse: before the cluster is initialised it
-      #    answers the string `"unknown pool"`, which is not an HTTP error and so
-      #    reads as success. It cannot be used as a readiness signal at all.
+      # The Postgres image's entrypoint starts a *temporary* server on a unix
+      # socket to run the init scripts, before the real server is ever launched.
+      # `pg_isready` with no host connects over that socket and reports
+      # "accepting connections" while the image is still initialising — so
+      # `depends_on: service_healthy` would let the gateway through to a
+      # database that is about to be shut down underneath it. Adding `-h 127.0.0.1`
+      # makes the check fail during that window, because the temporary server
+      # listens only on the socket.
+      #
+      # This is the same class of bug as the Couchbase `/pools/default` health
+      # check that answered the string `"unknown pool"`: an endpoint that looks
+      # like a yes and is not.
       test:
         - CMD-SHELL
         - >-
-          curl -fsS -u "$${COUCHBASE_ADMIN_USER}:$${COUCHBASE_ADMIN_PASSWORD}"
-          http://localhost:8091/nodes/self > /dev/null
-      interval: 15s
+          pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
       timeout: 5s
       retries: 20
-      start_period: 60s
-    environment:
-      COUCHBASE_ADMIN_USER: ${COUCHBASE_ADMIN_USER:-Administrator}
-      COUCHBASE_ADMIN_PASSWORD: ${COUCHBASE_ADMIN_PASSWORD:?set COUCHBASE_ADMIN_PASSWORD in .env}
+      start_period: 10s
+    shm_size: 256mb
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
 
-  # ─── one-shot: initialise the cluster and create the bucket ─────────────────
+  # ─── one-shot: schema + contract ────────────────────────────────────────────
   #
-  # A separate service rather than a start-up script inside the couchbase
-  # container, because that container's entrypoint *is* the server. It runs once
-  # and exits; everything that writes depends on it having succeeded.
-  couchbase-init:
-    image: couchbase/server:community-7.6.2
-    container_name: wwtp-couchbase-init
+  # A separate service, and the reason is worth stating: this is not a start-up
+  # script inside the `db` container, because overriding that container's
+  # `command` replaces the image's entrypoint — which is the server. The exact
+  # mistake the deleted `couchbase-init` documented, learned the hard way once
+  # already.
+  #
+  # It runs before the gateway and exits. Everything that writes depends on the
+  # `reading` table existing and the contract being in it, because
+  # `reading.signal_id` is a foreign key and the database will refuse history
+  # for a signal it has never heard of. That refusal is the feature.
+  init-db:
+    <<: *python-service
     restart: "no"
-    networks: [plant]
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -uo pipefail
-        # Two different flag sets, which is the whole difficulty here:
-        #   cluster-init  -> --cluster-username / --cluster-password
-        #   bucket-*      -> --username / --password
-        # and `-u`/`-p` are deprecated aliases of the latter, so they are the
-        # wrong thing to reach for first. The credential flags are also
-        # *per-subcommand*, not global: putting them before the subcommand makes
-        # the CLI report the subcommand as "--cluster-username=...".
-        #
-        # And the address is the management port 8091, not 8090. `cluster-init`
-        # defaults to http://127.0.0.1:8091, which inside a *separate* container
-        # is the container's own loopback and nothing else - so the first version
-        # of this could not reach the cluster it was meant to initialise.
-        mgmt=http://couchbase:8091
-        init=(--cluster-username="$${COUCHBASE_ADMIN_USER}"
-              --cluster-password="$${COUCHBASE_ADMIN_PASSWORD}")
-        auth=(--username="$${COUCHBASE_ADMIN_USER}"
-              --password="$${COUCHBASE_ADMIN_PASSWORD}")
-
-        # Idempotent: cluster-init fails on an already-initialised cluster, and
-        # that is not a reason to fail the run.
-        # `--services` is not optional. Without it the cluster comes up with `kv`
-        # alone and **N1QL never works** - the Query service is not running, so
-        # every query fails at the SDK with a streaming error. Community Edition
-        # accepts exactly three combinations, and the error message lists them:
-        # 'data', 'query,data,index' or 'query,fts,data,index'.
-        if couchbase-cli cluster-init -c "$$mgmt" "$${init[@]}" \
-             --services="query,data,index"; then
-          echo "cluster initialised"
-        else
-          echo "cluster already initialised (or init failed; continuing)"
-        fi
-
-        # `bucket-list` prints YAML-ish blocks, not one name per line, so the
-        # check is a word match anywhere in the output rather than a line compare.
-        if couchbase-cli bucket-list -c "$$mgmt" "$${auth[@]}" 2>/dev/null \
-             | grep -qw "$${COUCHBASE_BUCKET}"; then
-          echo "bucket $${COUCHBASE_BUCKET} already exists"
-        else
-          # Only three flags are accepted. --bucket-replicas and
-          # --bucket-flush-enabled (and --bucket-replica-number) are all
-          # rejected with "unrecognized arguments", so the defaults stand: one
-          # replica and flush disabled, which is right for a single node anyway.
-          couchbase-cli bucket-create -c "$$mgmt" "$${auth[@]}" \
-            --bucket="$${COUCHBASE_BUCKET}" --bucket-type=couchbase \
-            --bucket-ramsize=256
-          echo "created bucket $${COUCHBASE_BUCKET}"
-        fi
-
-        # The application user, scoped to the one bucket.
-        #
-        # A third thing the init had to be told to do, found by running the
-        # gateway against a freshly initialised cluster and getting
-        # AuthenticationException: the cluster and the bucket existed, and nothing
-        # had ever created the user the gateway authenticates as. Scoped to the
-        # bucket, so a compromise of the gateway cannot reach the admin
-        # credential or any other bucket.
-        # The bucket-scoped application user. Resolved, after four wrong
-        # spellings, by *asking the cluster what roles it has* rather than
-        # guessing:
-        #
-        #     cluster.users().get_roles()  ->  admin, ro_admin,
-        #                                     bucket_full_access
-        #
-        # and it is assigned with **bracket** syntax, not a colon:
-        #
-        #     bucket_full_access[wwtp]        SUCCESS
-        #     bucket_full_access               ERROR: unknown role
-        #     bucket_admin:wwtp                ERROR: unknown role
-        #     wwtp                            ERROR: unknown role
-        #
-        # `bucket_full_access` is described by Couchbase as "full access to bucket
-        # data; cannot access the cluster", which is exactly the grant this
-        # project wants: the gateway can read and write the plant's documents and
-        # nothing else.
-        if couchbase-cli user-manage -c "$$mgmt" "$${auth[@]}" --set \
-             --rbac-username="$${COUCHBASE_APP_USER}" \
-             --rbac-password="$${COUCHBASE_APP_PASSWORD}" \
-             --auth-domain="local" \
-             --roles="$${COUCHBASE_APP_USER_ROLE:-bucket_full_access[$${COUCHBASE_BUCKET}]}"; then
-          echo "app user $${COUCHBASE_APP_USER} ready"
-        else
-          # Loud and non-fatal. A stack that refuses to start is worse than one
-          # that starts with a stated limitation - but this is a *security*
-          # limitation, so it says so rather than carrying on quietly.
-          echo "WARNING: could not create the bucket-scoped user." >&2
-          echo "WARNING:   Services using it will fail to authenticate, and the" >&2
-          echo "WARNING:   only alternative is the admin credential, which is a" >&2
-          echo "WARNING:   strictly larger grant. See docs/SECURITY.md." >&2
-        fi
-
-        # Prove it, rather than exiting 0 on the strength of a command that
-        # printed an error. A one-shot init that reports success and leaves no
-        # bucket is worse than one that fails loudly.
-        couchbase-cli bucket-list -c "$$mgmt" "$${auth[@]}" \
-          | grep -qw "$${COUCHBASE_BUCKET}" || {
-            echo "FATAL: bucket $${COUCHBASE_BUCKET} is not present after init" >&2
-            exit 1
-          }
-        echo "couchbase ready"
+    container_name: wwtp-init-db
+    command: ["python", "-m", "storage.postgres.schema"]
     environment:
-      COUCHBASE_ADMIN_USER: ${COUCHBASE_ADMIN_USER:-Administrator}
-      COUCHBASE_ADMIN_PASSWORD: ${COUCHBASE_ADMIN_PASSWORD:?set COUCHBASE_ADMIN_PASSWORD in .env}
-      COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
-      COUCHBASE_APP_USER: ${COUCHBASE_USER:?set COUCHBASE_USER in .env}
-      COUCHBASE_APP_PASSWORD: ${COUCHBASE_PASSWORD:?set COUCHBASE_PASSWORD in .env}
-      # Role for the app user, in Couchbase's bracket syntax. A variable because
-      # it is the one piece of this that is a naming convention rather than a
-      # fact, and a naming convention is worth being able to change without
-      # editing the compose file.
-      COUCHBASE_APP_USER_ROLE: ${COUCHBASE_APP_USER_ROLE:-bucket_full_access[wwtp]}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-wwtp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wwtp}
+      RETENTION_RAW_DAYS: ${RETENTION_RAW_DAYS:-7}
+      RETENTION_MINUTE_DAYS: ${RETENTION_MINUTE_DAYS:-90}
     depends_on:
-      couchbase:
+      db:
         condition: service_healthy
+    networks: [plant]
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 4. gateway — reads both protocols, applies a deadband, spools, writes.
@@ -345,14 +199,14 @@ services:
       MODBUS_HOST: softplc
       MODBUS_PORT: "5020"
       OPCUA_ENDPOINT: opc.tcp://softplc:4840/wwtp/server/
-      INFLUX_URL: http://influxdb:8086
-      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
-      INFLUX_DATABASE: ${INFLUX_DATABASE:-wwtp}
-      INFLUX_ORG: ${INFLUX_ORG:-wwtp}
-      COUCHBASE_URL: couchbase://couchbase
-      COUCHBASE_USER: ${COUCHBASE_USER:-wwtp_app}
-      COUCHBASE_PASSWORD: ${COUCHBASE_PASSWORD:?set COUCHBASE_PASSWORD in .env}
-      COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
+      # The presence of POSTGRES_HOST is what switches the writer on. A gateway
+      # with no database still reads the plant and still spools everything, which
+      # is not a degraded mode but the one guarantee it exists to provide.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-wwtp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wwtp}
     volumes:
       # The spool must outlive the container. Without this volume, every restart
       # silently discards the backlog — and the data loss is invisible until
@@ -361,51 +215,39 @@ services:
     depends_on:
       softplc:
         condition: service_healthy
-      influxdb:
-        condition: service_healthy
-      couchbase-init:
+      init-db:
         condition: service_completed_successfully
     networks: [plant]
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import socket,sys; s=socket.create_connection(('influxdb',8086),3); s.close()"]
+      # Prove the *gateway's* write path, not the database's port. A TCP connect
+      # to 5432 proves Postgres is listening; it does not prove the schema is
+      # applied, that the contract is loaded, or that this container's
+      # credentials work. All three were true failures during this migration.
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os,socket,sys;
+          s=socket.create_connection(('db',5432),3); s.close();
+          import psycopg;
+          c=psycopg.connect(host=os.environ['POSTGRES_HOST'],
+          user=os.environ['POSTGRES_USER'],
+          password=os.environ['POSTGRES_PASSWORD'],
+          dbname=os.environ['POSTGRES_DB']);
+          c.execute('SELECT count(*) FROM signal'); c.close()"
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 5. rollup — 1 s raw → 1 min → 1 h. Applies retention as it goes.
-  # ═══════════════════════════════════════════════════════════════════════════
-  rollup:
-    <<: *python-service
-    container_name: wwtp-rollup
-    command: ["python", "-m", "storage.rollup_worker.main"]
-    environment:
-      INFLUX_URL: http://influxdb:8086
-      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
-      INFLUX_DATABASE: ${INFLUX_DATABASE:-wwtp}
-      INFLUX_ORG: ${INFLUX_ORG:-wwtp}
-      ROLLUP_INTERVAL_SECONDS: ${ROLLUP_INTERVAL_SECONDS:-60}
-      ROLLUP_DISCARD_PARTIAL: ${ROLLUP_DISCARD_PARTIAL:-true}
-      RETENTION_RAW_SECONDS: ${RETENTION_RAW_SECONDS:-604800}
-      RETENTION_1M_SECONDS: ${RETENTION_1M_SECONDS:-7776000}
-      ALARM_EVAL_INTERVAL_SECONDS: ${ALARM_EVAL_INTERVAL_SECONDS:-5}
-    depends_on:
-      influxdb:
-        condition: service_healthy
-    networks: [plant]
-    restart: unless-stopped
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 6. web — the custom Next.js dashboard
+  # 5. web — the custom Next.js dashboard
   # ═══════════════════════════════════════════════════════════════════════════
   web:
     build:
       context: ./ui/web
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_INFLUX_URL: http://localhost:${INFLUX_PORT:-8086}
+        NEXT_PUBLIC_POSTGRES_URL: http://localhost:${POSTGRES_PORT:-5432}
         NEXT_PUBLIC_MODBUS_PORT: ${MODBUS_PORT:-5020}
     container_name: wwtp-web
     restart: unless-stopped
@@ -416,8 +258,10 @@ services:
       - "${WEB_PORT:-3001}:3000"
     networks: [plant]
     depends_on:
-      influxdb:
+      db:
         condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -441,8 +285,12 @@ services:
       # reviewed file in git rather than something exported by hand.
       GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
       GF_INSTALL_PLUGINS: ""
-      INFLUX_URL: http://influxdb:8086
-      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
+      # Grafana reads the hypertable through Timescale's Postgres datasource,
+      # which is a first-party plugin and needs no configuration beyond this.
+      POSTGRES_HOST: db:5432
+      POSTGRES_USER: ${POSTGRES_USER:-wwtp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wwtp}
     volumes:
       - ./ui/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ui/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -451,8 +299,10 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     networks: [plant]
     depends_on:
-      influxdb:
+      db:
         condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Profile: demo — seed history so the dashboards are not empty on first load
@@ -471,19 +321,16 @@ services:
       - --days=${SEED_DAYS:-7}
       - --storm-after=${DEMO_STORM_AT_HOURS:-2}
     environment:
-      INFLUX_URL: http://influxdb:8086
-      INFLUX_TOKEN: ${INFLUX_TOKEN:?set INFLUX_TOKEN in .env}
-      INFLUX_DATABASE: ${INFLUX_DATABASE:-wwtp}
-      INFLUX_ORG: ${INFLUX_ORG:-wwtp}
-      COUCHBASE_URL: couchbase://couchbase
-      COUCHBASE_USER: ${COUCHBASE_USER:-wwtp_app}
-      COUCHBASE_PASSWORD: ${COUCHBASE_PASSWORD:?set COUCHBASE_PASSWORD in .env}
-      COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-wwtp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wwtp}
+      SEED_DAYS: ${SEED_DAYS:-7}
+      DEMO_STORM_AT_HOURS: ${DEMO_STORM_AT_HOURS:-2}
     networks: [plant]
     depends_on:
-      influxdb:
-        condition: service_healthy
-      couchbase-init:
+      init-db:
         condition: service_completed_successfully
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -491,8 +338,8 @@ services:
 #
 # `plant` is a user-defined bridge, not the default. On a user-defined network
 # Docker resolves *service names* via its embedded DNS — so the gateway can say
-# `influxdb:8086` and mean it. On the default bridge it would mean 127.0.0.1 and
-# fail in a way that reads like a network fault.
+# `db:5432` and mean it. On the default bridge it would mean 127.0.0.1 and fail
+# in a way that reads like a network fault.
 #
 # It is `internal: false` because the containers need outbound access to resolve
 # and, for the seeder, to reach nothing at all — but the soft PLC should not have
@@ -511,9 +358,6 @@ networks:
 # `docker compose down` keeps them; `down -v` deletes the data, deliberately.
 # ─────────────────────────────────────────────────────────────────────────────
 volumes:
-  influx-data:
-  influx-meta:
-  couchbase-data:
-  couchbase-logs:
+  db-data:
   gateway-spool:
   grafana-data:

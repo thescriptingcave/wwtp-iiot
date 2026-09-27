@@ -12,7 +12,6 @@ from __future__ import annotations
 import struct
 
 import pytest
-
 from softplc.contract import contract
 from softplc.servers.modbus import (
     HOLDING_BASE,

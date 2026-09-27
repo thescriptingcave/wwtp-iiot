@@ -2,7 +2,7 @@
 
 No database. That is deliberate: this file covers the half of the gateway that
 can be proven against a live process — protocol read, contract decode, deadband,
-spool — and the half that needs InfluxDB and Couchbase lives in
+spool — and the half that needs a database lives in
 ``tests/integration/``.
 
 Running it for real catches the class of bug that unit tests cannot. Three found
@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -34,15 +35,26 @@ from gateway.deadband import BandMode, BandRule, Deadband
 from gateway.spool.store import Spool, SpoolRecord
 from softplc.contract import QUALITY_UNCERTAIN, contract
 from softplc.main import SoftPlc, SoftPlcConfig
-from storage.influx.line_protocol import (
-    decode_line,
-    encode_batch,
-    encode_point,
-    keys_from_contract,
-)
+from storage.postgres.writer import PostgresWriter, Reading
 
 C = contract()
-KEYS = keys_from_contract(C)
+
+
+def _collecting_writer(batch_rows: int = 100_000) -> tuple[PostgresWriter, list]:
+    """A real writer wired to a list instead of a database.
+
+    This is the arrangement the storage layer was designed for: the writer takes
+    an ``execute`` callable, so the *policy* — what gets buffered, when it
+    flushes, what a failure costs — is exercised for real, and only the SQL is
+    missing. The SQL has its own tests against a live database.
+    """
+    rows: list[tuple] = []
+
+    def execute(batch):
+        rows.extend(batch)
+        return len(batch)
+
+    return PostgresWriter(execute, batch_rows=batch_rows, batch_seconds=1e9), rows
 
 
 def _free_port() -> int:
@@ -252,20 +264,20 @@ def test_a_quality_only_change_gets_through_the_deadband(plant) -> None:
 # ─── the whole read path, into the spool ──────────────────────────────────────
 
 
-def test_a_poll_reaches_line_protocol_through_the_spool(tmp_path: Path,
-                                                        plant) -> None:
-    """Read, deadband, spool, encode — the full path, with no database.
+def test_a_poll_reaches_the_database_through_the_spool(tmp_path: Path,
+                                                       plant) -> None:
+    """Read, deadband, spool, batch — the full path, with no database.
 
     The database is the only part left out, and it is the part that cannot lie
     about the shape of the data. Everything upstream of it is checked here, which
-    is why this test is worth having even with no InfluxDB running.
+    is why this test is worth having whether or not one is running.
 
     Modbus is exercised for the decode half (the word-order traps, above); the
     end-to-end leg uses OPC UA, because OPC UA hands back *signal ids* and
-    Modbus hands back *register names*, and the contract does not link a register
-    to the signals it exposes. Inventing that link in a test — by string-matching
-    equipment names — is a second, wrong mapping, and it is exactly the kind of
-    approximation that hides a real bug.
+    Modbus hands back *register names*, and the contract does not link every
+    register to the signals it exposes. Inventing that link in a test — by
+    string-matching equipment names — is a second, wrong mapping, and it is
+    exactly the kind of approximation that hides a real bug.
     """
     polls = 6
 
@@ -283,7 +295,8 @@ def test_a_poll_reaches_line_protocol_through_the_spool(tmp_path: Path,
     assert all(r.read > 0 for r in results)
 
     db = Deadband.from_contract(C)
-    now_ms = int(time.time() * 1000)
+    now_s = int(time.time())
+    writer, rows = _collecting_writer()
     with Spool(tmp_path / "spool", max_mb=8) as spool:
         for n, polled in enumerate(results):
             for signal_id, value in polled.values.items():
@@ -293,7 +306,7 @@ def test_a_poll_reaches_line_protocol_through_the_spool(tmp_path: Path,
                 if not db.accept(signal_id, value, quality):
                     continue
                 assert spool.append(SpoolRecord(
-                    ts=now_ms // 1000 + n, signal=signal_id,
+                    ts=now_s + n, signal=signal_id,
                     value=value, quality=quality,
                 ))
         spool.flush()
@@ -302,32 +315,36 @@ def test_a_poll_reaches_line_protocol_through_the_spool(tmp_path: Path,
         # is that the data survived serialisation, and reusing them would prove
         # only that the function returned.
         path = next(spool.dir.glob("spool-*.jsonl"))
-        lines = [
-            encode_point(KEYS[r.signal], r.value, now_ms, quality=r.quality,
-                         source="opcua")
-            for r in spool.read(path)
-        ]
+        for record in spool.read(path):
+            writer.add(Reading(ts=record.ts, signal_id=record.signal,
+                               value=record.value, quality=record.quality,
+                               source="opcua"))
+    writer.flush()
 
-    assert lines, "nothing survived the spool"
-    payload = encode_batch(lines)
-    decoded = [decode_line(ln) for ln in payload.strip().split("\n")]
+    assert rows, "nothing survived the spool"
 
-    # Every point landed in a series the contract declares, and carries its
-    # provenance and its validity. Fewer distinct fields than points is correct
-    # here: six polls of a settled signal produce several points in one series,
-    # which is the whole reason the deadband exists.
-    known = {k.series_key for k in KEYS.values()}
-    for d in decoded:
-        # The series key excludes `source` by design: the same signal arriving
-        # over Modbus and over OPC UA is one series with two provenances.
-        series = ",".join(
-            f"{tag}={d['tags'][tag]}" for tag in
-            ("area", "equipment", "signal", "eu", "site")
-        )
-        assert f"{d['measurement']},{series}" in known, series
-        assert d["tags"]["source"] == "opcua"
-        assert "quality" in d["fields"]
-    assert len({d["tags"]["signal"] for d in decoded}) < len(decoded)
+    # Every row names a signal the contract declares and carries its provenance
+    # and its validity. This check used to be "the line's tag set matches a
+    # series key the contract derived", which is a *weaker* statement than the
+    # one available now: `signal.id` is the signal. The line protocol needed a
+    # separate key table to make the join, and the key table was a second place
+    # for the metadata to be wrong.
+    for ts, signal_id, value, quality, source in rows:
+        assert signal_id in C.signals, f"{signal_id} is not a declared signal"
+        assert source == "opcua"
+        assert quality in (0, 1, 2)
+        assert isinstance(ts, datetime) and ts.tzinfo is not None
+        # A row with no value must not claim to be Good. The database enforces
+        # this too; asserting it here means a violation is caught without one.
+        assert value is not None or quality != 0
+
+    # Every signal published at least once, exactly once. This is the deadband's
+    # first contract — a signal you have never seen is always published, however
+    # narrow its band — and it is deterministic, unlike the "some signals repeat"
+    # claim this assertion used to make. Six polls 50 ms apart is a window in
+    # which the plant does not move, so exactly one point per signal is the
+    # *correct* outcome, and asserting otherwise was asserting a race.
+    assert {r[1] for r in rows} == set(C.signals)
 
     # The deadband did something. It could not have on a single poll — the first
     # reading of every signal always publishes, so one poll offers 57 and accepts
@@ -339,16 +356,22 @@ def test_a_poll_reaches_line_protocol_through_the_spool(tmp_path: Path,
     assert accepted < offered, (
         f"the deadband filtered nothing: {accepted} of {offered} accepted"
     )
-    assert accepted == len(decoded), "spool and deadband disagree"
+    assert accepted == len(rows), "spool and deadband disagree"
 
 
-def test_modbus_register_names_reach_the_encoder_via_an_explicit_map(
+def test_modbus_register_names_reach_the_writer_via_an_explicit_map(
     plant,
 ) -> None:
-    """Modbus exposes register *names*, and the contract does not link a register
-    to the signals behind it. This is the mapping a real deployment would put in
-    the contract; written out here so the gap is visible rather than papered over
-    with a string match.
+    """Modbus exposes register *names*, and not every register is linked to a
+    signal in the contract. This is the mapping a real deployment would put in the
+    contract; written out here so the remaining gap is visible rather than
+    papered over with a string match.
+
+    This is the project's signature bug class. A low-word-first float read as
+    high-word-first is finite, in range, and wrong — it comes out around
+    ``2.3e-41`` — so no range check anywhere in the system will ever catch it.
+    The only defence is to check the value against what the process says it
+    should be, which is what the non-zero assertion is doing.
     """
     mapping = {
         "AERATION_DO": "AERATION:AHU-1:DO",
@@ -359,14 +382,19 @@ def test_modbus_register_names_reach_the_encoder_via_an_explicit_map(
     with ModbusReader(C, port=MB_PORT) as reader:
         values = reader.poll().values
 
-    ts = int(time.time() * 1000)
+    writer, rows = _collecting_writer()
+    checked = 0
     for register, signal_id in mapping.items():
         if register not in values:
             continue
-        line = encode_point(KEYS[signal_id], values[register], ts, source="modbus")
-        parsed = decode_line(line)
-        assert parsed["tags"]["signal"] == KEYS[signal_id].field
-        assert parsed["tags"]["source"] == "modbus"
-        assert parsed["fields"]["value"] != "0.0", (
-            f"{register} decoded to zero - the word-order signature"
-        )
+        writer.add(Reading(ts=int(time.time()), signal_id=signal_id,
+                           value=values[register], quality=0, source="modbus"))
+        checked += 1
+    writer.flush()
+
+    assert checked, "no mapped register was read"
+    for row in rows:
+        _, signal_id, value, _, source = row
+        assert signal_id in C.signals
+        assert source == "modbus"
+        assert value != 0.0, f"{signal_id} decoded to zero - the word-order signature"

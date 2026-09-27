@@ -13,7 +13,7 @@ license = { text = "Proprietary" }  # portfolio project; no OSS licence granted
 # Runtime dependencies are intentionally minimal in Phase 1.
 # Added as the phases that need them begin:
 #   Phase 2: asyncua, pymodbus
-#   Phase 3: fastapi, uvicorn, influxdb-client, couchbase
+#   Phase 3: fastapi, uvicorn, psycopg, psycopg-pool
 #   Phase 4: (none beyond the above)
 #   Phase 5: (Next.js is separate, ui/web)
 dependencies = [
@@ -36,12 +36,15 @@ storage = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
-    "influxdb-client>=1.47",
-    # Floor is 4.6, not 4.9. Nothing above 4.6.3 publishes a wheel this
-    # interpreter can install, so requiring 4.9 made the whole storage extra
-    # unresolvable and took ruff and mypy down with it — a typo in one
-    # constraint cost the project its entire toolchain.
-    "couchbase>=4.6,<5",
+    # Postgres + TimescaleDB, replacing influxdb-client and couchbase.
+    #
+    # Not "because it has more SQL", though it does. The measured reasons are in
+    # docs/DESIGN.md: the tag-column model was standing in for a relation the
+    # database could have enforced, InfluxQL has no CASE, IN, HAVING, INTERVAL or
+    # scalar subqueries, a table's schema is fixed by its first write and never
+    # released, and the query planner is non-deterministic on Core.
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
 ]
 dev = [
     "pytest>=8.3",
@@ -105,23 +108,26 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "PLR2004"]
-# Lazy imports are a design decision in these two files, not an oversight: the
-# InfluxDB client must stay optional so the protocol code and its tests run
-# without the storage extras, and the SDK's enums are only reachable at the point
-# the transport is actually built.
-"storage/influx/writer.py" = ["PLC0415"]
-# Same reasoning for the rollup entry point: the InfluxDB SDK is imported where it
-# is used so the policy module above stays importable without the storage extras.
-"storage/rollup_worker/main.py" = ["PLC0415"]
-"storage/influx/rollups_sql.py" = ["PLC0415"]
-# The seeder imports the InfluxDB transport lazily so that replaying the plant -
-# which is the interesting half, and needs no database - can be tested directly.
+# Lazy imports are a design decision in these files, not an oversight. The psycopg
+# driver must stay optional so the protocol code, the process model and the
+# deadband/spool logic all remain importable and testable without the storage
+# extras installed. That is the whole reason `storage/postgres/writer.py` takes an
+# `execute` callable instead of a connection: the buffering *policy* — when to
+# flush, what happens on failure, what gets counted — is the part worth testing,
+# and it is testable with a list.
+"storage/postgres/writer.py" = ["PLC0415"]
+"storage/postgres/schema.py" = ["PLC0415"]
+# The seeder imports the transport lazily so that replaying the plant - which is
+# the interesting half, and needs no database - can be tested directly.
 "storage/seed/main.py" = ["PLC0415"]
-"storage/couchbase/client.py" = ["PLC0415"]
-# The integration tests reach for stdlib imports inside the tests that need them
-# (datetime, json, urllib) so that the module-level imports stay to the things
-# every test needs - a skipped module should not import a database driver.
+# Tests import inside a test body when the import is only that one test's
+# business: `datetime` to check a row's timestamp representation, `psycopg` to
+# name an exception class, `softplc.contract` to enumerate the quality codes.
+# Hoisting them to module level would mean importing a database driver into a
+# suite that has to run without one.
 "tests/integration/*" = ["PLC0415"]
+"tests/test_postgres_schema.py" = ["PLC0415"]
+"tests/test_postgres_writer.py" = ["PLC0415"]
 "sql/*" = ["ALL"]
 
 [tool.mypy]

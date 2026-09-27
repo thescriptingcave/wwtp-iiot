@@ -22,7 +22,6 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from softplc.contract import QUALITY_UNCERTAIN
 from softplc.faults.engine import (
     FaultEngine,

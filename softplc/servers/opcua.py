@@ -215,8 +215,10 @@ async def build_address_space(
     for sig in c.signals.values():
         # ``holder`` is a grouping (site weather, influent flow) rather than a
         # piece of equipment, and those still need a home in the tree.
-        equipment = sig.equipment or sig.area
-        as_object = sig.equipment in c.equipment
+        # The folder is named for the *holder*, which for a grouping signal
+        # is the grouping — INFLUENT/FLOW, not INFLUENT/INFLUENT.
+        equipment = sig.holder
+        as_object = sig.equipment is not None
         parent = await holder_node(sig.area, equipment, as_object=as_object)
         await _add_signal(server, space, ns, parent, sig)
 
@@ -226,7 +228,7 @@ async def build_address_space(
 async def _add_signal(server: Server, space: AddressSpace, ns: int,
                       parent: Any, sig: Signal) -> None:
     """Add one measured signal as a typed, unit-bearing variable."""
-    path = f"{sig.area}.{sig.equipment}.{sig.id.split(':')[-1]}"
+    path = f"{sig.area}.{sig.holder}.{sig.id.split(':')[-1]}"
     variable = await parent.add_variable(
         ns, sig.field, ua.Variant(sig.normal_low, _variant_type(sig.eu)),
         varianttype=_variant_type(sig.eu),
@@ -277,7 +279,7 @@ async def _add_signal(server: Server, space: AddressSpace, ns: int,
         writable=sig.writable,
     )
     space.variables[sig.id] = entry
-    space.by_browse_path[f"{sig.area}.{sig.equipment}.{sig.field}"] = entry
+    space.by_browse_path[f"{sig.area}.{sig.holder}.{sig.field}"] = entry
 
 
 async def _find_or_create(server: Server, space: AddressSpace, ns: int,

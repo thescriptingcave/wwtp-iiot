@@ -21,7 +21,6 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from softplc.contract import QUALITY_BAD, contract
 from softplc.process.plant import Plant
 from softplc.process.units import (

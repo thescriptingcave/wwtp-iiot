@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from softplc.scanloop import (
     CycleMetrics,
     IOImage,
@@ -19,7 +18,6 @@ from softplc.scanloop import (
     ScanLoop,
     ScanState,
 )
-
 
 # ─── construction ────────────────────────────────────────────────────────────
 

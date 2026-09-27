@@ -2,7 +2,7 @@
 
 The single entry point for reading ``contracts/tags.yaml``. Every component in
 this project — the soft PLC, the gateway, the storage layer, the OPC UA and
-Modbus servers, the Couchbase seeder, the SQL track — imports from here rather
+Modbus servers, the database seeder, the SQL track — imports from here rather
 than re-reading YAML and re-implementing defaults.
 
 The loader is deliberately strict. A contract error must fail loudly at import
@@ -79,7 +79,22 @@ class Signal:
     measurement: str
     unit: str
     area: str
+    #: The asset this signal measures, or ``None`` when the holder is a grouping
+    #: node rather than a piece of equipment.
+    #:
+    #: These used to be one overloaded field, and a foreign key caught it. Fifteen
+    #: signals name a holder like ``FLOW`` or ``LIFT`` that is not in the
+    #: equipment list at all, so ``equipment`` was simultaneously "an asset id"
+    #: and "whatever the middle of the signal id happens to be". Nothing
+    #: complained, because in the previous storage engine nothing could: the tag
+    #: said ``equipment=FLOW`` and no constraint existed to say there is no such
+    #: asset. Now ``equipment`` means the first thing, ``holder`` means the
+    #: second, and the database enforces the difference.
     equipment: str | None = None
+    #: Always the second component of the signal id, asset or not. Used for the
+    #: address-space folder and for display, where a grouping node is exactly what
+    #: you want to show.
+    holder: str = ""
     writable: bool = False
     #: How ``deadband`` is read. See gateway/deadband.py. Optional in YAML and
     #: defaulted here, so adding it to 57 signals is a deliberate act rather
@@ -110,7 +125,7 @@ class Signal:
 
 @dataclass(frozen=True, slots=True)
 class Measurement:
-    """A group of signals sharing an InfluxDB table and a tag set."""
+    """A group of signals sharing a name and a unit."""
 
     name: str
     unit: str
@@ -235,15 +250,24 @@ class Contract:
     def design_flow_m3h(self) -> float:
         return float(self.site.get("design", {}).get("design_flow_m3h", 1800))
 
-    def measurement_tags(self, measurement: str) -> tuple[str, ...]:
-        """The InfluxDB tag columns for a measurement.
+    def identity_columns(self) -> tuple[str, ...]:
+        """The columns on ``signal`` that are identity rather than value.
 
-        Always ``site, area, unit, instrument_id`` — identity, never values.
-        ``docs/DESIGN.md`` rule 1.
+        This is ``docs/DESIGN.md`` rule 1 — *tag by identity, field by value* —
+        which the previous storage engine could only state as a convention about
+        a set of strings. Here it is a property of a table, and the distinction
+        has teeth: a column on ``signal`` cannot change from row to row because
+        the database refuses the update, and a column on ``reading`` is not
+        indexed by its own value because storing it would be wrong.
+
+        Note what is *not* here. ``range_min``, ``normal_low`` and ``deadband``
+        are per-signal, so they are identity-adjacent — but they are not
+        identity, they are knowledge about a signal, and they belong on
+        ``signal`` as data precisely so that a reading never has to carry them.
+        The old schema wrote them into every single point, which is what made a
+        point 1.4 kB instead of 40 bytes.
         """
-        m = self.measurements.get(measurement)
-        extra = m.tags if m else ()
-        return ("site", "area", "unit", "instrument_id", *extra)
+        return ("area", "measurement", "field", "unit", "equipment_id")
 
     def summary(self) -> str:
         n_sig = len(self.signals)
@@ -271,7 +295,8 @@ _DEADBAND_MODES = frozenset({"absolute", "relative", "always"})
 
 
 def _parse_signal(
-    raw: dict[str, Any], *, measurement: str, unit: str
+    raw: dict[str, Any], *, measurement: str, unit: str,
+    known_equipment: frozenset[str] = frozenset(),
 ) -> Signal:
     missing = [
         k for k in ("id", "field", "eu", "range", "normal", "deadband", "sample_ms")
@@ -342,7 +367,19 @@ def _parse_signal(
         measurement=measurement,
         unit=unit,
         area=parts[0],
-        equipment=parts[1],
+        # A holder is usually an asset and sometimes a grouping node —
+        # INFLUENT:FLOW:FLOW is measured on the influent *flow*, which is not a
+        # pump, and INFLUENT:LIFT:RUNTIME belongs to the lift station rather
+        # than to any one of its three pumps. Those are legitimate and common, so
+        # the id keeps the grouping name in `holder`; what changes is that
+        # `equipment` stops claiming to be an asset id for them.
+        #
+        # Resolved at construction because `Signal` is frozen, which is the right
+        # way round: a signal's identity is not something a later pass gets to
+        # revise. The alternative — leaving it as a string and letting a foreign
+        # key object — is what this replaced.
+        equipment=parts[1] if parts[1] in known_equipment else None,
+        holder=parts[1],
         writable=bool(raw.get("writable", False)),
     )
 
@@ -530,7 +567,8 @@ def load_contract(path: Path | str | None = None) -> Contract:
 
         sigs: list[Signal] = []
         for raw_sig in m.get("signals", []):
-            sig = _parse_signal(raw_sig, measurement=name, unit=unit)
+            sig = _parse_signal(raw_sig, measurement=name, unit=unit,
+                                known_equipment=frozenset(equipment))
 
             if sig.area not in area_ids:
                 raise ContractError(
@@ -624,6 +662,18 @@ def load_contract(path: Path | str | None = None) -> Contract:
                 f"{wid}: signal.writable is true but it is absent from `writable`"
             )
 
+    # Resolve each signal's holder against the equipment list, once, here.
+    #
+    # A signal id is AREA:HOLDER:MEASUREMENT. HOLDER is usually an asset but
+    # sometimes a grouping node — INFLUENT:FLOW:FLOW is measured on the influent
+    # *flow*, which is not a pump, and INFLUENT:LIFT:RUNTIME belongs to the lift
+    # station rather than to any one of its three pumps. Those are legitimate and
+    # they are common, so the id keeps the grouping name; what changes is that
+    # `equipment` stops claiming to be an asset id for them.
+    #
+    # Done here rather than in the database because the address space needs the
+    # grouping name to build its folders, and it should not have to ask a
+    # constraint to find out.
     modbus_block = raw.get("modbus", {})
     if modbus_block and "unit_id" not in modbus_block:
         raise ContractError("modbus block must state unit_id")

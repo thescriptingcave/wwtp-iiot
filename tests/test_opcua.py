@@ -16,7 +16,6 @@ import asyncio
 
 import pytest
 from asyncua import Client, ua
-
 from softplc.contract import contract
 from softplc.servers.opcua import UNIT_IDS, OpcUaServer, build_address_space
 from tools.opcua_browser import _find_plant, _resolve

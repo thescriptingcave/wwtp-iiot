@@ -35,9 +35,9 @@ COPY . .
 # and a token in a client bundle is a token in every user's cache. The dashboard
 # reads through a server-side proxy for anything that needs a credential, and
 # docs/SECURITY.md says so.
-ARG NEXT_PUBLIC_INFLUX_URL=http://localhost:8086
+ARG NEXT_PUBLIC_POSTGRES_URL=http://localhost:5432
 ARG NEXT_PUBLIC_MODBUS_PORT=5020
-ENV NEXT_PUBLIC_INFLUX_URL=$NEXT_PUBLIC_INFLUX_URL \
+ENV NEXT_PUBLIC_POSTGRES_URL=$NEXT_PUBLIC_POSTGRES_URL \
     NEXT_PUBLIC_MODBUS_PORT=$NEXT_PUBLIC_MODBUS_PORT \
     NEXT_TELEMETRY_DISABLED=1
 

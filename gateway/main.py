@@ -1,9 +1,10 @@
 """The gateway: read the plant, decide what matters, write it, survive an outage.
 
     softplc ──Modbus──┐
-                      ├──► deadband ──► spool ──► InfluxDB
-    softplc ──OPC UA──┘        │
-                               └──────────► Couchbase (events, occasionally)
+                      ├──► deadband ──► spool ──► Postgres + Timescale
+    softplc ──OPC UA──┘        │                    reading (hypertable)
+                               │                    signal / equipment / site
+                               └──────────────────► event
 
 The gateway is the only component that speaks every protocol, and it is
 deliberately the *thinnest* one. It holds no state worth losing: the plant holds
@@ -11,6 +12,12 @@ the physics, the spool holds the data, the contract holds the meaning. If this
 process is killed, the next one starts and carries on from the spool. That is the
 whole design goal, and it is why the interesting logic lives in modules that can
 be tested without a socket.
+
+**One database, not two.** This replaced an InfluxDB-plus-Couchbase arrangement
+whose central justification — "these are genuinely different jobs" — turned out to
+run backwards. The document store was holding three key-sets of entirely
+homogeneous data, and the two stores could not be joined, which was the only
+reason there were two of them. The measurements are in `docs/DESIGN.md`.
 
 ## One event loop, two protocols, one thread
 
@@ -35,7 +42,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from softplc.contract import contract as get_contract
-from storage.influx.writer import InfluxWriter, make_transport
+from storage.postgres.schema import dsn as postgres_dsn
+from storage.postgres.writer import PostgresWriter, Reading, make_execute
 
 from gateway.clients.modbus_client import ModbusLinkDownError, ModbusReader
 from gateway.clients.opcua_client import OpcUaReader
@@ -69,10 +77,10 @@ class GatewayConfig:
     spool_max_mb: int = 512
     poll_interval_s: float = 1.0
     deadband_default: float = 0.0
-    influx_url: str = "http://influxdb:8086"
-    influx_token: str = ""
-    influx_database: str = "wwtp"
-    influx_org: str = "wwtp"
+    #: Left empty in tests and in ``--no-postgres`` runs. An absent DSN means
+    #: spool-only, which is a legitimate mode: the gateway still reads the plant
+    #: and still guarantees nothing is lost.
+    postgres_dsn: str = ""
     #: Read Modbus, OPC UA, or both. Both is the default because agreement
     #: between the two is the cheapest cross-check available, and disagreement is
     #: either a word-order bug or a wiring bug.
@@ -116,24 +124,19 @@ class Gateway:
 
         self.modbus: ModbusReader | None = None
         self.opcua: OpcUaReader | None = None
-        self.writer: InfluxWriter | None = None
+        self.writer: PostgresWriter | None = None
         self._running = False
 
     # ─── lifecycle ───────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        if self.config.influx_token:
-            self.writer = InfluxWriter(
-                self.c,
-                make_transport(self.config.influx_url, self.config.influx_token,
-                               org=self.config.influx_org),
-                database=self.config.influx_database,
-            )
+        if self.config.postgres_dsn:
+            self.writer = PostgresWriter(make_execute(self.config.postgres_dsn))
         else:
-            # No token is not an error at startup: the spool still absorbs
+            # No DSN is not an error at startup: the spool still absorbs
             # everything, and a gateway that refuses to run without a database
             # would throw away the one guarantee it exists to provide.
-            log.warning("no INFLUX_TOKEN; spooling only, nothing will be written")
+            log.warning("no POSTGRES_DSN; spooling only, nothing will be written")
 
         if self.config.use_modbus:
             self.modbus = ModbusReader(
@@ -248,7 +251,10 @@ class Gateway:
                 self.spool.acknowledge(path)
                 continue
             for r in records:
-                if self.writer.add(r.signal, r.value, r.ts * 1000, r.quality):
+                if self.writer.add(Reading(
+                    ts=float(r.ts), signal_id=r.signal, value=r.value,
+                    quality=r.quality, source="opcua",
+                )):
                     sent += 1
             if self.writer.flush():
                 self.spool.acknowledge(path)
@@ -283,7 +289,7 @@ class Gateway:
         ratio = (1.0 - published / offered) if offered else 0.0
         log.info(
             "polls=%d offered=%d published=%d (%.0f%% filtered) spool=%d files "
-            "influx=%s modbus_err=%d opcua_err=%d",
+            "db=%s modbus_err=%d opcua_err=%d",
             self.stats.polls, offered, published, ratio * 100,
             self.spool.stats.files, self.writer.stats_dict() if self.writer else "-",
             self.stats.modbus_failures, self.stats.opcua_failures,
@@ -296,7 +302,7 @@ class Gateway:
             "opcua": bool(self.opcua and self.opcua.connected),
             "stats": self.stats.as_dict(),
             "spool": self.spool.stats.as_dict(),
-            "influx": self.writer.stats_dict() if self.writer else None,
+            "postgres": self.writer.stats_dict() if self.writer else None,
             "deadband": {
                 "offered": sum(self.deadband.offered_since_start().values()),
                 "published": sum(self.deadband.accepted_since_start().values()),
@@ -361,10 +367,7 @@ async def _run(args: argparse.Namespace) -> int:
         spool_max_mb=args.spool_max_mb,
         poll_interval_s=args.poll_interval,
         deadband_default=args.deadband_default,
-        influx_url=os.environ.get("INFLUX_URL", "http://influxdb:8086"),
-        influx_token=os.environ.get("INFLUX_TOKEN", ""),
-        influx_database=os.environ.get("INFLUX_DATABASE", "wwtp"),
-        influx_org=os.environ.get("INFLUX_ORG", "wwtp"),
+        postgres_dsn=postgres_dsn() if os.environ.get("POSTGRES_HOST") else "",
         use_modbus=not args.no_modbus,
         use_opcua=not args.no_opcua,
     )

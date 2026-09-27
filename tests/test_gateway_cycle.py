@@ -115,7 +115,7 @@ def test_health_reports_the_writer_absence_rather_than_failing(tmp_path: Path,
                                                                plant) -> None:
     gw = _gateway(tmp_path)
     health = _run(gw)
-    assert health["influx"] is None
+    assert health["postgres"] is None
     assert health["spool"]["written"] > 0
 
 

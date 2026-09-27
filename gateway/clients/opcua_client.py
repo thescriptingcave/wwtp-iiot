@@ -158,8 +158,9 @@ class OpcUaReader:
             return
         for sig in self.c.signals.values():
             parts = [f"2:{sig.area}"]
-            equipment = sig.equipment or sig.area
-            parts.append(f"2:{equipment}")
+            # The holder, not the asset: INFLUENT:FLOW:FLOW lives under a folder
+            # called FLOW, and `sig.equipment` is None for grouping signals.
+            parts.append(f"2:{sig.holder}")
             # The node's browse name is the signal's ``field`` verbatim, which is
             # what softplc/servers/opcua.py creates. Lower-casing it here looked
             # right and resolved nothing.

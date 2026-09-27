@@ -22,7 +22,6 @@ import socket
 
 import pytest
 from pymodbus.client import ModbusTcpClient
-
 from softplc.contract import contract
 from softplc.servers.modbus import decode_float32
 from softplc.servers.modbus_server import ModbusTcpServer
@@ -66,6 +65,7 @@ _LOOP.run_until_complete(_SERVER.start())
 
 # Modbus runs in a worker thread; give the listener a moment to bind.
 import time as _time
+
 for _ in range(50):
     try:
         with socket.create_connection(("127.0.0.1", _PORT), timeout=0.2):
@@ -190,13 +190,12 @@ def test_a_client_may_write_the_setpoint(client, server) -> None:
     srv, _port = server
     reg = C.register("AERATION_SETPOINT_DO")
     assert reg.writable, "the setpoint must be writable for this test to mean anything"
-    from softplc.servers.modbus import encode_float32
 
     # Written through the model, not straight into the datastore: the datastore
     # has a one-slot lead-in, and a test that bypassed it would be asserting the
     # wrong address space.
     srv.model.write_holding_float("AERATION_SETPOINT_DO", 2.75)
-    srv._flush()  # noqa: SLF001 - the server's own publish path
+    srv._flush()
     assert _read_float(client, "AERATION_SETPOINT_DO") == pytest.approx(2.75, abs=1e-6)
 
 

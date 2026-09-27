@@ -63,16 +63,49 @@ def test_every_signal_belongs_to_a_declared_measurement(c: Contract) -> None:
         assert sig in c.measurements[sig.measurement].signals
 
 
-def test_every_signal_has_its_equipment_known_or_is_site_level(c: Contract) -> None:
-    """Signal ids are AREA:UNIT:EQUIP. The middle component must resolve."""
+def test_equipment_is_an_asset_or_none_and_holder_is_always_present(
+    c: Contract,
+) -> None:
+    """The two fields this test used to conflate, now kept apart.
+
+    It previously asserted that a signal's middle id component was "declared
+    equipment *or* one of the pseudo-units FLOW/LIFT/SITE/WEATHER", which is a
+    list of exceptions hard-coded in a test to paper over an overloaded field.
+
+    A foreign key caught it: fifteen signals named a holder that is not in the
+    equipment table, so `equipment` was simultaneously "an asset id" and "the
+    middle of the signal id". In the previous storage engine nothing could have
+    complained, because there was nothing to complain with.
+
+    So: `equipment` is an asset id or None, and `holder` is always present.
+    """
+    grouping = set()
     for sig in c.signals.values():
-        if sig.equipment in c.equipment:
-            continue
-        # Site/weather and influent/flow are pseudo-units with no equipment.
-        assert sig.equipment in {"SITE", "WEATHER", "FLOW", "LIFT"}, (
-            f"{sig.id}: unit {sig.equipment!r} is neither declared equipment "
-            "nor a known pseudo-unit"
-        )
+        assert sig.holder, f"{sig.id}: holder must always be set"
+        if sig.equipment is None:
+            grouping.add(sig.holder)
+        else:
+            assert sig.equipment in c.equipment, (
+                f"{sig.id}: equipment {sig.equipment!r} is not declared equipment"
+            )
+
+    # The grouping nodes are named, not accidental, and the set is small enough
+    # to state. A new one appearing is a design decision, not a typo.
+    assert grouping == {"FLOW", "LIFT", "SITE", "WEATHER"}, grouping
+    assert len(grouping) < len(c.equipment), "most signals are on real assets"
+
+
+def test_a_grouping_signal_keeps_its_name_for_the_address_space(
+    c: Contract,
+) -> None:
+    """`equipment` is None for a grouping signal, but the OPC UA folder is still
+    called FLOW — a client browsing the address space must not find
+    INFLUENT/INFLUENT instead of INFLUENT/FLOW.
+    """
+    flow = c.signals["INFLUENT:FLOW:FLOW"]
+    assert flow.equipment is None
+    assert flow.holder == "FLOW"
+    assert flow.area == "INFLUENT"
 
 
 # ─── design rule 1: tag by identity, field by value ───────────────────────────
@@ -86,46 +119,83 @@ def test_no_numeric_field_names(c: Contract) -> None:
             assert has_alpha, f"{sig.id}: field {sig.field!r} looks like a value"
 
 
-def test_measurement_tags_are_identity_only(c: Contract) -> None:
-    """The InfluxDB tag set must contain no value-bearing column."""
-    for name in c.measurements:
-        tags = c.measurement_tags(name)
-        assert "instrument_id" in tags
-        assert "site" in tags
-        for tag in tags:
-            assert not tag.startswith(("value", "val", "reading", "measurement_"))
+def test_identity_columns_are_identity_only(c: Contract) -> None:
+    """Rule 1: identity on ``signal``, value on ``reading``.
+
+    This used to assert that a hand-maintained tuple of InfluxDB tag *names*
+    contained nothing value-bearing. The list was a string constant, so the test
+    could only ever confirm that a constant matched itself — it had no way to
+    reach the thing it was protecting, which was the write path.
+
+    The columns are the schema's now, and the check that still has teeth is
+    against the contract: a signal *field* is a column name on `signal`, so a
+    field with no letters in it is almost certainly a value that was pasted
+    where a name belongs.
+    """
+    identity = set(c.identity_columns())
+    assert identity == {
+        "area", "measurement", "field", "unit", "equipment_id",
+    }, identity
+
+    for m in c.measurements.values():
+        for sig in m.signals:
+            assert any(ch.isalpha() for ch in sig.field), (
+                f"{sig.id}: field {sig.field!r} has no letters — a column name, "
+                "not a value"
+            )
+            assert ":" not in sig.field and " " not in sig.field, (
+                f"{sig.id}: field {sig.field!r} is not a usable column name"
+            )
 
 
 def test_signal_ids_are_unique(c: Contract) -> None:
     assert len(c.signals) == len(set(c.signals))
 
 
-def test_table_field_pairs_are_unique(c: Contract) -> None:
-    """A duplicate (table, field) silently overwrites in InfluxDB."""
+def test_measurement_field_pairs_are_unique(c: Contract) -> None:
+    """A duplicate (measurement, field) is a duplicate column in one table.
+
+    The wording is all that changed; the property did not. It used to be phrased
+    as a silent overwrite, which was true and alarming — in the previous engine
+    two signals with the same field name in the same measurement wrote to the
+    same series and the second simply won. Here the primary key is
+    ``(ts, signal_id, source)`` and the field name is not in it, so the collision
+    is still possible to *create* and still has to be caught here. A constraint
+    cannot express it: it is a statement about the contract, not about any row.
+    """
     seen: set[tuple[str, str]] = set()
     for m in c.measurements.values():
         for sig in m.signals:
             key = (m.name, sig.field)
-            assert key not in seen, f"duplicate {key}"
+            assert key not in seen, (
+                f"duplicate {key}: {sig.id} and an earlier signal share a field "
+                "name within one measurement"
+            )
             seen.add(key)
 
 
-# ─── design rule 2: identity lives in the contract, not InfluxDB ──────────────
+# ─── design rule 2: a measurement is a value, never a fact about the plant ────
 
 
-def test_signals_do_not_embed_metadata_in_influx_fields(c: Contract) -> None:
-    """No field may be a serial number, calibration date, or location.
+def test_signals_do_not_embed_metadata_in_their_field_names(c: Contract) -> None:
+    """No measurement field may be a serial number, calibration date, or location.
 
-    Those belong in Couchbase. If one appears here it is a schema decision
-    that will not scale.
+    Those are properties of an *asset*, and assets have a table. A signal is a
+    value with a unit and a range, and a signal called ``calibration_due`` is a
+    value that happens to have a range, which is a category error: it will be
+    deadbanded, charted, and alarmed on exactly like dissolved oxygen.
+
+    This rule needed a second database to express before, which was itself the
+    argument against having two. The test survived the collapse; the rationale
+    in its name did not need to change.
     """
     forbidden = ("serial", "calibrat", "location", "lat", "lon", "vendor", "model")
     for m in c.measurements.values():
         for sig in m.signals:
             for bad in forbidden:
                 assert bad not in sig.field.lower(), (
-                    f"{sig.id}: field {sig.field!r} looks like metadata — it "
-                    "belongs in Couchbase, not InfluxDB"
+                    f"{sig.id}: field {sig.field!r} describes the asset, not a "
+                    "measurement — it belongs on `equipment`, not `signal`"
                 )
 
 

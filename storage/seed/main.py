@@ -22,11 +22,20 @@ course worth doing:
 - deadband gaps, because a dataset with no gaps teaches nothing about ``WHERE
   time`` and nothing about why a signal can be *absent* rather than zero.
 
-## It writes through the same path as the live gateway
+## It writes through the same tables as the live gateway
 
-Same line protocol, same buckets, same field names. A seeded database that took a
-shortcut is a database the course cannot be trusted to describe, because the
-shortcut is exactly where the interesting differences are.
+Same columns, same quality convention, same ``signal`` rows. A seeded database
+that took a shortcut is a database the course cannot be trusted to describe,
+because the shortcut is exactly where the interesting differences are.
+
+The one thing it does *differently* is the write itself: ``COPY`` rather than
+``INSERT``. That is not a shortcut in the sense above, it is a different path for
+a different job — the seeder is loading six hundred thousand rows at once and
+``COPY`` is roughly an order of magnitude faster — and it comes with a
+consequence worth stating. ``COPY`` cannot upsert, so a duplicate timestamp is an
+error rather than a silent overwrite. Re-running the seeder into a window it has
+already written therefore fails loudly, where the gateway re-sending a spool
+batch upserts and carries on. Loud is right here.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from typing import Any
 
 from gateway.deadband import Deadband
 from softplc.contract import Contract
@@ -44,22 +54,36 @@ from softplc.contract import contract as get_contract
 from softplc.faults.engine import FaultEngine
 from softplc.process.plant import Plant, PlantSnapshot
 
-from storage.influx.line_protocol import encode_batch, encode_point, keys_from_contract
+from storage.postgres.schema import (
+    apply_retention,
+    apply_schema,
+    connect,
+    dsn,
+    seed_metadata,
+)
+from storage.postgres.writer import Reading, make_copy_execute
 
 log = logging.getLogger("storage.seed")
 
-#: ``(bucket, line_protocol_payload) -> bool``. A protocol rather than a client, so
-#: the replay policy is testable without a database.
-ExecuteFn = Callable[[str, str], bool]
+#: ``rows -> int``. A protocol rather than a client, so the replay policy is
+#: testable without a database. Returns the number of rows accepted.
+ExecuteFn = Callable[[list[tuple[Any, ...]]], int]
 
 #: One second, because that is the raw tier's resolution. Recording faster would
 #: invent precision the plant does not have — and the whole point of a time-series
 #: database is that it does not let you.
 SAMPLE_INTERVAL_S = 1.0
 
-#: How many samples per write. 5 000 is InfluxDB's documented ceiling; two thirds
-#: of it leaves room for tags without needing a second request.
-BATCH_LINES = 3_000
+#: Rows per COPY. 20 000 keeps any single transaction comfortably in memory while
+#: still being large enough that the round trip is not the bottleneck. The old
+#: limit — 3 000 — existed because line protocol capped a request body; COPY has
+#: no such limit, so the number is now chosen for throughput rather than by a
+#: server rule nobody remembers.
+BATCH_ROWS = 20_000
+
+#: Failed batches in a row before the seeder gives up. One is noise, three is
+#: a broken connection or a broken schema.
+_MAX_CONSECUTIVE_FAILURES = 3
 
 
 def _env_int(name: str, default: int) -> int:
@@ -85,54 +109,69 @@ class Seeder:
     """
 
     def __init__(self, contract: Contract, execute: ExecuteFn, *,
-                 database: str = "wwtp",
                  sample_interval_s: float = SAMPLE_INTERVAL_S,
                  speed: float = 600.0, storm_after_h: float | None = 2.0) -> None:
         self.c = contract
         self._execute = execute
-        self.database = database
         self.sample_interval_s = sample_interval_s
         self.speed = speed
         self.storm_after_h = storm_after_h
-        self.keys = keys_from_contract(contract)
         self.deadband = Deadband.from_contract(contract)
-        self.lines: list[str] = []
+        self.rows: list[tuple[Any, ...]] = []
         self.written = 0
         self.offered = 0
+        self._consecutive_failures = 0
         self.plant = Plant(c=contract)
         self.faults = FaultEngine(self.plant)
 
     # ─── one sample ───────────────────────────────────────────────────────────
 
-    def _record(self, snapshot: PlantSnapshot, ts_ms: int) -> None:
+    def _record(self, snapshot: PlantSnapshot, ts: float) -> None:
         for signal_id, value in snapshot.values.items():
-            key = self.keys.get(signal_id)
-            if key is None:
+            if signal_id not in self.c.signals:
                 continue
             self.offered += 1
             quality = snapshot.quality.get(signal_id, 0)
             if not self.deadband.accept(signal_id, value, quality):
                 continue
-            self.lines.append(
-                encode_point(key, value, ts_ms, quality=quality, source="seed")
+            self.rows.append(
+                Reading(ts=ts, signal_id=signal_id, value=value,
+                        quality=quality, source="seed").as_row()
             )
 
     def _flush(self) -> None:
-        """Write the buffer. Lines are dropped from the buffer either way.
+        """Write the buffer. Rows are dropped from the buffer either way.
 
         A seeder is not the live path, so there is no spool behind it and a failed
         batch is logged and skipped rather than retried. That is a deliberate
         asymmetry with the gateway, and worth naming: the gateway's data is the
         only copy, the seeder's data can be regenerated by running it again.
         """
-        if not self.lines:
+        if not self.rows:
             return
-        payload = encode_batch(self.lines)
-        if self._execute(self.database, payload):
-            self.written += len(self.lines)
+        try:
+            count = self._execute(self.rows)
+        except Exception as exc:  # one bad batch must not end a long run
+            self._consecutive_failures += 1
+            log.warning("seed batch of %d rows failed (%d in a row): %s",
+                        len(self.rows), self._consecutive_failures, exc)
+            count = 0
         else:
-            log.warning("seed batch of %d lines was not accepted", len(self.lines))
-        self.lines.clear()
+            self._consecutive_failures = 0
+        self.written += count
+        self.rows.clear()
+
+        # Carry on through a transient failure — a restarted database, a
+        # dropped connection — but stop on a systematic one. Seeding 0.25 days
+        # and logging 62 identical failures teaches nothing and takes a minute;
+        # the first error in the log is the one that matters, and ploughing on
+        # buries it.
+        if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+            raise SystemExit(
+                f"seed: {_MAX_CONSECUTIVE_FAILURES} consecutive failed batches. "
+                "The first error above is the real one; aborting rather than "
+                "repeating it a few thousand times."
+            )
 
     # ─── the run ──────────────────────────────────────────────────────────────
 
@@ -172,8 +211,8 @@ class Seeder:
         for i in range(n):
             ts = start + i * dt
             snapshot = self.faults.step(dt)
-            self._record(snapshot, int(ts * 1000))
-            if len(self.lines) >= BATCH_LINES:
+            self._record(snapshot, ts)
+            if len(self.rows) >= BATCH_ROWS:
                 self._flush()
             if i % 20_000 == 0 and i:
                 log.info("seeded %.1f%% of %s days (%d points)",
@@ -207,25 +246,23 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-5s %(name)s %(message)s",
     )
 
-    token = os.environ.get("INFLUX_TOKEN", "")
-    if not token:
-        log.error("INFLUX_TOKEN is not set; there is nowhere to seed to")
+    if not os.environ.get("POSTGRES_HOST"):
+        log.error("POSTGRES_HOST is not set; there is nowhere to seed to")
         return 2
 
-    from storage.influx.writer import make_transport
-
     contract = get_contract()
-    transport = make_transport(
-        os.environ.get("INFLUX_URL", "http://influxdb:8086"), token,
-        org=os.environ.get("INFLUX_ORG", "wwtp"),
-    )
-    database = os.environ.get("INFLUX_DATABASE", "wwtp")
+    dsn_str = dsn()
+    execute = make_copy_execute(dsn_str)
 
-    def execute(bucket: str, payload: str) -> bool:
-        return transport(bucket, payload)
+    # Schema and metadata first. The `reading` table has a foreign key onto
+    # `signal`, so history cannot be written before the contract is in place —
+    # the seeder now depends on the same referential integrity as everything
+    # else, and would have been impossible to write against the previous engine.
+    apply_schema()
+    log.info("metadata: %s", seed_metadata(contract))
 
     seeder = Seeder(
-        contract, execute, database=database, speed=args.speed,
+        contract, execute, speed=args.speed,
         storm_after_h=None if args.storm_after < 0 else args.storm_after,
     )
     if args.no_deadband:
@@ -239,23 +276,44 @@ def main(argv: list[str] | None = None) -> int:
     log.info(
         "seeded %s days into %s: %d points written of %d offered "
         "(%.1f%% filtered) in %.1fs",
-        args.days, database, written, offered,
+        args.days, os.environ.get("POSTGRES_DB", "wwtp"), written, offered,
         (100.0 * (1 - written / offered)) if offered else 0.0, elapsed,
     )
 
-    # Metadata into Couchbase, best-effort. The history is the part the SQL course
-    # needs; the documents are what the dashboards read for labels and limits. A
-    # failure here is worth a warning and not worth failing the run.
-    if os.environ.get("COUCHBASE_URL"):
-        try:
-            from storage.couchbase.client import make_upsert
-            from storage.couchbase.metadata import MetadataWriter
+    # Retention policies last: attaching them before the data is in place would
+    # make the policy's own refresh window the thing being measured.
+    apply_retention(
+        raw_days=_env_int("RETENTION_RAW_DAYS", 7),
+        minute_days=_env_int("RETENTION_MINUTE_DAYS", 90),
+    )
 
-            writer = MetadataWriter(make_upsert())
-            writer.seed_contract(contract)
-            log.info("couchbase metadata: %s", writer.stats.as_dict())
-        except Exception as exc:
-            log.warning("couchbase metadata seeding failed: %s", exc)
+    # Summary, printed rather than only logged, because the number that matters
+    # is not "how many points" but "how many of the interesting events are in
+    # there" — and you cannot tell that from a row count.
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE quality <> 0),
+                   min(ts), max(ts),
+                   count(DISTINCT signal_id)
+            FROM reading
+            """
+        )
+        row = cur.fetchone()
+        if row is None or not row[0]:
+            total, bad, lo, hi, signals = 0, 0, None, None, 0
+        else:
+            total, bad, lo, hi, signals = row
+        if not total or lo is None or hi is None:
+            log.warning("no readings in the database - is the deadband "
+                        "filtering everything?")
+            return 0
+        log.info(
+            "database now holds %d readings across %d signals, %d flagged "
+            "non-Good, spanning %s to %s",
+            total, signals, bad, lo.isoformat(), hi.isoformat(),
+        )
 
     return 0
 

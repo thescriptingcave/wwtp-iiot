@@ -10,7 +10,6 @@ unexplainable process upset weeks later.
 from __future__ import annotations
 
 import pytest
-
 from softplc.blocks.control import (
     AerationControl,
     DutyRotator,
@@ -22,8 +21,7 @@ from softplc.blocks.control import (
     PIController,
     build_blocks,
 )
-from softplc.scanloop import IOImage, LogicBlock, ScanLoop, ScanState
-
+from softplc.scanloop import IOImage, ScanLoop
 
 # ─── latched trips ───────────────────────────────────────────────────────────
 
