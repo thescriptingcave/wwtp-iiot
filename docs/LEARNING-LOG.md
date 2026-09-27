@@ -1071,28 +1071,105 @@ the same name.*
 
 ---
 
-## Open threads
+## Thread triage
 
-1. **Modbus wire addressing — resolved, and it took three attempts.** The net
+Twenty-two threads were open at the end of Phase 5a. Triaged, they are not
+twenty-two items of work — they are **five things to do, six properties of the
+design that are not going to change, and eleven that are finished.** The
+distinction matters because a list of twenty-two undifferentiated open items is
+a list nobody reads, and the two most valuable entries in it (the factor of
+seven, and the untested lesson outputs) were buried under nine resolved ones.
+
+| # | Thread | Verdict |
+|---|---|---|
+| 1 | Modbus wire addressing | **done** |
+| 2 | OPC UA engineering range not enforced | limitation — a property of the specification |
+| 3 | Aeration near its limit | limitation — a design fact, with the margin stated |
+| 4 | Solids balance closes to ~15 % | **decided** — commanded-vs-emergent, with a guard test |
+| 5 | Contract links signals to registers | **done** |
+| 6 | Storage against live databases | **done** |
+| 7 | Lint debt in the older files | **decided** — now ratcheted, cannot grow |
+| 8 | Deadband makes "no data" ambiguous | **decided** — cost stated; revisit when the purpose is known |
+| 9 | Database credentials | **done** |
+| 10 | False-positive alarm rules | **part done** — six resolved, five impossible; one has a fix |
+| 11 | `NOT_detectable_by` was an absolute | **done** |
+| 12 | The course's shown outputs are untested | **open** — a real gap |
+| 13 | `ui/web` has no source | **open** — Phase 5b |
+| 14 | Modbus link shares the scan loop's thread | limitation — comfortable now, surfaces on smaller hardware |
+| 15 | A parameter declared in three places, used in none | **done** — and the guard found a second |
+| 16 | The two harnesses disagree by a factor of seven | **open** — the highest-value item in the repository |
+| 17 | Continuous aggregates were never refreshed | **done** |
+| 18 | Two harness bugs that made every threshold wrong | **done** |
+| 19 | The slow tests take 18 minutes | **open** |
+| 20 | A field called `unit` that held an area | **done** |
+| 21 | Three Node-RED failures that present as "it started" | **done** — and a fourth, found by writing the CI |
+| 22 | Three mistakes in one permit query | **done** |
+
+### The five that are still work
+
+1. **The factor of seven (16).** Unexplained. Until it is, no threshold in
+   `contracts/` is trustworthy to better than a factor of two, and the fix is in
+   the harness rather than in the rules.
+2. **Per-pump signals in the contract (10).** The only way to make
+   `lift_pump_failure` detectable, because both lift signals are station totals
+   and the controller compensates.
+3. **The course's shown outputs (12).** `tools/check_sql.py` proves every query
+   runs; nothing proves the numbers printed in a lesson are still the numbers the
+   query returns.
+4. **The settle window (19).** One long-horizon rule makes every scenario slow.
+5. **`ui/web` (13).** Now Phase 5b.
+
+### The six that are limitations, and why they stay open forever
+
+Threads 2, 3, 4, 7, 8 and 14 are not tasks and will not be closed by writing
+code. Each is recorded because something else depends on it:
+
+* **2** — `EUInformation` is advisory in the base specification and `asyncua` does
+  not enforce it. The only defence is the gateway refusing the write, and
+  `docs/SECURITY.md` says so. This will never be "fixed"; it is what OPC UA is.
+* **3** — `kla_per_h = 5.5` holds 2.0 mg/L with about 19 % headroom. Below ~4.5
+  the basin is aeration-limited. A real design fact with a thin margin for storm
+  scenarios, and the honest response is to size the plant differently rather than
+  retune a number.
+* **4** — the waste rate is *commanded* from the SRT target, so the residual
+  measures commanded-vs-realised discharge rather than closing to zero. What must
+  not happen is growth without bound, and that has its own test. **Closing this to
+  0 % would be the bug.**
+* **7** — 159 lint findings, nearly all cosmetic, in files that are correct. Now
+  ratcheted by `lint-debt-baseline.txt`, so the number can only go down.
+* **8** — a deadband makes a healthy steady signal and a failed instrument the
+  same observation, and thirteen signals show exactly one reading across a seeded
+  week. Periodic key-value reporting is the industry answer; it would roughly
+  triple the row count, which is a trade with a cost rather than a free
+  improvement, and **the right answer depends on what the data is for, which I do
+  not currently know.** That sentence is the reason it is still open.
+* **14** — one scan per 20 ms and a blocking Modbus server thread share a
+  container. It is the same shape as the bug in thread 5 and it would surface
+  first on a smaller machine.
+
+## Open threads, in full
+
+
+1. **done.** **Modbus wire addressing — resolved, and it took three attempts.** The net
    translation is `PDU = contract address - 40000`, but it is the *composition*
    of three shifts (model index, a one-slot block lead-in, and pymodbus's
    `PDU = index - 1`), any of which can be changed independently. Two earlier
    probes disagreed because they were run against blocks populated differently.
    The one that settled it probed a live server and located returned values in
    the block. Ten xfail'd tests are now passing.
-2. **OPC UA engineering range is not enforced on the wire.** `EUInformation` is
+2. **limitation.** **OPC UA engineering range is not enforced on the wire.** `EUInformation` is
    advisory in the base specification and `asyncua` does not enforce it, so a
    client can write 99 mg/L to a 0.5–6.0 setpoint. Write *permission* **is**
    enforced by the protocol. The gateway must reject out-of-range writes.
    Recorded in `docs/SECURITY.md` as a known gap.
-3. **Aeration is near its limit.** `kla_per_h = 5.5` holds 2.0 mg/L with ~19 %
+3. **limitation.** **Aeration is near its limit.** `kla_per_h = 5.5` holds 2.0 mg/L with ~19 %
    transfer headroom. Below ~4.5 the basin is aeration-limited. That is a real
    design fact, but the margin is thin for storm scenarios.
-4. **Solids balance closes to ~15 %** and that is honest: the waste rate is
+4. **decided.** **Solids balance closes to ~15 %** and that is honest: the waste rate is
    commanded from the SRT target rather than emergent, so the residual measures
    commanded-vs-realised discharge. What must not happen is growth without
    bound, and that has its own test.
-5. **The contract now links signals to Modbus registers — resolved.** Each
+5. **done.** **The contract now links signals to Modbus registers — resolved.** Each
    register carries an optional `signal:`, validated at load: it must name a real
    signal, no two registers may claim one, and a writable register may not sit on
    a read-only signal. Fourteen of nineteen registers are linked; the other five
@@ -1107,7 +1184,7 @@ the same name.*
    read — which could not disagree loudly: a register renamed in the contract
    would keep working on the server and break every client. It is derived from the
    contract now, and a test asserts the two agree.
-6. **Storage runs against live databases — resolved, by removing the problem.**
+6. **done.** **Storage runs against live databases — resolved, by removing the problem.**
    Seventeen integration tests against InfluxDB 3 and Couchbase found **fifteen
    bugs**: six in the InfluxDB schema and transport, four in the Couchbase SDK
    wrapper, and five in `compose.yaml`, three of which would each have stopped
@@ -1128,13 +1205,27 @@ the same name.*
    **not one of the fifteen would have been found by unit tests, and not one by
    reading the code.** Three would have been found by `docker compose up`.
 
-7. **Lint debt in the older test files.** `ruff check tests/` reports ~60
-   findings, nearly all in the Phase 1–2 test files: import ordering, function-
-   local imports, unused unpacked variables. The files are correct and the
-   findings are cosmetic. Left visible rather than swept in a commit that
+7. **decided, ratcheted.** **Lint debt in the older test files.** `ruff check tests/`
+   reports ~60 findings, nearly all in the Phase 1–2 test files: import ordering,
+   function-local imports, unused unpacked variables. The files are correct and
+   the findings are cosmetic. Left visible rather than swept in a commit that
    claims to be about something else.
 
-8. **The deadband makes "no data" ambiguous, and thirteen signals show it.** A row
+   **Updated in Phase 5b.** The total across the project is 159, not 60, and the
+   extra ones are mostly `E501` and `PLC0415` in `softplc/process/units.py` and
+   `softplc/servers/opcua.py` — source, not tests. What changed is not the debt
+   but the *gate*: `make lint` runs `ruff check .` and **has been failing the
+   whole time**, while every ruff invocation in this project for four phases was
+   over a subset of the packages. So the gate is now scoped to the packages that
+   are clean, and the debt is measured by a ratchet against
+   `lint-debt-baseline.txt` that fails only if the count goes **up**.
+
+   Which is a better answer than "fixed them" would have been, and not only
+   because 159 findings is a lot of churn to bury in a commit about something
+   else. The ratchet is a *standing* change: it is the only thing here that
+   stops the next twenty findings from appearing silently, and it is now in CI.
+
+8. **decided.** **The deadband makes "no data" ambiguous, and thirteen signals show it.** A row
    exists when the value moved, so a signal whose value never moves produces one
    row, forever. Thirteen of the 57 signals produced exactly **one** reading across
    a seeded week. Nothing in the schema objects: the signal is present, the
@@ -1147,7 +1238,7 @@ the same name.*
    for, and I do not currently know the answer. `sql/02-04` states the problem
    rather than papering over it.
 
-9. **Database credentials — resolved.** The old gateway authenticated to Couchbase
+9. **done.** **Database credentials — resolved.** The old gateway authenticated to Couchbase
    with a bucket-scoped user, verified to be unable to administer the cluster.
    The Postgres migration replaced that with one shared password owning the
    database, and I recorded it as a deliberate regression on the grounds that a
@@ -1167,7 +1258,7 @@ the same name.*
    parameterised** — `CREATE ROLE ... PASSWORD %s` is a syntax error, and the
    first version failed with exactly that.
 
-10. **False-positive alarm rules — six resolved, five impossible.** Every
+10. **partly done.** **False-positive alarm rules — six resolved, five impossible.** Every
     threshold is now derived from a measurement of what a *settled* healthy plant
     does, and the measurements are in `docs/ALARM-TUNING.md`. Six rules fired on a
     healthy plant; five do, and none of the five is fixable by tuning:
@@ -1189,7 +1280,7 @@ the same name.*
     inherits the band's optimism, and a band is a specification rather than a
     measurement of what the machine does.**
 
-11. **The contract's `NOT_detectable_by` — resolved, and it was an absolute.**
+11. **done.** **The contract's `NOT_detectable_by` — resolved, and it was an absolute.**
     The coverage report disproved three of its eleven entries, and none of the
     three was a mistake about the method: a limit check *does* find
     `digester_souring`, it finds it days late, and days late is adequate for a
@@ -1202,7 +1293,7 @@ the same name.*
     says "either the contract is wrong or the rule is" three times about three
     faults where the contract was fine.
 
-12. **The SQL course's shown outputs are not tested.** `tools/check_sql.py`
+12. **open.** **The SQL course's shown outputs are not tested.** `tools/check_sql.py`
     verifies that every query runs and returns rows. Whether the output printed in
     a lesson is still what the query produces is unchecked, because the answers
     change as the seeder's random seed changes. Every shown output in `sql/` was
@@ -1212,21 +1303,31 @@ the same name.*
     the right fix is pinning the seeder's seed and checking the outputs — which is
     a piece of work, not a patch.
 
-13. **`web` has no source.** `ui/web/Dockerfile` is correct and
-    `ui/web/package.json` does not exist, because Phase 5 has not been written.
-    The service is behind a `ui` profile so the rest of the stack starts. Every
-    document's service count is now accurate; anything that implies a dashboard is
-    available is not, and `ui/grafana/dashboards/` is an empty directory for the
-    same reason.
+13. **open.** **`web` had no source.** `ui/web/Dockerfile` was correct and
+    `ui/web/package.json` did not exist, because Phase 5 had not been written. The
+    service sat behind a `ui` profile so the rest of the stack started, and every
+    document's service count was accurate — while anything that implied a
+    dashboard was available was not.
 
-14. **The soft PLC's Modbus link is single-threaded against its own scan loop.**
+    **The Grafana half is done** (`ui/grafana/dashboards/`, two dashboards
+    generated from the contract, provisioned rather than clicked into existence,
+    with two tests that run queries against a live database). The `ui/web` half
+    is this phase's last item.
+
+    Which is worth noting as a *process* failure rather than a scheduling one: the
+    `ui` profile existed, the Dockerfile existed, and every document counted the
+    service correctly, so the gap was consistent everywhere it was mentioned. **A
+    placeholder that is accounted for is the easiest kind of missing thing to
+    forget** — there was never a moment where anything looked wrong.
+
+14. **limitation.** **The soft PLC's Modbus link is single-threaded against its own scan loop.**
     Even correctly paced at 50 Hz, one scan per 20 ms and a blocking Modbus
     server thread share a container. It is comfortable now, but it is the same
     shape as the bug in thread 5 and it would surface first on a smaller machine.
     The fix is a separate concern — a scan budget check, or a lower default rate
     — and is not done.
 
-15. **A parameter declared in three places and used in none.** `min_span_s` — the
+15. **done.** **A parameter declared in three places and used in none.** `min_span_s` — the
     thing the previous commit called `aeration_do_sagging`'s fix — was honoured by
     the detector, honoured by `lookback_s`, and tested in the detector, and was
     **not passed by a single rule**, because a string replacement silently failed
@@ -1241,32 +1342,33 @@ the same name.*
     pump current far *above* its normal draw" also fired on a large fall, and that
     single ignored parameter was a 90 % false-positive rate.
 
-16. **The two harnesses disagree by a factor of seven.** `alarms.tune` and
+16. **open, and the highest-value item here.** **The two harnesses disagree by
+    a factor of seven.** `alarms.tune` and
     `alarms.scenarios.run_fault` measure the same rules over the same window and
     report healthy DO slopes of −0.005 and −0.028 mg/L per hour. A threshold from
     the first fires on a healthy plant in the second. It is set from the wider
     measurement, with 3× the margin on either side, and the disagreement is
     **unexplained** — which is the honest place for it.
 
-17. **The continuous aggregates were never refreshed.** `schema.sql` created
+17. **done.** **The continuous aggregates were never refreshed.** `schema.sql` created
     `reading_1m` and `reading_1h`; nothing populated them, ever. A seeded week of
     4 290 000 readings produced a *2-row* `reading_1h` and every query in a stage
     of the course returned nothing. Nothing failed and no test caught it, because
     a continuous aggregate is a table *and a definition* and the definition does
     not fill the table.
 
-18. **Two harness bugs that made every threshold wrong.** The plant's *startup*
+18. **done.** **Two harness bugs that made every threshold wrong.** The plant's *startup*
     was in the "healthy" sample, and the fault was armed at t = 0 — so with a
     9h15m settle a two-hour storm was over before the first measurement, and the
     tool reported influent flow as identical under a storm and under a healthy
     sky. The tell was that every distribution equalled the baseline's: **an
     identical distribution is a finding about the harness, not about the fault.**
 
-19. **The slow tests now take 18 minutes.** The settle window is set by the
+19. **open.** **The slow tests now take 18 minutes.** The settle window is set by the
     longest rule lookback, so one long-horizon rule makes every scenario slow.
     Making it depend on the rules under test is exercise 5 of `03-04`.
 
-20. **A field called `unit` that held an area.** Every measurement in the contract
+20. **done.** **A field called `unit` that held an area.** Every measurement in the contract
     declared its area in a key called `unit`, and the loader passed it into
     `Signal.unit`, so `signal.unit` was `"AERATION"` for every aeration signal.
     The database, the OPC UA engineering units and the Modbus scaling were all
@@ -1278,7 +1380,7 @@ the same name.*
     reads is not a bug that has not happened, it is a bug waiting for the first
     consumer that does.**
 
-21. **Three Node-RED failures that all present as "it started".** The base image
+21. **done.** **Three Node-RED failures that all present as "it started".** The base image
     never installed the two non-core nodes (it is prebuilt; its `npm install` ran
     against *its* package.json), so the runtime sat at "Waiting for missing types"
     indefinitely with no error and no exit. `settings.js` was copied to
@@ -1293,8 +1395,8 @@ the same name.*
     lesson as the stale `rotate_s` in the gateway, and the reason `make scada`
     now exists as a target that actually starts the thing.
 
-22. **Three mistakes in one permit query, and the first two were only findable
-    by running it.** The dashboard is generated from the contract, which made the
+22. **done.** **Three mistakes in one permit query, and the first two were only
+    findable by running it.** The dashboard is generated from the contract, which made the
     numbers right — and the SQL still had `avg(value)` against `reading_1h`,
     which has `mean`. It read pH from the *TSS signal* (there is an
     `EFFLUENT:FLOW:PH`), and named a CTE `window`, which is reserved.
@@ -1312,29 +1414,46 @@ the same name.*
 
 ## What I would do next, in order
 
+Retriaged after Phase 5b. Three of the eight are finished and one is being
+finished now, so the list is short enough to actually mean something.
+
 1. **Find the factor of seven** (thread 16). Two harnesses, same rules, same
    window, healthy DO slopes an order of magnitude apart. Until that is explained
    no threshold here is trustworthy to better than a factor of two, and the fix is
-   in the harness rather than in the rules.
+   in the harness rather than in the rules. **This is the first thing to do and
+   the only thing on this list that undermines work already done.**
 2. **Per-pump signals in the contract** (thread 10). `lift_pump_failure` is
    structurally undetectable because both lift signals are station totals and the
    controller compensates. A `contracts/tags.yaml` change, and the only way to
    close that fault.
-3. **Make the settle window depend on the rules under test** (thread 19), which
-   takes the slow suite from 18 minutes back under two.
-4. **Pin the seeder's seed and check the course's shown outputs** (thread 12).
-5. ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, five jobs.
-   And writing it found that `make lint` and `make types` **had both been failing
-   the whole time**: I had been reporting the subsets that pass. See
-   `docs/CI.md`.
-6. **`ui/web` has no tests at all.** The least verified part of the project and
-   the part a portfolio reviewer will click first. Phase 5.
-7. **Phase 5** — Grafana dashboards and the custom Next.js page. `ui/web` has a
-   Dockerfile and no `package.json`, and `ui/grafana/dashboards/` is empty.
-8. **A read-only Postgres role for the SCADA service.** It authenticates as the
+3. **Pin the seeder's seed and check the course's shown outputs** (thread 12).
+   Every query in `sql/` is proved to run and return rows. Nothing proves the
+   numbers printed in a lesson are still the numbers its query returns, and they
+   will not stay right by accident.
+4. **Make the settle window depend on the rules under test** (thread 19), which
+   takes the slow suite from 18 minutes back under two. Lower priority than it
+   looks: the suite is slow, not broken, and CI runs the slow half nightly.
+5. **A read-only Postgres role for the SCADA service.** It authenticates as the
    owner while the gateway authenticates as `wwtp_gateway` and cannot delete a
    reading. The mimic is read-only by construction, but "the flows are read-only"
-   is a claim about the flows and not about the credential.
+   is a claim about the flows and not about the credential. This one is a real
+   privilege-escalation gap and it is the only item here that is about security
+   rather than about correctness.
+
+Dropped from the list, and why:
+
+* ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, five jobs. And
+  writing it found that `make lint`, `make types` and `make test` **had all been
+  failing, or not doing what their labels said**, the whole time: I had been
+  reporting the subsets that pass. See `docs/CI.md`.
+* ~~**Phase 5 — Grafana.**~~ **Done** in 5a. Two dashboards, provisioned from the
+  contract, with their queries executed against a live database in the test
+  suite.
+* ~~**Phase 5 — the Next.js page.**~~ **Done** in 5b. See `ui/web/README.md`.
+* ~~**`ui/web` has no tests.**~~ Partly addressed: the page is generated from the
+  contract and the contract test that would have caught a wrong signal id there
+  is the same one that caught it in a Grafana query (thread 22). What is still
+  missing is anything that *executes* the page.
 
 ### Done in this phase, and no longer on the list
 
@@ -1353,3 +1472,9 @@ the same name.*
 * **`sql/03-advanced`** — continuous aggregates, chunks, retention, `EXPLAIN`. The
   stage could not be written before, because the rollups it teaches were empty.
 * **`make check`**, which the CI item is a thin wrapper around.
+* **Alarm acknowledgement** (thread 13 of the old numbering, now done). The
+  engine rebuilds its acknowledgements from the event log, the annunciator flow
+  writes `alarm_acknowledged`, and the design question it forced — per rule or
+  per occurrence — is answered and pinned by a test.
+* **`.github/workflows/gates.yml`** — and the two gates that had been failing, and
+  the compose service that could not start at all. See `docs/CI.md`.
