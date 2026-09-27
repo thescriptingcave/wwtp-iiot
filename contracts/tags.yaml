@@ -114,7 +114,7 @@ measurements:
   # ═══ INFLUENT ═════════════════════════════════════════════════════════════
   # The storm story lives here. Turbidity is the sharpest storm signal.
   - measurement: influent
-    unit: INFLUENT
+    area: INFLUENT
     tags: []
     signals:
       - { id: "INFLUENT:FLOW:FLOW",             field: flow_m3h,       eu: "m3/h",   range: [0, 2400],    normal: [200, 2200],  deadband: 5.0,   sample_ms: 1000 }
@@ -127,7 +127,7 @@ measurements:
   # ═══ LIFT STATION ═════════════════════════════════════════════════════════
   # Wet well level is the classic lead/lag duty-rotation example.
   - measurement: lift
-    unit: INFLUENT
+    area: INFLUENT
     equipment: [PIT-1, PIT-2, PIT-3]
     signals:
       - { id: "INFLUENT:LIFT:WETWELL_LEVEL", field: level_m,     eu: "m",   range: [0, 8],     normal: [1.0, 4.0], deadband: 0.01, sample_ms: 1000 }
@@ -143,7 +143,7 @@ measurements:
   # ═══ PRIMARY CLARIFIER ════════════════════════════════════════════════════
   # Blanket depth is the constraint: >2 m and sludge washes out to effluent.
   - measurement: primary
-    unit: PRIMARY
+    area: PRIMARY
     equipment: [PRI-CL-1, PRI-SCR-1]
     signals:
       - { id: "PRIMARY:PRI-CL-1:BLANKET",    field: blanket_m,     eu: "m",    range: [0, 4],     normal: [0.2, 1.0], deadband: 0.005, sample_ms: 2000 }
@@ -156,7 +156,7 @@ measurements:
   # The most instrumented unit, and the one that exercises the most failure modes.
   # ae_do vs ae_orch divergence is the model-based (not threshold) detection case.
   - measurement: aeration
-    unit: AERATION
+    area: AERATION
     equipment: [BLW-1, BLW-2, BLW-3, BLW-4, RAS-P-1, RAS-P-2]
     signals:
       - { id: "AERATION:AHU-1:DO",              field: do_mg_l,        eu: "mg/L", range: [0, 20],     normal: [1.5, 3.0],  deadband: 0.02,  sample_ms: 1000 }
@@ -179,7 +179,7 @@ measurements:
 
   # ═══ SECONDARY CLARIFIER ═══════════════════════════════════════════════════
   - measurement: secondary
-    unit: SECONDARY
+    area: SECONDARY
     equipment: [SEC-CL-1, SEC-SCR-1]
     signals:
       - { id: "SECONDARY:SEC-CL-1:BLANKET", field: blanket_m,   eu: "m",   range: [0, 3],   normal: [0.2, 0.8], deadband: 0.005, sample_ms: 2000 }
@@ -191,7 +191,7 @@ measurements:
   # These carry the PERMIT. sec_eff_nh4 breaches are 30-day rolling means, so no
   # point threshold can ever detect them — see sql/03-advanced.
   - measurement: effluent
-    unit: EFFLUENT
+    area: EFFLUENT
     equipment: [DIS-CL-2, CL-DOS-1]
     signals:
       - { id: "EFFLUENT:FLOW:FLOW",           field: flow_m3h,        eu: "m3/h", range: [0, 2600],  normal: [200, 2300], deadband: 5.0,  sample_ms: 1000 }
@@ -208,7 +208,7 @@ measurements:
   # The second process, and the souring case. pH < 6.5 with VFA/alk > 0.6 is
   # the digester-health signal pair.
   - measurement: sludge
-    unit: SLUDGE
+    area: SLUDGE
     equipment: [THK-1, DIG-1, GAS-BLR]
     signals:
       - { id: "SLUDGE:THK-1:TS",             field: ts_pct,            eu: "%",     range: [0, 10],   normal: [0.5, 5.0], deadband: 0.01, sample_ms: 10000 }
@@ -223,14 +223,14 @@ measurements:
 
   # ═══ PLANT UTILITIES ══════════════════════════════════════════════════════
   - measurement: utility
-    unit: UTILITY
+    area: UTILITY
     signals:
       - { id: "UTILITY:SITE:PLANT_POWER", field: power_kw, eu: "kW", range: [0, 2500], normal: [200, 1800], deadband: 1.0, sample_ms: 1000 }
 
   # ═══ SITE & WEATHER ═══════════════════════════════════════════════════════
   # site_rain is the trigger the storm fault uses.
   - measurement: site
-    unit: SITE
+    area: SITE
     signals:
       - { id: "SITE:WEATHER:AIR_TEMP", field: air_temp_c, eu: "Cel",  range: [-30, 55], normal: [5, 30],   deadband: 0.1,  sample_ms: 60000 }
       - { id: "SITE:WEATHER:RAIN",     field: rain_mm_h,  eu: "mm/h", range: [0, 200],  normal: [0, 1],   deadband: 0.1,  sample_ms: 60000 }

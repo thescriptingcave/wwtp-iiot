@@ -398,7 +398,10 @@ def _minimal_contract(tmp_path, **overrides):
         "measurements": [
             {
                 "measurement": "m1",
-                "unit": "A",
+                # The key is `area`, not `unit`. It was `unit` until a SCADA tag
+                # generator rendered it and every signal's unit came out as
+                # "A" — see test_signal_unit_is_a_unit_of_measure.
+                "area": "A",
                 "signals": [
                     {
                         "id": "A:E:P",
@@ -705,3 +708,139 @@ def test_the_server_and_the_contract_agree_on_the_mapping(c: Contract) -> None:
 
     from_contract = {r.name: r.signal for r in c.registers if r.signal}
     assert from_contract == REGISTER_TO_SIGNAL
+
+
+# ─── the unit is a unit, and not a place name ─────────────────────────────────
+
+
+def test_signal_unit_is_a_unit_of_measure(c: Contract) -> None:
+    """A field called `unit` that held an area.
+
+    Every measurement in `contracts/tags.yaml` declared its **area** in a key
+    called `unit` — all eight of them, consistently — and the loader passed that
+    value into `Signal.unit`. So `signal.unit` was `"AERATION"`, and the
+    contract's header promises OPC UA engineering units and Modbus scaling from
+    this file.
+
+    The database, the OPC UA server and the Modbus server were all **correct**,
+    because they all read `Signal.eu`, which was right all along. Only the Python
+    attribute was wrong. That is the worst shape for this class of bug: three
+    consumers right, one wrong, and no test — because the wrong one was the one
+    nothing read.
+
+    It was found by `scada/generate_tags.py`, the first consumer to *render* a
+    unit onto a mimic diagram.
+    """
+    for signal in c.signals.values():
+        assert signal.unit == signal.eu, (
+            f"{signal.id}: unit={signal.unit!r} but eu={signal.eu!r}; "
+            "Signal.unit is documented as the unit of measure and must not "
+            "carry anything else"
+        )
+        # And it must not be a bare upper-case word, which is what an area name
+        # looks like. Cheap, and it catches the regression at its source even if
+        # someone reintroduces a second path.
+        assert signal.unit != signal.area, (
+            f"{signal.id}: unit is its own area name {signal.area!r}"
+        )
+
+
+def test_every_unit_is_one_of_twenty_two_known_codes(c: Contract) -> None:
+    """The complete set of units in use, asserted exactly.
+
+    Not a lookup table for validation — the loader does not reject an unknown
+    unit, because a UCUM code it has never seen is still a correct answer and
+    refusing to load the plant over it would be the wrong kind of strict. This is
+    a *drift* test: a typo in a unit column produces plausible numbers labelled
+    wrongly, and nothing anywhere complains.
+
+    Twenty-two distinct units across 57 signals, listed rather than pattern-matched
+    because the point is that the number is small. A pattern that accepts anything
+    shaped like a unit would pass `"m3/he"`, `"ml/L"` and `"PPM"` without noticing,
+    which are three of the four ways a unit goes wrong in practice.
+
+    The UCUM codes are bare (``mg/L``, ``m3/h``, ``Cel``, ``uS/cm``) and the UCUM
+    annotations for dimensionless quantities are braced (``{pH}``, ``{1}``,
+    ``{Boolean}``, ``{MPN}/100mL``) — both correct, and the braces are the part a
+    naive validator would reject.
+    """
+    known = {
+        "%",                       # UCUM: percentage
+        "1",                       # UCUM: dimensionless
+        "{1}",                     # UCUM: dimensionless, annotated
+        "{Boolean}",               # a flag
+        "A",                       # amperes
+        "Cel",                     # UCUM: degree Celsius
+        "N.m",                     # UCUM: newton metre
+        "NTU",                     # nephelometric turbidity unit
+        "d", "h",                  # UCUM: day, hour
+        "hPa", "mbar",             # pressure, as a gauge reading
+        "kW",                      # UCUM: kilowatt
+        "m",                       # UCUM: metre
+        "m3/h",                    # UCUM: cubic metre per hour
+        "mg/(L.h)",                # areal loading rate
+        "mg/L",                    # UCUM: milligram per litre
+        "mm/h",                    # rainfall rate
+        "rev/min",                 # rotational speed, spelled out
+        "uS/cm",                   # UCUM: microsiemens per centimetre
+        "{MPN}/100mL",             # microbiological, not a unit at all
+        "{pH}",                    # UCUM: pH
+    }
+    units = {s.unit for s in c.signals.values()}
+    assert units == known, (
+        f"the set of units in use changed. "
+        f"missing: {sorted(known - units)}; "
+        f"unexpected: {sorted(units - known)}"
+    )
+    # 22 distinct units is the number the docstring claims. If this fails the
+    # docstring is wrong, and a docstring that is quietly wrong is the thing this
+    # project keeps paying for.
+    assert len(known) == 22
+
+
+def test_every_measurement_declares_a_real_area(c: Contract) -> None:
+    """`Measurement.unit` was renamed to `Measurement.area`, and the YAML key
+    with it.
+
+    The area is validated against the declared `areas:` list at load, so this
+    asserts the whole set agrees — that no measurement claims an area no signal in
+    it actually belongs to, which would be a second silent inconsistency.
+    """
+    for m in c.measurements.values():
+        assert m.area in c.area_ids, (
+            f"measurement {m.name!r} declares area {m.area!r}, not in `areas`"
+        )
+        for signal in m.signals:
+            assert signal.area == m.area, (
+                f"{signal.id} is in measurement {m.name!r} (area {m.area!r}) but "
+                f"its own id says {signal.area!r}"
+            )
+
+
+def test_a_measurement_without_an_area_is_refused(tmp_path) -> None:
+    """The renamed key produces a *useful* error, which is the point of renaming.
+
+    The message says what the key used to be, because someone with an old contract
+    in front of them needs to know this is a rename and not a new requirement.
+    """
+    path = _minimal_contract(tmp_path, measurements=[
+        {"measurement": "m1", "signals": [
+            {"id": "A:E:P", "field": "pressure_bar", "eu": "bar",
+             "range": [0, 10], "normal": [1, 5], "deadband": 0.1,
+             "sample_ms": 1000},
+        ]},
+    ])
+    with pytest.raises(ContractError, match="used to be called 'unit'"):
+        load_contract(path)
+
+
+def test_a_measurement_naming_an_undeclared_area_is_refused(tmp_path) -> None:
+    path = _minimal_contract(tmp_path, measurements=[
+        {"measurement": "m1", "area": "NOWHERE", "signals": [
+            {"id": "A:E:P", "field": "pressure_bar", "eu": "bar",
+             "range": [0, 10], "normal": [1, 5], "deadband": 0.1,
+             "sample_ms": 1000},
+        ]},
+    ])
+    with pytest.raises(ContractError, match="not in `areas`"):
+        load_contract(path)

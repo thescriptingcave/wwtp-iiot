@@ -125,10 +125,28 @@ class Signal:
 
 @dataclass(frozen=True, slots=True)
 class Measurement:
-    """A group of signals sharing a name and a unit."""
+    """A group of signals sharing a name and an area.
 
+    The field used to be called ``unit`` and it held the **area**, not a unit of
+    measure -- every measurement declared the area name in a key called ``unit``,
+    so ``Signal.unit`` inherited ``"AERATION"`` and a SCADA mimic built from this
+    contract would have labelled dissolved oxygen as being in units of "AERATION".
+
+    The unit of measure is per-signal and lives in ``Signal.eu``, a UCUM code
+    (``mg/L``, ``m3/h``, ``rev/min``). It is also what ``signal.unit`` means in
+    the database, and what the seeder has always written -- so the database, the
+    OPC UA engineering units and the Modbus scaling were all correct and only the
+    Python attribute was wrong. Which is the worst possible shape for the bug:
+    three consumers right, one wrong, and no test because the wrong one was the
+    one nothing read.
+
+    Found by `scada/generate_tags.py`, which is the first consumer to actually
+    *render* a unit. ``tests/test_contract.py`` now asserts that ``Signal.unit``
+    equals ``Signal.eu`` for every signal, and that a measurement's area is one of
+    the declared areas.
+    """
     name: str
-    unit: str
+    area: str
     signals: tuple[Signal, ...]
     equipment: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -295,7 +313,7 @@ _DEADBAND_MODES = frozenset({"absolute", "relative", "always"})
 
 
 def _parse_signal(
-    raw: dict[str, Any], *, measurement: str, unit: str,
+    raw: dict[str, Any], *, measurement: str, area: str,
     known_equipment: frozenset[str] = frozenset(),
 ) -> Signal:
     missing = [
@@ -365,7 +383,9 @@ def _parse_signal(
         deadband_mode=mode,
         sample_ms=int(raw["sample_ms"]),
         measurement=measurement,
-        unit=unit,
+        # The unit of measure, per signal. NOT the measurement-level value: that
+        # used to be passed in here and called `unit`, and it was the area.
+        unit=raw["eu"],
         area=parts[0],
         # A holder is usually an asset and sometimes a grouping node —
         # INFLUENT:FLOW:FLOW is measured on the influent *flow*, which is not a
@@ -561,13 +581,18 @@ def load_contract(path: Path | str | None = None) -> Contract:
         if name in measurements:
             raise ContractError(f"duplicate measurement: {name!r}")
 
-        unit = m.get("unit")
-        if not unit:
-            raise ContractError(f"measurement {name!r} missing 'unit'")
+        # The key is `area`, and it is validated against the declared areas
+        # below. It was `unit` until a SCADA tag generator rendered it.
+        area = m.get("area")
+        if not area:
+            raise ContractError(
+                f"measurement {name!r} missing 'area' (it used to be called "
+                f"'unit' and held the area name, which is not a unit of measure)"
+            )
 
         sigs: list[Signal] = []
         for raw_sig in m.get("signals", []):
-            sig = _parse_signal(raw_sig, measurement=name, unit=unit,
+            sig = _parse_signal(raw_sig, measurement=name, area=area,
                                 known_equipment=frozenset(equipment))
 
             if sig.area not in area_ids:
@@ -590,9 +615,15 @@ def load_contract(path: Path | str | None = None) -> Contract:
         if not sigs:
             raise ContractError(f"measurement {name!r} declares no signals")
 
+        if area not in area_ids:
+            raise ContractError(
+                f"measurement {name!r} declares area {area!r}, which is not in "
+                f"`areas` ({', '.join(sorted(area_ids))})"
+            )
+
         measurements[name] = Measurement(
             name=name,
-            unit=unit,
+            area=area,
             signals=tuple(sigs),
             equipment=tuple(m.get("equipment", ())),
             tags=tuple(m.get("tags", ())),
@@ -707,7 +738,7 @@ if __name__ == "__main__":  # pragma: no cover
     print(c.summary())
     print()
     for m in c.measurements.values():
-        print(f"  {m.name:<9} {len(m.signals):>2} signals   unit={m.unit}")
+        print(f"  {m.name:<9} {len(m.signals):>2} signals   area={m.area}")
         for s in m.signals:
             w = "  [writable]" if s.writable else ""
             print(
