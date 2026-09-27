@@ -46,6 +46,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from gateway.deadband import Deadband
@@ -55,10 +56,12 @@ from softplc.faults.engine import FaultEngine
 from softplc.process.plant import Plant, PlantSnapshot
 
 from storage.postgres.schema import (
+    apply_refresh_policies,
     apply_retention,
     apply_schema,
     connect,
     dsn,
+    refresh_aggregates,
     seed_metadata,
 )
 from storage.postgres.writer import Reading, make_copy_execute
@@ -239,6 +242,31 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _seed_bounds() -> tuple[datetime, datetime] | None:
+    """The bounds of everything now in ``reading``, or ``None`` if it is empty.
+
+    Takes no arguments on purpose. It could take the seeder and the day count and
+    compute the range, and those parameters were in the first version; the
+    database already knows, and computing it twice is how the two copies drift.
+
+    Read from the database rather than computed, because the seeder's clock and
+    the database's clock are not the same thing and the aggregates are bucketed
+    by the database. A range that is right by construction in one clock and wrong
+    in the other produces buckets that are one interval out, which is the kind of
+    bug that looks like a rounding error and is not.
+    """
+    from storage.postgres.schema import connect
+
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT min(ts), max(ts) FROM reading")
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    # A bucket interval of margin at each end, so the first and last partially
+    # covered buckets are included rather than clipped.
+    return row[0] - timedelta(minutes=90), row[1] + timedelta(minutes=90)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -280,12 +308,35 @@ def main(argv: list[str] | None = None) -> int:
         (100.0 * (1 - written / offered)) if offered else 0.0, elapsed,
     )
 
+    # The continuous aggregates, explicitly, over the range just seeded.
+    #
+    # **A refresh policy cannot do this.** A policy looks backwards from *now*;
+    # it has no idea a week of history was just inserted behind it. Without this
+    # call a seeded week of 4 290 000 readings produces a *2-row* `reading_1h`,
+    # every query in `sql/03-advanced/03-01_continuous_aggregates.md` returns
+    # nothing, and nothing anywhere reports an error — the tables exist, the
+    # columns are right, and they are empty.
+    #
+    # That is the whole bug, and it lived undetected through 384 unit tests and
+    # 17 integration tests, because not one of them asserted that the rollups
+    # contained anything. `tests/integration/test_postgres.py` now does.
+    bounds = _seed_bounds()
+    if bounds is not None:
+        started_at, ended_at = bounds
+        refresh_aggregates(started_at, ended_at)
+        log.info("aggregates refreshed over %s .. %s", started_at, ended_at)
+
     # Retention policies last: attaching them before the data is in place would
     # make the policy's own refresh window the thing being measured.
     apply_retention(
         raw_days=_env_int("RETENTION_RAW_DAYS", 7),
         minute_days=_env_int("RETENTION_MINUTE_DAYS", 90),
     )
+
+    # ...and the refresh policies, which is the other half. Without these the
+    # aggregates go stale the moment the seeder finishes, and a live gateway
+    # writing new readings would leave the rollups frozen at the seed boundary.
+    apply_refresh_policies()
 
     # Summary, printed rather than only logged, because the number that matters
     # is not "how many points" but "how many of the interesting events are in

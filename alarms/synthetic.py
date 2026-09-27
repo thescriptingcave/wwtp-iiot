@@ -137,8 +137,13 @@ def rule(detector: str, **params: object) -> AlarmRule:
     `rule("trend", per_hour=0.15)` without also having to supply `min_points`
     and `direction` to reach the branch it is actually about.
     """
+    # `direction` is deliberately absent. Every detector that uses it has its own
+    # default (`trend` down, `single_point_threshold` high, and
+    # `deviation_from_baseline` *both* — which was the whole point: a shared
+    # default here is what let `influent_lift_current_anomaly` believe it had
+    # declared a direction when the rule set it and the detector dropped it.
     defaults: dict[str, object] = {
-        "limit": 1.0, "direction": "high", "hysteresis": 0.0,
+        "limit": 1.0, "hysteresis": 0.0,
         "tolerance": 1.0, "per_hour": 1.0, "min_points": 3,
         "horizon_s": 60.0, "min_count": 1, "max_silence_s": 60.0,
         "stuck_s": 0.0, "deadband": 0.0, "expected": "running",

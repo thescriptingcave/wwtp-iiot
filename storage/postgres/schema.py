@@ -226,6 +226,108 @@ def apply_retention(raw_days: int = 7, minute_days: int = 90) -> None:
         conn.commit()
 
 
+def apply_refresh_policies(
+    start_offset_h: int = 25,
+    end_offset_h: int = 1,
+    schedule_minutes: int = 5,
+) -> None:
+    """Attach the policies that keep the continuous aggregates populated.
+
+    **This function did not exist, and its absence was invisible for a whole
+    phase.** `schema.sql` created `reading_1m` and `reading_1h`; nothing ever
+    refreshed them; and a seeded week of 4 290 000 readings produced a *2-row*
+    `reading_1h`. Every query in `sql/03-advanced/03-01_continuous_aggregates.md`
+    — a whole stage of the course, built on the claim that the rollups make
+    long-range queries cheap — returned nothing.
+
+    Nothing failed. The tables existed, the columns were right, the retention
+    policies were attached, `psql` showed two tables full of the right shape, and
+    every test passed. A continuous aggregate is a table and a definition; the
+    definition does not fill the table. Something has to ask.
+
+    The two offsets are the interesting part and neither is obvious:
+
+    * ``start_offset_h`` is how far *back* the policy looks. It has to be at
+      least the bucket size plus a refresh interval, or the policy creates a
+      window that moves faster than it can fill and a bucket can be missed
+      entirely. 25 h for a 1 h bucket is generous on purpose.
+    * ``end_offset_h`` is how far back from *now* it stops, and it must be
+      **positive**. An end offset of zero asks for the current, still-forming
+      bucket, which a continuous aggregate cannot produce — a partial bucket is
+      not a bucket. Setting it to zero is the single most common way to end up
+      with an aggregate that is always one interval behind and nobody can say
+      why.
+
+    Both aggregates get the same offsets. They are separate policies over
+    separate definitions, and TimescaleDB does not compose them.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        for view in ("reading_1m", "reading_1h"):
+            try:
+                cur.execute(
+                    "SELECT add_continuous_aggregate_policy(%s, "
+                    "  start_offset => INTERVAL '1 hour' * %s, "
+                    "  end_offset   => INTERVAL '1 hour' * %s, "
+                    "  schedule_interval => INTERVAL '1 minute' * %s, "
+                    "  if_not_exists => TRUE)",
+                    (view, start_offset_h, end_offset_h, schedule_minutes),
+                )
+                log.info(
+                    "refresh policy on %s: %d h of history every %d min",
+                    view, start_offset_h, schedule_minutes,
+                )
+            except Exception as exc:
+                # TimescaleDB raises rather than no-op'ing on some versions even
+                # with if_not_exists, and "already configured" is the normal
+                # case on every restart after the first.
+                log.debug("refresh policy on %s: %s", view, exc)
+        conn.commit()
+
+
+def refresh_aggregates(start: datetime, end: datetime) -> int:
+    """Materialise both aggregates over an explicit range, now.
+
+    **A refresh policy cannot do this job.** A policy looks backwards from
+    *now*; it has no idea a week of history was just inserted behind it. So the
+    seeder calls this after it writes, and it is the reason a seeded database has
+    rollups at all rather than two empty tables.
+
+    Note the order and the range: the two views are refreshed independently, and
+    both are refreshed *from `reading`*, never from each other. Rolling 1 h up
+    from `reading_1m` gives the mean of means, which is wrong wherever the
+    deadband has left minutes with different numbers of readings — which is
+    everywhere. `tests/integration/test_postgres.py` asserts the two tiers agree.
+
+    `refresh_continuous_aggregate` cannot run inside a transaction, which is why
+    this takes a connection rather than a cursor and why the schema module needs
+    `autocommit=True` for exactly this.
+    """
+    # **Bind parameters do not work in a `CALL`.** `IndeterminateDatatype:
+    # could not determine data type of parameter $2` — the same class of problem
+    # as `CREATE ROLE ... PASSWORD %s`, met for the second time in this project.
+    # A procedure call has no parse-time type for its arguments, so the value has
+    # to be a literal in the statement text. `psycopg.sql` does the quoting and
+    # escaping, so this is not string interpolation by hand.
+    from psycopg import sql
+
+    window = (start.isoformat(), end.isoformat())
+    with connect() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for view in ("reading_1m", "reading_1h"):
+                cur.execute(
+                    sql.SQL("CALL refresh_continuous_aggregate({}, {}, {})")
+                    .format(
+                        sql.Literal(view),
+                        sql.Literal(window[0]),
+                        sql.Literal(window[1]),
+                    )
+                )
+                log.info("refreshed %s over %s .. %s", view, *window)
+        conn.close()
+    return 2
+
+
 def record_event(conn: Connection, *, kind: str, severity: str,
                   message: str, ts: datetime | None = None,
                   signal_id: str | None = None,

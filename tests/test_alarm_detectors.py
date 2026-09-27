@@ -569,3 +569,45 @@ def test_lookback_is_at_least_the_min_span_a_trend_rule_demands() -> None:
     r = rule("trend", per_hour=1.0, direction="down",
              min_span_s=7200.0, for_s=0.0)
     assert r.lookback_s() >= 7200.0
+
+
+def test_deviation_from_baseline_honours_a_direction() -> None:
+    """A rule documented as one-sided and implemented as two-sided.
+
+    `influent_lift_current_anomaly` said "lift pump current far above its normal
+    draw" and passed `direction: high`. The detector used `abs()`, so it fired on
+    a large *fall* as well — and a healthy lift pump's current swings about 40 A
+    either side of its window mean, so it reported a 90 % false-positive rate on
+    a healthy plant. The whole excess was the ignored parameter.
+
+    Found by `test_no_rule_carries_a_parameter_the_detector_ignores`.
+    """
+    # The shape that actually caused the 90 % false-positive rate: a large
+    # excursion *downward* and a small one upward, which is how a lift pump's
+    # current behaves — it dips further than it peaks, and `abs()` called the dip
+    # an anomaly.
+    down_then_flat = [24.0, 24.0, 12.0, 2.0, 2.0, 24.0, 24.0]
+
+    # The arithmetic, because a window mean always has a value above it and the
+    # asymmetry is the whole point. Mean is 16.0; max is 24 so the upward side is
+    # +8.0 and the downward side is -14.0. A tolerance of 10 sits between them,
+    # which is the only way to tell the two directions apart in a test.
+    def check(**params):
+        return detect(rule("deviation_from_baseline", tolerance=10.0, **params),
+                      window(step(down_then_flat)))
+
+    both = check()
+    assert both.active is True, "no direction means either side counts"
+    assert both.detail["direction"] == "both"
+    assert both.observed == pytest.approx(-14.0), \
+        "the larger excursion is the downward one, and that is what 'both' reports"
+
+    high = check(direction="high")
+    assert high.active is False, (
+        "a downward excursion fired a rule that asked for a rise"
+    )
+    assert high.observed == pytest.approx(+8.0)
+
+    low = check(direction="low")
+    assert low.active is True
+    assert low.observed == pytest.approx(-14.0)

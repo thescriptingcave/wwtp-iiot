@@ -130,6 +130,24 @@ def _rules(c: Contract) -> list[AlarmRule]:
                 "per_hour": 0.6,         # mg/L per hour, downward
                 "direction": "down",
                 "min_points": 4,
+                # **Six hours, and the reason is a measurement, not a preference.**
+                # A least-squares slope is a noise estimator over a short window,
+                # and the deadband-free DO series moves fast enough that a
+                # 20-minute fit swings through several mg/L per hour on a
+                # perfectly healthy basin. Fitting over 3 h, 6 h and 9 h on the
+                # same run:
+                #
+                #     span   healthy min   blower trip p01   separation
+                #      3 h       -0.427          -0.797          1.9x
+                #      6 h       -0.110          -0.419          3.8x
+                #      9 h       -0.009          +0.031          none
+                #
+                # Six hours separates best, and it is a quarter of the 24-hour
+                # diurnal cycle — the thing a shorter window cannot exclude and a
+                # quarter-cycle fit mostly can. Nine hours fails because a
+                # nine-hour window contains the *recovery* as well as the sag, and
+                # the fault's own slope goes positive.
+                "min_span_s": 21600.0,
                 "unit": "mg/L",
             },
             message="Dissolved oxygen is falling — aeration capacity lost",
@@ -178,9 +196,17 @@ def _rules(c: Contract) -> list[AlarmRule]:
             for_s=1800.0,
             clear_s=3600.0,
             params={
-                "per_hour": 0.5,         # mg/L per hour, upward
+                # Measured, not guessed. See `docs/ALARM-TUNING.md`; the number
+                # here is a placeholder until the post-settle measurement lands.
+                "per_hour": 3.0,         # mg/L per hour, upward
                 "direction": "up",
                 "min_points": 3,
+                # Three hours, because the fault it detects — a high ammonia
+                # load — has a 3 h duration. A window longer than the fault
+                # dilutes it with the recovery; a window much shorter than it is
+                # dominated by the effluent's own diurnal swing, which reaches
+                # +2 mg/L/h on a healthy plant.
+                "min_span_s": 10800.0,
                 "unit": "mg/L",
             },
             message="Effluent ammonia rising — nitrification impaired",
@@ -204,6 +230,11 @@ def _rules(c: Contract) -> list[AlarmRule]:
                 "per_hour": 400.0,       # m3/h per hour
                 "direction": "up",
                 "min_points": 4,
+                # One hour. A storm is 2 h long, so a 3 h or 6 h window would
+                # contain the recession as well as the rise and halve the slope.
+                # One hour is short enough to resolve the front and long enough
+                # that the influent flow meter's own scatter is not the signal.
+                "min_span_s": 3600.0,
                 "unit": "m3/h",
             },
             message="Influent flow rising rapidly — wet weather?",

@@ -61,7 +61,7 @@ from softplc.process.plant import Plant
 from alarms.base import AlarmRule, Sample, Verdict, Window
 from alarms.detectors import detect
 from alarms.rules import rules as all_rules
-from alarms.scenarios import DEFAULT_HOURS, RECORD_DT, SCAN_DT
+from alarms.scenarios import RECORD_DT, SCAN_DT
 
 log = logging.getLogger("alarms.tune")
 
@@ -74,11 +74,46 @@ log = logging.getLogger("alarms.tune")
 #: computed over different horizons are two reports that cannot be compared, and
 #: the first version of this file had a stray import of a name that does not
 #: exist rather than this one.
-HOURS = DEFAULT_HOURS
+#: Settled hours *after* the fault is armed. Shorter than `scenarios.DEFAULT_HOURS`
+#: because the run has already spent four hours settling, and the faults here are
+#: at most six hours long.
+HOURS = 8.0
 
-#: Fraction of healthy history to ignore, so the run is measured after the plant
-#: has settled rather than from its first sample.
-SETTLE_S = 900.0
+#: The *total* run is `settle_s_for(rules) + HOURS`, so HOURS is settled
+#: measurement time and the two are added rather than confused. A 14-hour run was
+#: tried first and was not the problem; arming the fault at t = 0 was.
+
+#: Extra margin, on top of the longest rule lookback, before measurement starts.
+#:
+#: 900 s because the plant is still moving a quarter of an hour after the longest
+#: window closes.
+SETTLE_MARGIN_S = 900.0
+
+
+def settle_s_for(rule_set: Sequence[AlarmRule]) -> float:
+    """The time at which the first fully-populated window is available.
+
+    **This was 900 s, and it made every threshold in the rule set wrong.**
+
+    A rule with a three-hour lookback cannot be measured until three hours of
+    history exist, and until then its detector correctly returns "not enough
+    history" — which the distribution counted as a sample. So the first *accepted*
+    window was the one starting at t=2h15m, and it contained the plant's **startup
+    transient**: a cold basin filling, a blower loop finding its operating point,
+    a digester coming up to temperature.
+
+    The result was a measured "healthy" DO slope of **-1.513 mg/L/h** over a
+    three-hour window, against **-0.427** measured from t=1h15m onwards. The
+    difference is entirely commissioning, and a threshold set above the first
+    number is set above a transient no healthy operating plant ever experiences —
+    which is how `aeration_do_sagging` came to need a 0.6 threshold and still sit
+    inside the real distribution.
+
+    The rule is simple and worth stating on its own: **a tuning measurement must
+    exclude the plant's startup, or it will always set thresholds too high.**
+    """
+    longest = max((r.lookback_s() for r in rule_set), default=3600.0)
+    return longest + SETTLE_MARGIN_S
 
 
 @dataclass
@@ -145,7 +180,16 @@ class RuleTuning:
 
     @property
     def misses_claimed_faults(self) -> list[str]:
-        return [f for f, rate in self.detects.items() if rate == 0.0]
+        """Claimed faults where this rule never fired.
+
+        Filtered by `rule.detects`, which sounds obvious and was not: the first
+        version read `self.detects` — *every* measured fault — so all eleven
+        rules were reported as blind, because each of them ignores the ten faults
+        it never claimed. A verdict computed from the wrong population is worse
+        than no verdict, because every column of the table is then wrong in the
+        same direction.
+        """
+        return [f for f in self.rule.detects if self.detects.get(f, 0.0) == 0.0]
 
     def verdict(self) -> str:
         """One word, because that is what a tuning table needs in a column."""
@@ -195,9 +239,22 @@ def measure_run(
     c = contract or get_contract()
     plant = Plant(c=c)
     faults = FaultEngine(plant)
-    if fault_id:
-        faults.arm(fault_id, 0.0)
+    settle = settle_s_for(rule_set)
 
+    # **Armed at `settle`, not at zero.**
+    #
+    # Excluding the startup from the *healthy* sample is only half the fix. The
+    # fault has to be injected into *settled* operation too, and arming at t = 0
+    # silently did the opposite: the settle point is 4h15m, a storm lasts 2 h, so
+    # the storm was over and gone before the first measurement — and the tool
+    # cheerfully reported that influent flow was *identical* under a storm and
+    # under a healthy sky, because it was only ever measuring the healthy sky.
+    #
+    # The tell was that every fault's distribution came back equal to the
+    # baseline's to three significant figures. An identical distribution is not a
+    # finding about the fault; it is a finding about the harness.
+    if fault_id:
+        faults.arm(fault_id, settle)
     out = {r.id: Distribution() for r in rule_set}
     # Every rule needs every signal it watches, plus the signals its *own* rule
     # reads. The rule set already covers the rules; the cross-validation rules
@@ -206,13 +263,13 @@ def measure_run(
     history: dict[str, list] = {s: [] for s in signals}
 
     every = max(1, int(RECORD_DT / SCAN_DT))
-    total = int(hours * 3600 / SCAN_DT)
-    keep_s = max((r.lookback_s() for r in rule_set), default=3600.0) * 2.0
+    total = int((settle + hours * 3600) / SCAN_DT)
+    keep_s = max((r.lookback_s() for r in rule_set), default=3600.0)
 
     for i in range(total):
         snapshot = faults.step(SCAN_DT)
         now = faults.now_s
-        if i % every or now < SETTLE_S:
+        if i % every or now < settle:
             continue
         for signal_id in signals:
             history[signal_id].append(

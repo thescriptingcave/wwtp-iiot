@@ -445,3 +445,79 @@ def test_coverage_json_round_trips() -> None:
     # name gets a KeyError rather than a silently empty list.
     assert all("not_sufficient_alone" in row for row in payload["matrix"])
     assert isinstance(report, CoverageReport)
+
+
+# ─── the guard against declared-but-unused parameters ────────────────────────
+
+
+def test_every_trend_rule_declares_a_minimum_span() -> None:
+    """A parameter that is honoured by the detector and passed by no rule.
+
+    `min_span_s` was added to `detectors.trend` and to `AlarmRule.lookback_s` in
+    the same commit that claimed to fix `aeration_do_sagging`. The edit that
+    added it to `alarms/rules.py` **silently failed** — a string replace whose
+    pattern did not match, with no error — so no rule passed the parameter, no
+    rule got a longer window, and the rule kept fitting a line over twenty
+    minutes.
+
+    The commit message said the fix was a span rather than a number. The span was
+    in the detector, in the lookback calculation, and in the test for the
+    detector. It was not in the rules, which is the only place that would have
+    mattered.
+
+    It survived because the detector's own test builds its rules through
+    `alarms.synthetic.rule()`, which supplies sensible defaults for every
+    parameter — so the detector was thoroughly tested with a parameter no real
+    rule used. A test helper that fills in defaults for a parameter whose whole
+    purpose is to be absent-by-default will hide exactly this.
+
+    So the assertion is at the level of the *rule set*, not the detector.
+    """
+    trend_rules = [r for r in rules() if r.detector == "trend"]
+    assert len(trend_rules) >= 3, "the trend rules have gone somewhere"
+    for rule in trend_rules:
+        assert rule.params.get("min_span_s"), (
+            f"{rule.id} is a trend rule with no min_span_s, so it will fit a "
+            "line over whatever history it happens to have — which for a "
+            "deadbanded signal is a noise estimate, not a trend"
+        )
+        # And the span has to be a real span, not a token one.
+        span = float(rule.params["min_span_s"])
+        assert span >= 1800.0, (
+            f"{rule.id} has min_span_s={span}, under half an hour. Every "
+            "measurement in docs/ALARM-TUNING.md says shorter than that is "
+            "inside the plant's own diurnal swing."
+        )
+        # The lookback must be able to *deliver* the span, or the rule reports
+        # "not enough history" forever and is silently dead.
+        assert rule.lookback_s() >= span, (
+            f"{rule.id} asks for a {span:.0f}s span and is given a "
+            f"{rule.lookback_s():.0f}s window"
+        )
+
+
+def test_no_rule_carries_a_parameter_the_detector_ignores() -> None:
+    """The general form of the guard above, and the check that would have caught
+    it in one place instead of three.
+
+    Every key a rule puts in `params` is consumed by a named parameter of its
+    detector. Not by *reading the whole dict* — the detectors legitimately use
+    `.get` for a key that is optional for other detectors — but by appearing in
+    the detector's source. A typo, or a parameter that was renamed on one side
+    only, shows up here as a key that appears nowhere.
+    """
+    import inspect
+
+    from alarms import detectors as detectors_module
+    from alarms.base import DETECTORS
+
+    for rule in rules():
+        func = detectors_module.REGISTRY[rule.detector]
+        source = inspect.getsource(func)
+        for key in rule.params:
+            assert f'"{key}"' in source or f"'{key}'" in source, (
+                f"{rule.id} passes params[{key!r}] to {rule.detector}, which "
+                "never reads it. A parameter the detector ignores is a comment; "
+                "a parameter the *author* believed was in force is worse."
+            )
+    assert len(DETECTORS) == len(detectors_module.REGISTRY)

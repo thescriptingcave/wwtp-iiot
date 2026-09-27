@@ -122,11 +122,33 @@ def deviation_from_baseline(rule: AlarmRule, window: Window) -> Verdict:
     tolerance = float(rule.params["tolerance"])
     worst = max(values, key=lambda v: abs(v - baseline))
     deviation = worst - baseline
-    active = abs(deviation) >= tolerance
+
+    # `direction` was being passed by `influent_lift_current_anomaly` and ignored
+    # here, so a rule that said "current *rises* far above normal" actually fired
+    # on a large fall as well. It reported 90 % false positives on a healthy
+    # plant, and the excess was entirely the ignored parameter: a healthy lift
+    # pump's current swings about 40 A either way around its window mean, and
+    # `abs()` treats the downward swing as an anomaly.
+    #
+    # Found by `test_no_rule_carries_a_parameter_the_detector_ignores`, which
+    # asserts that every key a rule passes is read by its detector. It is worth
+    # keeping that test for exactly this reason: the rule was *documented* as
+    # one-sided and *behaved* as two-sided, and nothing in the project noticed
+    # for a phase.
+    direction = rule.params.get("direction")
+    if direction == "high":
+        deviation = max(values) - baseline
+        active = deviation >= tolerance
+    elif direction == "low":
+        deviation = min(values) - baseline
+        active = deviation <= -tolerance
+    else:
+        active = abs(deviation) >= tolerance
 
     return verdict(
         active, deviation,
         baseline=round(baseline, 6), tolerance=tolerance, how=how,
+        direction=direction or "both",
         n=len(values),
     )
 
@@ -230,6 +252,13 @@ def rate_of_change(rule: AlarmRule, window: Window) -> Verdict:
         active, round(per_hour, 6),
         per_hour=round(per_hour, 6), limit=limit, dt_s=round(dt, 3),
         from_value=a.value, to_value=b.value,
+        # The unit belongs in the reading. A rate with no unit is a number, and
+        # `aeration_blower_speed_drop` was passing `unit` into a detector that
+        # silently dropped it — found by
+        # `test_no_rule_carries_a_parameter_the_detector_ignores`, which exists
+        # because a parameter the detector ignores is a comment, and one the
+        # author believed was in force is worse.
+        unit=rule.params.get("unit", ""),
     )
 
 
