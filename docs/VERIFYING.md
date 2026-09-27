@@ -202,8 +202,63 @@ asyncio.run(main())
 make browse
 ```
 
-**Expect:** a tree of nodes, 57 variables with engineering units attached.
-**A bug would be:** an empty tree, or nodes with no units.
+**Expect:** a tree, and a final line like
+
+```
+173 nodes visited: 35 1, 138 2
+```
+
+`1` is a folder node and `2` is a variable. Look for the eight area folders
+(`INFLUENT`, `PRIMARY`, `AERATION`, `SECONDARY`, `EFFLUENT`, `SLUDGE`, `UTILITY`,
+`SITE`), the equipment folders inside them, the measurement variables, and the
+six `Permit_*` aggregate nodes at the top.
+
+**Note what `browse` does *not* show: engineering units.** It prints browse names
+and node classes only. This step used to claim it showed units; step 3.5 does.
+**A bug would be:** an empty tree, or `0 nodes visited`.
+
+### 3.4b Read one variable, with its metadata
+
+This is the step that checks the address space is more than names:
+
+```bash
+uv run python tools/opcua_browser.py read AERATION:AHU-1:DO
+```
+
+**Expect:**
+
+```
+AERATION:AHU-1:DO
+  value   2.0253777989827593
+  status  Good
+  EngineeringUnits         6152
+  UnitSymbol               mg/L
+  NormalBandLow            1.5
+  NormalBandHigh           3.0
+  SignalId                 AERATION:AHU-1:DO
+```
+
+Every line is a claim: the value is held at its setpoint, the status is `Good`,
+the unit is `mg/L` and not an area name, the band is the contract's, and
+`SignalId` round-trips the contract id onto the wire.
+
+**A bug would be:** a missing line, a wrong unit, or `status` not `Good`.
+
+**Both identifier forms work**, and both are worth typing once:
+
+```bash
+uv run python tools/opcua_browser.py read AERATION.AHU-1.do_mg_l   # dotted path
+uv run python tools/opcua_browser.py read AHU-1.do_mg_l             # short form
+```
+
+The dotted path is `Area.Equipment.field` — the *field* name, not the id's third
+segment. The contract id `AERATION:AHU-1:DO` also works, and **for four phases it
+did not**: `make watch` and every document that showed it printed
+`Not found: AERATION:AHU-1:DO`. The diagnostic tool was the one place in the
+project that did not speak the project's own signal id — which is the tool you
+reach for when something is not working. Fixed, and
+`tests/test_opcua.py::test_the_documents_only_use_a_signal_id_the_browser_can_resolve`
+now checks the documentation side.
 
 ### 3.5 Watch one signal move
 
@@ -211,11 +266,22 @@ make browse
 make watch SIGNAL=AERATION:AHU-1:DO
 ```
 
-**Expect:** the value changes every second or so, and the DO controller holds it
-near its setpoint rather than running away.
-**A bug would be:** a frozen value, or a value climbing monotonically.
+**Expect:**
 
-Press `Ctrl-C` to stop.
+```
+Watching AERATION:AHU-1:DO — Ctrl-C to stop
+
+  #1     2.025397336285624
+  #2     2.0254025248337353
+  #3     2.025407704349692
+```
+
+Values arriving roughly once a second, and **the last digits changing while the
+first three do not** — that is the DO control loop holding 2.0 mg/L against a
+setpoint of 2.0, and the small variation is the controller working. A value
+climbing monotonically, or frozen, is a bug.
+
+Press `Ctrl-C` to stop. It runs until you stop it.
 
 ---
 

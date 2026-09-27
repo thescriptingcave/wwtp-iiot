@@ -127,7 +127,7 @@ async def cmd_browse(args: argparse.Namespace) -> int:
 
 async def cmd_read(args: argparse.Namespace) -> int:
     async with Client(args.endpoint, timeout=args.timeout) as client:
-        node = await _resolve(client, args.path, args.marker)
+        node = await resolve(client, args.path, args.marker)
         if node is None:
             print(f"Not found: {args.path}")
             return 1
@@ -153,7 +153,7 @@ async def cmd_read(args: argparse.Namespace) -> int:
 
 async def cmd_write(args: argparse.Namespace) -> int:
     async with Client(args.endpoint, timeout=args.timeout) as client:
-        node = await _resolve(client, args.path, args.marker)
+        node = await resolve(client, args.path, args.marker)
         if node is None:
             print(f"Not found: {args.path}")
             return 1
@@ -170,7 +170,7 @@ async def cmd_write(args: argparse.Namespace) -> int:
 
 async def cmd_watch(args: argparse.Namespace) -> int:
     async with Client(args.endpoint, timeout=args.timeout) as client:
-        node = await _resolve(client, args.path, args.marker)
+        node = await resolve(client, args.path, args.marker)
         if node is None:
             print(f"Not found: {args.path}")
             return 1
@@ -293,6 +293,69 @@ async def _resolve(client: Client, path: str, marker: str) -> Any | None:
         if found is not None:
             return found
     return None
+
+
+async def _resolve_by_signal_id(
+    client: Client, signal_id: str, marker: str,
+) -> Any | None:
+    """Find a node by its **contract id**, e.g. ``AERATION:AHU-1:DO``.
+
+    Added because the tool did not accept the one identifier the rest of the
+    project uses. The address space is `Area → Equipment → Variable` and a
+    variable's browse name is its contract *field* (`do_mg_l`), so the obvious
+    command — and the one printed in the `Makefile`'s own help text, in the
+    README, and in `docs/GETTING-STARTED.md` — was:
+
+        $ make watch SIGNAL=AERATION:AHU-1:DO
+        Not found: AERATION:AHU-1:DO
+
+    Three documents and a `make help` line, all wrong in the same way, for four
+    phases. Every other part of the project identifies a signal by
+    `AREA:UNIT:FIELD`; the diagnostic tool was the one place that did not, and it
+    is the tool a person reaches for when something is *not* working.
+
+    The nodes carry their contract id in a `SignalId` **property**, which has to
+    be read as a namespace-qualified child (`get_child(f"{ns}:SignalId")`) — a
+    bare name resolves in namespace 0 and answers `BadNoMatch`, which looks
+    exactly like a missing property. `cmd_read` already documents that trap; this
+    walks the tree the same way.
+    """
+    plant = await _find_plant(client, marker)
+    if plant is None:
+        return None
+
+    async def scan(node: Any) -> Any | None:
+        for child in await node.get_children():
+            try:
+                ns = child.nodeid.NamespaceIndex
+                prop = await child.get_child(f"{ns}:SignalId")
+                if (await prop.read_value()) == signal_id:
+                    return child
+            except Exception:
+                # Not every node in the tree is a measurement, and most have no
+                # `SignalId` property at all. A blanket `Exception` is correct
+                # here and nowhere else in this file: the alternative is
+                # enumerating asyncua's error types, and a node type this
+                # function has not seen should not stop the walk.
+                pass
+            found = await scan(child)
+            if found is not None:
+                return found
+        return None
+
+    return await scan(plant)
+
+
+async def resolve(client: Client, path: str, marker: str) -> Any | None:
+    """`_resolve` first, then the contract-id fallback.
+
+    Order matters: the dotted form is O(1) per level and is what a person typing
+    a known path uses, so it is tried first and the tree walk only happens when
+    it fails.
+    """
+    if ":" in path:
+        return await _resolve_by_signal_id(client, path, marker)
+    return await _resolve(client, path, marker)
 
 
 def build_parser() -> argparse.ArgumentParser:

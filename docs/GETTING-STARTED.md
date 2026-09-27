@@ -140,6 +140,7 @@ Two clients, both speaking to the soft PLC directly.
 
 ```bash
 uv run python tools/opcua_browser.py browse
+uv run python tools/opcua_browser.py read AERATION:AHU-1:DO
 uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
 ```
 

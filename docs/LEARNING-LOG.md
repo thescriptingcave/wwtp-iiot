@@ -410,6 +410,35 @@ outage** on the running stack, and **a design defence that is not implemented.**
   format, so it needs a migration story — plus a decision about whether the
   primary key survives it. Both deserve their own commit.
 
+- **`make watch` did not work, and neither did any document that showed it.**
+  `make watch SIGNAL=AERATION:AHU-1:DO` printed `Not found: AERATION:AHU-1:DO`, and
+  so did the identical command in `README.md` and `docs/GETTING-STARTED.md`.
+
+  The address space is `Area → Equipment → Variable` and a variable's browse name
+  is its contract *field* (`do_mg_l`), so the tool wanted
+  `AERATION.AHU-1.do_mg_l`. Every other part of this project identifies a signal
+  by `AREA:UNIT:FIELD` — the contract, the database, the Node-RED tag list, the
+  flows, both dashboards — and **the diagnostic tool was the one place that did
+  not**. Which is the worst place for it, because the diagnostic tool is what a
+  person reaches for *when something is not working*. The one command most needed
+  on a bad day is the one that does not run.
+
+  Three documents and a `make help` line, all wrong the same way, for four
+  phases, and no test caught it because every test that touched the browser
+  passed a path the test itself chose.
+
+  `resolve()` now tries the dotted form first and falls back to walking the tree
+  for the `SignalId` property. Reading that property is itself a trap worth
+  recording: it is a **namespace-qualified child** (`get_child(f"{ns}:SignalId")`),
+  because a bare name resolves in namespace 0 and answers `BadNoMatch`, which
+  looks exactly like a missing property. My first attempt read it as an attribute
+  and reported "Not found" for a signal that was right there.
+
+  And the second test is about the *documentation* rather than the tool:
+  **every signal id any document tells a reader to type must be one the contract
+  declares.** The bug was in four documents, so testing the tool alone would have
+  left them broken.
+
 - **Writing the steps found a false claim too, and it was a good one to find.**
   The README said "**Nineteen** of the registers deliberately use low-word-first
   ordering while their neighbours use high-word-first". It is **two**. The error

@@ -13,11 +13,15 @@ difference between a security control and a comment.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import pathlib
+import re
 
 import pytest
 from asyncua import Client, ua
 from softplc.contract import contract
 from softplc.servers.opcua import UNIT_IDS, OpcUaServer, build_address_space
+from tools import opcua_browser
 from tools.opcua_browser import _find_plant, _resolve
 
 C = contract()
@@ -281,3 +285,86 @@ async def test_unknown_signals_are_ignored_rather_than_raising(server) -> None:
     s, _space = server
     s.set_value("NOT:A:REAL:SIGNAL", 1.0)
     assert await s.publish() == 0
+
+
+# ── the identifier every document uses, which the tool did not accept ───────
+
+
+def test_the_documents_only_use_a_signal_id_the_browser_can_resolve() -> None:
+    """`make watch SIGNAL=AERATION:AHU-1:DO` printed **"Not found"** for four phases.
+
+    The address space is `Area → Equipment → Variable` and a variable's browse
+    name is its contract *field* (`do_mg_l`). So the tool wanted
+    `AERATION.AHU-1.do_mg_l`, and the obvious command — printed in the Makefile's
+    own help text, in the README, and in `docs/GETTING-STARTED.md` — did not
+    work:
+
+        $ make watch SIGNAL=AERATION:AHU-1:DO
+        Not found: AERATION:AHU-1:DO
+
+    Every other part of this project identifies a signal by `AREA:UNIT:FIELD`:
+    the contract, the database, the Node-RED tag list, the flows, both dashboards.
+    The diagnostic tool was the one place that did not — and it is the tool a
+    person reaches for **when something is not working**, so the one command that
+    is most needed is the one that does not run.
+
+    `tools/opcua_browser.py::resolve` now accepts the contract id, by walking the
+    tree and matching the `SignalId` property. This test pins the *documentation*
+    side: every signal id any document tells a reader to type must be one the
+    contract declares, so the next rename cannot leave a broken command behind.
+
+    It does not test that the tool resolves it, because that needs a running OPC
+    UA server. What it does test is the half that was wrong.
+    """
+    known = set(contract().signals)
+    # `SIGNAL=` in make targets, and the argument to `opcua_browser.py read|watch`.
+    pattern = re.compile(
+        r"(?:SIGNAL=|opcua_browser\.py (?:read|watch))"
+        r"\s*([A-Z][A-Z0-9]*:[A-Z0-9-]+:[A-Z0-9_]+)"
+    )
+
+    files = ["README.md", "Makefile", "docs/GETTING-STARTED.md", "docs/VERIFYING.md",
+             "docs/DESIGN.md", "docs/DATA-FLOW.md", "docs/ARCHITECTURE.md"]
+    checked = 0
+    offenders: list[str] = []
+    for name in files:
+        path = pathlib.Path(name)
+        if not path.exists():
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for found in pattern.findall(line):
+                checked += 1
+                if found not in known:
+                    offenders.append(f"{name}:{lineno}: {found}")
+
+    assert checked, (
+        "the pattern matched nothing in any document — either the commands were "
+        "all removed, or the pattern stopped matching, and this test is now "
+        "vacuous"
+    )
+    assert not offenders, (
+        "these documents tell a reader to type a signal id the contract does "
+        f"not declare:\n  {'\n  '.join(offenders)}"
+    )
+
+
+def test_the_browser_exports_a_resolve_that_accepts_both_forms() -> None:
+    """The contract id and the dotted browse path, in one entry point.
+
+    A structural check rather than a live one, because the interesting assertion
+    needs a server. It is here because the three call sites in the tool were
+    changed from `_resolve` to `resolve`, and a rename that missed one would
+    reintroduce the bug for exactly one subcommand — which is the shape of this
+    whole failure.
+    """
+    assert hasattr(opcua_browser, "resolve"), (
+        "tools/opcua_browser.py has no public resolve(); the contract-id "
+        "fallback is unreachable"
+    )
+    source = inspect.getsource(opcua_browser)
+    # Every subcommand goes through the wrapper, not the dotted-only helper.
+    assert source.count("await resolve(client, args.path") == 3, (
+        "cmd_read, cmd_write and cmd_watch must all call resolve(); a call site "
+        "still calling _resolve() will not accept a contract id"
+    )
+    assert "await _resolve(client, args.path" not in source
