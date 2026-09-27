@@ -198,10 +198,52 @@ docker compose --profile observability up -d
 Grafana on <http://localhost:3000>. It reads the hypertable through TimescaleDB's
 Postgres datasource.
 
-**There is no Next.js dashboard yet.** `ui/web` has a Dockerfile and no
-application, because Phase 5 has not been written, so the service sits behind a
-`ui` profile and is not started. The port is reserved (`WEB_PORT=3001`) and the
-Dockerfile is correct; what is missing is `package.json` and the app.
+### The custom dashboard
+
+```bash
+docker compose --profile ui up -d web     # or: make web
+```
+
+On <http://127.0.0.1:3001> (`WEB_PORT`). Three pages — overview, permit, alarms —
+server-rendered, reading the database through a server-side pool as the
+read-only role `wwtp_ui`.
+
+**It is behind a `ui` profile**, so plain `docker compose up` does not start it.
+That is deliberate: it is the one service here that needs `node_modules` and a
+Next.js build, and a reader arriving for the plant should not wait for it.
+
+The health check is `SELECT 1`, so **healthy means the page can reach the
+database** — not merely that a port is open:
+
+```bash
+curl -s http://127.0.0.1:3001/api/health
+# {"ok":true,"database":"reachable","ms":1}
+```
+
+If it says `password authentication failed`, your `WEB_DB_PASSWORD` and the
+database's `wwtp_ui` password disagree. **`init-db` is a one-shot service, so
+changing it in `.env` does nothing until you re-run it:**
+
+```bash
+docker compose up -d --force-recreate init-db && docker compose restart web
+```
+
+`init-db` logs which variable each role's password came from, which is the
+fastest way to see this:
+
+```
+password for wwtp_gateway taken from GATEWAY_DB_PASSWORD
+password for wwtp_ui      taken from WEB_DB_PASSWORD
+```
+
+`[ui/web/README.md](../ui/web/README.md)` has the design decisions, and what is
+*not* tested.
+
+> This section used to say **"There is no Next.js dashboard yet. `ui/web` has a
+> Dockerfile and no application, because Phase 5 has not been written."** That was
+> true when written and false for four phases, which is worse than never having
+> said it: a reader following this document was told a working page did not
+> exist. Found by asking whether it was still true.
 
 ---
 

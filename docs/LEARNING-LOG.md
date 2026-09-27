@@ -454,6 +454,100 @@ outage** on the running stack, and **a design defence that is not implemented.**
   asserted, and there is a general test: **every 5-digit address in
   `DATA-FLOW.md` must be a real register address.**
 
+## Phase 6e — "Is this still true?", and a one-line bug with two phases of blast radius
+
+**Expected:** answer a yes/no question about whether the dashboard exists.
+
+**What happened:** the answer was no, and following it up found a bug that made
+the dashboard unable to authenticate **at all** — in a module written for exactly
+one purpose, generalised in its signature and not in its behaviour.
+
+**Learned:**
+
+- **The question was the review.** *"There is no Next.js dashboard yet. `ui/web`
+  has a Dockerfile and no application, because Phase 5 has not been written."* It
+  was true when written and false for four phases. It was in
+  `docs/GETTING-STARTED.md`, so a reader following the document was told a
+  working page did not exist — **which is worse than never having written it**,
+  because they follow the document and conclude the project is unfinished.
+
+  Asking one question cost nothing and found it. Every stale claim in this
+  project's review was found by *doing* — running a step, counting a thing,
+  asking whether a sentence was still true — and not one by reading. That is now
+  six documents and about a dozen claims, and the pattern is completely
+  consistent: **prose describing a state the code has left behind.**
+
+- **`login_role.py` read the password from the literal string
+  `GATEWAY_DB_PASSWORD`, for every role.** Adding `wwtp_ui` to the `init-db`
+  command generalised `--name` and nothing else, so `init-db` created `wwtp_ui`
+  with **the gateway's password** while the `web` service was handed
+  `WEB_DB_PASSWORD`. The dashboard answered
+
+      FATAL: password authentication failed for user "wwtp_ui"
+
+  and `init-db` had logged `role wwtp_ui exists; password and LOGIN refreshed`
+  immediately beforehand, which is what made it look impossible: the thing that
+  refreshed the password set it to the wrong value and said so.
+
+  **A parameter generalised in the signature and not in the behaviour.** `--name`
+  implied a generalisation that the body did not honour, and nothing tested the
+  second role — the only test touching `login_role` passed the password as an
+  argument, which is the one thing a human never does. There is now a
+  `LOGIN_PASSWORDS` table, `apply()` logs **which variable each role's password
+  came from**, and a test proves two roles with *different* passwords both
+  authenticate and neither accepts the other's.
+
+- **The new log line immediately exposed a second problem it was not written
+  for.** It printed
+
+      password for wwtp_gateway taken from POSTGRES_PASSWORD (set GATEWAY_DB_PASSWORD …)
+
+  because `GATEWAY_DB_PASSWORD` was unset in `.env` and the fallback is the
+  **owner's** password. That fallback has been documented since Phase 3g as "a
+  working configuration that defeats the point of the separate credential" — and
+  until this commit it was completely silent. **A documented fallback that nothing
+  reports is the same as an undocumented one**, and the fix was not to remove the
+  fallback (a reader should not be stopped by a security nicety) but to make it
+  say so on every run.
+
+- **`init-db` is a one-shot service, so changing a password in `.env` does
+  nothing.** It is `service_completed_successfully`, so an already-initialised
+  stack keeps the old credentials and the symptom is an authentication failure
+  that looks like a code bug. Now in `docs/GETTING-STARTED.md` with the fix:
+
+      docker compose up -d --force-recreate init-db && docker compose restart web
+
+  That is an operational trap rather than a code bug, and the only defence is
+  documentation — which is why the auth-failure branch of the getting-started
+  page now leads with it.
+
+- **And `docs/ARCHITECTURE.md` was missing a service.** The new test asserts the
+  service table against `compose.yaml`, and immediately found that **`scada` was
+  in compose and absent from the table**. So the table had *two* problems: a row
+  describing `web` as unwritten, and a row that was never there.
+
+## The new tests, and what each one is for
+
+* `test_the_architecture_service_table_matches_compose` — every service compose
+  declares appears in the table. It **cannot** catch a wrong *description*, only a
+  row that has outlived its service. That limit is stated in the docstring,
+  because a test that claims more than it checks is the thing this project keeps
+  finding.
+* `test_getting_started_does_not_deny_a_service_exists` — the sentence this whole
+  thread started from, and that `GETTING-STARTED.md` says how to start the thing
+  it used to deny.
+* `test_two_login_roles_authenticate_with_different_passwords` — the behavioural
+  version of the password bug, over the network, checking both directions.
+
+**And one uncomfortable note about how the password bug was nearly misdiagnosed.**
+I tested the credentials with `psql` from inside the database container and *both*
+passwords authenticated. The loopback rule in `pg_hba.conf` is `trust`, so **no
+password was ever checked** and the test proved nothing. The same shape as a
+permission-denied test that passes because the SQL was invalid: **a check that
+cannot fail is worse than no check, because it is trusted.** The real test has to
+come from a different container, over the network, and that is where the answer
+finally became `FATAL: password authentication failed`.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.

@@ -69,6 +69,22 @@ LOGIN_ROLES: dict[str, str] = {
     "wwtp_ui": "wwtp_reader",
 }
 
+#: Login role -> the environment variable holding **its own** password.
+#:
+#: Separate from `LOGIN_ROLES` on purpose. That table says which *group* a role
+#: belongs to; this one says where its credential comes from, and conflating the
+#: two is how `wwtp_ui` ended up with the gateway's password for a phase — see
+#: `apply()`.
+#:
+#: A role missing from this table falls back to `POSTGRES_PASSWORD`, which is the
+#: owner's password and therefore a working configuration that defeats the point.
+#: `apply()` logs which source it used, so that fallback is visible in `init-db`'s
+#: output rather than silent.
+LOGIN_PASSWORDS: dict[str, str] = {
+    "wwtp_gateway": "GATEWAY_DB_PASSWORD",
+    "wwtp_ui": "WEB_DB_PASSWORD",
+}
+
 #: The owner role, which exists only to make "this is not the owner" checkable.
 OWNER_ROLE = "wwtp_owner"
 
@@ -100,17 +116,45 @@ def apply(
     # compose passes both variables through and the precedence is decided here,
     # where it can be tested:
     #
-    #     GATEWAY_DB_PASSWORD  >  POSTGRES_PASSWORD  >  ask
+    #     <the role's own variable>  >  POSTGRES_PASSWORD  >  ask
     #
     # Falling back to the owner's password defeats the point of the exercise, so
     # `.env.example` says plainly that a separate one is worth setting. It is not
     # *required*, because a reader arriving at this project should not be stopped
     # by a security nicety before they have seen the plant run.
-    password = (
-        password
-        or os.environ.get("GATEWAY_DB_PASSWORD")
-        or os.environ.get("POSTGRES_PASSWORD")
-        or _prompt()
+    #
+    # **Which variable is the role's own is a table, and it used to be the literal
+    # string `GATEWAY_DB_PASSWORD`.** That was correct while there was exactly one
+    # login role. Adding `wwtp_ui` to the `init-db` command generalised `--name`
+    # and nothing else, so creating `wwtp_ui` set its password to **the gateway's**
+    # while the `web` service was handed `WEB_DB_PASSWORD` — and the two could
+    # never match. The dashboard answered
+    #
+    #     FATAL: password authentication failed for user "wwtp_ui"
+    #
+    # and `init-db` had logged "password and LOGIN refreshed" immediately before,
+    # which is what made it look impossible.
+    #
+    # That is the same failure as everything else in this project's review: **a
+    # parameter generalised in the signature and not in the behaviour.** The lesson
+    # is not "add a table" — it is that `--name` implied a generalisation, and
+    # nothing tested the second role. So the table is explicit, the source is
+    # logged, and a test proves two roles with *different* passwords both
+    # authenticate.
+    env_var = LOGIN_PASSWORDS.get(name, "POSTGRES_PASSWORD")
+    source = "argument"
+    if not password:
+        password = os.environ.get(env_var)
+        source = env_var if password else "unset"
+    if not password:
+        password = os.environ.get("POSTGRES_PASSWORD")
+        source = "POSTGRES_PASSWORD" if password else "unset"
+    if not password:
+        password = _prompt()
+        source = "prompt"
+    log.info(
+        "password for %s taken from %s (set %s for a per-role credential)",
+        name, source, env_var,
     )
 
     from psycopg import sql

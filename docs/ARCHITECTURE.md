@@ -30,7 +30,8 @@ number on a dashboard. For *why* the shape is this shape, read
 | `softplc` | project image | the simulated plant, serving both protocols | `unless-stopped` |
 | `init-db` | project image | one-shot: apply schema, load the contract | `no` |
 | `gateway` | project image | read both protocols, deadband, spool, write | `unless-stopped` |
-| `web` | `ui/web` | the Next.js dashboard — **no source yet**, profile `ui` | `unless-stopped` |
+| `scada` | `scada/nodered` | the operator flows, generated from the contract, profile `scada` | `unless-stopped` |
+| `web` | `ui/web` | the custom Next.js dashboard, server-rendered, read-only role, profile `ui` | `unless-stopped` |
 | `grafana` | `grafana/grafana:11.5.1` | profile `observability` | `unless-stopped` |
 | `seed` | project image | profile `demo`: a week of history | `no` |
 

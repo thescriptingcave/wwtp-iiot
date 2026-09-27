@@ -15,6 +15,9 @@ symptom for a historian.
 
 from __future__ import annotations
 
+import os
+
+import psycopg
 import pytest
 from storage.postgres.roles import (
     DELIBERATELY_WITHHELD,
@@ -360,3 +363,78 @@ def test_the_one_update_the_gateway_is_granted_is_the_one_it_needs(db, roles) ->
             "VALUES ('probe', 'info', 'probe')"
         )
         conn.rollback()
+
+
+# ── two roles, two passwords ─────────────────────────────────────────────────
+
+
+def test_every_login_role_has_its_own_password_variable() -> None:
+    """The table that would have caught `wwtp_ui` getting the gateway's password.
+
+    `login_role.apply()` reads the password from a **table keyed by role name**,
+    and this asserts the table covers every login role. It used to read the
+    literal string `GATEWAY_DB_PASSWORD`, which was correct while there was one
+    login role and wrong the moment there were two: `init-db` created `wwtp_ui`
+    with the *gateway's* password while the `web` service was handed
+    `WEB_DB_PASSWORD`, and the dashboard answered
+
+        FATAL: password authentication failed for user "wwtp_ui"
+
+    immediately after `init-db` had logged "password and LOGIN refreshed".
+
+    No test failed, because the only test that exercised `login_role` passed the
+    password as an argument — the very thing a human never does.
+    """
+    from storage.postgres.login_role import LOGIN_PASSWORDS, LOGIN_ROLES
+
+    assert set(LOGIN_PASSWORDS) == set(LOGIN_ROLES), (
+        "every login role needs a password variable; missing: "
+        f"{sorted(set(LOGIN_ROLES) - set(LOGIN_PASSWORDS))}"
+    )
+    # And the variables must be distinct, or the point of the table is lost.
+    assert len(set(LOGIN_PASSWORDS.values())) == len(LOGIN_PASSWORDS), (
+        f"two roles share a password variable: {LOGIN_PASSWORDS}"
+    )
+
+
+def test_two_login_roles_authenticate_with_different_passwords(db, roles) -> None:
+    """The behavioural version: both authenticate, and neither with the other's.
+
+    Over the network, as a separate role, and each password verified against the
+    *other* role as well — because a table that is present but unused produces
+    exactly the failure it was added to prevent, silently.
+    """
+    from storage.postgres.login_role import LOGIN_PASSWORDS, apply
+    from storage.postgres.schema import dsn
+
+    passwords = {
+        "wwtp_gateway": "probe-gateway-pw",
+        "wwtp_ui": "probe-ui-pw",
+    }
+    previous = {r: os.environ.get(LOGIN_PASSWORDS[r]) for r in passwords}
+    for role, pw in passwords.items():
+        os.environ[LOGIN_PASSWORDS[role]] = pw
+    try:
+        for role, pw in passwords.items():
+            apply(role, password=pw)
+    finally:
+        for role, value in previous.items():
+            if value is None:
+                os.environ.pop(LOGIN_PASSWORDS[role], None)
+            else:
+                os.environ[LOGIN_PASSWORDS[role]] = value
+
+    connection = dsn()
+    for role, pw in passwords.items():
+        others = [p for r, p in passwords.items() if r != role]
+        with (
+            psycopg.connect(connection, user=role, password=pw) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute("SELECT current_user")
+            assert cur.fetchone()[0] == role
+        for wrong in others:
+            with pytest.raises(psycopg.OperationalError), psycopg.connect(
+                connection, user=role, password=wrong
+            ):
+                pass

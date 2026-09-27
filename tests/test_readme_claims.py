@@ -474,7 +474,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 33,
+    "tests/test_readme_claims.py": 35,
     "tests/test_alarm_engine.py": 17,
 }
 
@@ -604,3 +604,67 @@ def test_every_address_in_data_flow_exists_in_the_contract() -> None:
         f"DATA-FLOW.md mentions register addresses that do not exist: "
         f"{sorted(unknown)}. Real addresses: {sorted(addresses)}"
     )
+
+
+# ── the service table, which described a service that did not exist ──────────
+
+
+def test_the_architecture_service_table_matches_compose() -> None:
+    """`docs/ARCHITECTURE.md` said `web` had **"no source yet"**, for four phases.
+
+    Not a number this time — a **description of a service**, and the same class of
+    failure: prose describing a state the code had left behind. Found by asking
+    whether a claim in a getting-started document was still true, which is the
+    cheapest review there is and the one nobody does.
+
+    So the table is checked against `compose.yaml` rather than trusted: every
+    service compose declares appears in the table, and nothing in the table is
+    absent from compose. That catches a *stale* row. It cannot catch a *wrong*
+    description — "no source yet" is prose — but it can catch a row that has
+    outlived its service, which is how this one went unnoticed.
+    """
+    compose = yaml.safe_load(Path("compose.yaml").read_text(encoding="utf-8"))
+    declared = set(compose["services"])
+
+    table = [
+        ln for ln in Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+        .splitlines() if ln.startswith("| `")
+    ]
+    listed = {
+        ln.split("`")[1] for ln in table if ln.split("`")[1] in declared
+    }
+    assert listed == declared, (
+        f"compose declares {sorted(declared)} but ARCHITECTURE.md lists "
+        f"{sorted(listed)}"
+    )
+    for ln in table:
+        if "no source" in ln or "not started" in ln or "not written" in ln:
+            pytest.fail(
+                f"ARCHITECTURE.md still describes a service as unwritten: {ln!r}"
+            )
+
+
+def test_getting_started_does_not_deny_a_service_exists() -> None:
+    """The sentence this whole thread started from.
+
+    *"There is no Next.js dashboard yet. `ui/web` has a Dockerfile and no
+    application, because Phase 5 has not been written."* True when written, false
+    for four phases.
+
+    A getting-started document that tells a reader a **working** page does not
+    exist is worse than one that is silent, because the reader follows it and then
+    concludes the project is unfinished. Matched on the raw text minus the
+    correction blockquote, which is the one place the sentence legitimately
+    appears.
+    """
+    body = "\n".join(
+        ln for ln in Path("docs/GETTING-STARTED.md").read_text(encoding="utf-8")
+        .splitlines() if not ln.lstrip().startswith(">")
+    )
+    for phrase in ("no Next.js dashboard", "has a Dockerfile and no"):
+        assert phrase not in body, (
+            f"GETTING-STARTED.md still says {phrase!r} — the dashboard exists "
+            f"and serves 200 on three routes"
+        )
+    # And it should tell the reader how to start it.
+    assert "--profile ui up -d web" in body

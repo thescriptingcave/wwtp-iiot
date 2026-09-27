@@ -36,7 +36,7 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22 | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 33 | that the numbers this document states are the real ones |
+| `test_readme_claims.py` | 35 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 
 **Every number in both tables is asserted by
