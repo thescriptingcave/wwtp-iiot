@@ -198,9 +198,31 @@ docker compose ps          # wait for both to be healthy
 > be non-deterministic. See the recommendation at the end of that section before
 > building anything on it.
 
-Couchbase takes 30–60 s on first boot to initialise itself. It will report
-unhealthy while it does, and then become healthy without intervention. That is
-normal and is why its `start_period` is 60 s rather than 10 s.
+Couchbase needs two steps, and neither is optional:
+
+```bash
+docker compose up -d couchbase          # the server
+docker compose up couchbase-init         # cluster-init + bucket-create, one shot
+```
+
+The second command exits when it is done. `gateway` and `seed` depend on
+`couchbase-init` having *succeeded*, so a normal `docker compose up -d` handles it
+and you only need this by hand when bringing the stack up piecemeal.
+
+Two things that will waste your time if nobody told you:
+
+- **Nothing initialises a Couchbase container by itself.** On a fresh volume the
+  server starts, `/nodes/self` answers, and every query fails because the cluster
+  and the bucket do not exist yet. The image's entrypoint is the server, so the
+  init has to be a separate container — putting a start-up script in the
+  couchbase service's `command` replaces the entrypoint and stops the server from
+  running at all.
+- **The CLI wants different flags per subcommand.** `cluster-init` takes
+  `--cluster-username`/`--cluster-password`; `bucket-*` takes
+  `--username`/`--password`; and `-u`/`-p` are deprecated aliases of the latter,
+  so they are the wrong thing to reach for first. And the address is the
+  management port **8091**; `cluster-init` defaults to `127.0.0.1:8091`, which from
+  a separate container is its own loopback.
 
 Create the InfluxDB token the gateway will use. The `DOCKER_INFLUXDB_INIT_*`
 variables create an org, a bucket and an initial admin token on first boot, so

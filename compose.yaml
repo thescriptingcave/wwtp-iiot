@@ -149,9 +149,13 @@ services:
     <<: *restart
     image: couchbase/server:community-7.6.2
     container_name: wwtp-couchbase
-    # Community edition needs no licence. It initialises itself on first boot and
-    # is unusable for ~20 s while it does; the healthcheck's start_period covers
-    # that, which is exactly the case start_period exists for.
+    # Community edition needs no licence. It does need *initialising*, and nothing
+    # does that for you: on a fresh volume the server starts, `/nodes/self` answers,
+    # and every query fails because the cluster and the bucket do not exist. That
+    # is a separate one-shot service below, because doing it here means
+    # overriding `command`, which replaces the image's entrypoint and stops the
+    # server from starting at all. That was tried first, and it produced a
+    # container that waited forever for a node it had never launched.
     volumes:
       - couchbase-data:/opt/couchbase/var
       - couchbase-logs:/opt/couchbase/logs
@@ -160,15 +164,105 @@ services:
       - "${COUCHBASE_KV_PORT:-11210}:11210"
     networks: [plant]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8091/pools/default"]
+      # `/nodes/self`, **authenticated**. Two traps in one line, both found by
+      # running it:
+      #
+      #  * Unauthenticated it answers 401 on a perfectly healthy node. The
+      #    obvious `curl -fsS http://localhost:8091/nodes/self` therefore fails
+      #    forever, and because everything else waits on `service_healthy`, that
+      #    turns a cosmetic bug into a stack that never starts.
+      #  * `/pools/default` is worse: before the cluster is initialised it
+      #    answers the string `"unknown pool"`, which is not an HTTP error and so
+      #    reads as success. It cannot be used as a readiness signal at all.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -u "$${COUCHBASE_ADMIN_USER}:$${COUCHBASE_ADMIN_PASSWORD}"
+          http://localhost:8091/nodes/self > /dev/null
       interval: 15s
       timeout: 5s
       retries: 20
       start_period: 60s
+    environment:
+      COUCHBASE_ADMIN_USER: ${COUCHBASE_ADMIN_USER:-Administrator}
+      COUCHBASE_ADMIN_PASSWORD: ${COUCHBASE_ADMIN_PASSWORD:?set COUCHBASE_ADMIN_PASSWORD in .env}
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
+
+  # ─── one-shot: initialise the cluster and create the bucket ─────────────────
+  #
+  # A separate service rather than a start-up script inside the couchbase
+  # container, because that container's entrypoint *is* the server. It runs once
+  # and exits; everything that writes depends on it having succeeded.
+  couchbase-init:
+    image: couchbase/server:community-7.6.2
+    container_name: wwtp-couchbase-init
+    restart: "no"
+    networks: [plant]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -uo pipefail
+        # Two different flag sets, which is the whole difficulty here:
+        #   cluster-init  -> --cluster-username / --cluster-password
+        #   bucket-*      -> --username / --password
+        # and `-u`/`-p` are deprecated aliases of the latter, so they are the
+        # wrong thing to reach for first. The credential flags are also
+        # *per-subcommand*, not global: putting them before the subcommand makes
+        # the CLI report the subcommand as "--cluster-username=...".
+        #
+        # And the address is the management port 8091, not 8090. `cluster-init`
+        # defaults to http://127.0.0.1:8091, which inside a *separate* container
+        # is the container's own loopback and nothing else - so the first version
+        # of this could not reach the cluster it was meant to initialise.
+        mgmt=http://couchbase:8091
+        init=(--cluster-username="$${COUCHBASE_ADMIN_USER}"
+              --cluster-password="$${COUCHBASE_ADMIN_PASSWORD}")
+        auth=(--username="$${COUCHBASE_ADMIN_USER}"
+              --password="$${COUCHBASE_ADMIN_PASSWORD}")
+
+        # Idempotent: cluster-init fails on an already-initialised cluster, and
+        # that is not a reason to fail the run.
+        if couchbase-cli cluster-init -c "$$mgmt" "$${init[@]}"; then
+          echo "cluster initialised"
+        else
+          echo "cluster already initialised (or init failed; continuing)"
+        fi
+
+        # `bucket-list` prints YAML-ish blocks, not one name per line, so the
+        # check is a word match anywhere in the output rather than a line compare.
+        if couchbase-cli bucket-list -c "$$mgmt" "$${auth[@]}" 2>/dev/null \
+             | grep -qw "$${COUCHBASE_BUCKET}"; then
+          echo "bucket $${COUCHBASE_BUCKET} already exists"
+        else
+          # Only three flags are accepted. --bucket-replicas and
+          # --bucket-flush-enabled (and --bucket-replica-number) are all
+          # rejected with "unrecognized arguments", so the defaults stand: one
+          # replica and flush disabled, which is right for a single node anyway.
+          couchbase-cli bucket-create -c "$$mgmt" "$${auth[@]}" \
+            --bucket="$${COUCHBASE_BUCKET}" --bucket-type=couchbase \
+            --bucket-ramsize=256
+          echo "created bucket $${COUCHBASE_BUCKET}"
+        fi
+
+        # Prove it, rather than exiting 0 on the strength of a command that
+        # printed an error. A one-shot init that reports success and leaves no
+        # bucket is worse than one that fails loudly.
+        couchbase-cli bucket-list -c "$$mgmt" "$${auth[@]}" \
+          | grep -qw "$${COUCHBASE_BUCKET}" || {
+            echo "FATAL: bucket $${COUCHBASE_BUCKET} is not present after init" >&2
+            exit 1
+          }
+        echo "couchbase ready"
+    environment:
+      COUCHBASE_ADMIN_USER: ${COUCHBASE_ADMIN_USER:-Administrator}
+      COUCHBASE_ADMIN_PASSWORD: ${COUCHBASE_ADMIN_PASSWORD:?set COUCHBASE_ADMIN_PASSWORD in .env}
+      COUCHBASE_BUCKET: ${COUCHBASE_BUCKET:-wwtp}
+    depends_on:
+      couchbase:
+        condition: service_healthy
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 4. gateway — reads both protocols, applies a deadband, spools, writes.
@@ -206,8 +300,8 @@ services:
         condition: service_healthy
       influxdb:
         condition: service_healthy
-      couchbase:
-        condition: service_healthy
+      couchbase-init:
+        condition: service_completed_successfully
     networks: [plant]
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -326,8 +420,8 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
-      couchbase:
-        condition: service_healthy
+      couchbase-init:
+        condition: service_completed_successfully
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Networks

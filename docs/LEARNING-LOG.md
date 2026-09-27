@@ -382,6 +382,82 @@ sensor representation, the two-field limit, the fixed tag set, one table per
 process stage, and the round trip through real SQL. Those are the facts the schema
 depends on, and they are verified.
 
+## Phase 3e — Couchbase, and the assumption that was not worth making
+
+The Couchbase half had a running container and **zero executed SDK calls** for its
+entire life. I wrote down that this was the same position the InfluxDB half was in
+an hour before it hid six bugs, and that the assumption it would be fine was not
+worth making. It was not fine.
+
+### Four bugs in `storage/couchbase/client.py`
+
+1. `ClusterOptions(username=…, password=…)` no longer exists. It requires an
+   `authenticator`, and the old keywords raise `missing 1 required positional
+   argument: 'authenticator'`.
+2. `wait_until_ready(timeout=30)` raises `'int' object has no attribute
+   'total_seconds'`. It wants a `timedelta`.
+3. `couchbase.queries` is not a module. `QueryOptions` is in `couchbase.options`.
+4. **The default collection name did not exist.** All 80 documents failed with
+   `AmbiguousTimeoutException` whose `retry_reasons` was
+   `{'key_value_collection_outdated'}` — a message that never mentions
+   collections, scopes, or the fact that the name asked for is not there. It reads
+   like a network timeout, and the SDK spends its retry budget before the caller
+   sees anything.
+
+   Fixed by writing to the scope's `_default` collection, which always exists.
+   That is not a concession: the keys are already namespaced by kind
+   (`equipment::`, `tag::`, `site::`, `event::`) and every document carries
+   `doc_type`, so a second level of collection names would be redundant.
+
+**Every one of the four failed loudly.** A wrapper written from memory is a wrapper
+that has not been run, and the saving grace was that the SDK named what was wrong
+in each case. Worth remembering on the days when a silent failure would have been
+much more expensive.
+
+### Two compose bugs, and both would have stopped the stack
+
+- **The healthcheck was unauthenticated.** `/pools/default` answers **200** to an
+  authenticated request and **401** to an unauthenticated one, so
+  `curl -fsS http://localhost:8091/pools/default` fails forever on a perfectly
+  healthy cluster. Because the gateway waits on `service_healthy`, a cosmetic bug
+  in a healthcheck became a stack that never starts. Now authenticated, and
+  pointed at `/nodes/self` — `/pools/default` also answers the *string*
+  `"unknown pool"` before the cluster exists, which is not an HTTP error and so
+  reads as success, making it useless as a readiness signal.
+- **Nothing initialised the cluster.** On a fresh volume the server starts and
+  every query fails, because the cluster and the bucket do not exist. The first
+  attempt put a `cluster-init` script in the couchbase container's `command`, which
+  **replaces the image's entrypoint** — and the entrypoint *is* the server, so the
+  container sat waiting forever for a node it had never launched. Correct shape is
+  a separate one-shot `couchbase-init` service, with the writers depending on
+  `service_completed_successfully`.
+
+  Getting even that right took four attempts, because the CLI wants **different
+  flags per subcommand** — `cluster-init` takes `--cluster-username`/
+  `--cluster-password`, `bucket-*` takes `--username`/`--password`, and `-u`/`-p`
+  are deprecated aliases of the *latter*, so they are the wrong thing to reach for
+  first. The credential flags are per-subcommand, not global. And
+  `cluster-init` defaults to `http://127.0.0.1:8091`, which inside a separate
+  container is its own loopback and nothing else.
+
+  The init service ends by *proving* the bucket exists and exiting non-zero if it
+  does not, because a one-shot init that prints an error and exits 0 is worse than
+  one that fails loudly. It caught its own bug on the first run.
+
+### Still not verified
+
+**N1QL reads.** `cluster.query(...)` returns successfully; iterating `.rows()`
+raises `ServiceUnavailableException` for every statement tried, including
+`SELECT COUNT(*) FROM bucket` and a bare key lookup. The index service does not
+appear to be up on this single-node container. Marked `xfail` with that reason —
+it looks like an environment problem rather than a project bug, but it is not
+*proven* to be one, so it is not claimed.
+
+  A related trap found on the way: immediately after a bulk seed, a query needs
+  `scan_consistency="request_plus"`. The default does not see the new documents or
+  the new index and fails with a `ServiceUnavailableException` that never mentions
+  indexing.
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net
@@ -444,9 +520,9 @@ depends on, and they are verified.
    whole `sql/` track — is blocked on a query engine that returns the same answer
    twice. This is the single highest-value thing anyone can do for this project,
    and it takes about five minutes.
-2. **Write `tests/integration/test_couchbase.py`** (thread 6). The container runs;
-   nothing has written a document. Given that the InfluxDB half hid six bugs
-   behind passing unit tests, assume the same here.
+2. **Get N1QL reads working** (thread 6) — probably by enabling the index service
+   on the Couchbase container, or by accepting that the document store is
+   write-only in this environment and saying so in the docs.
 3. **Re-verify the rollup SQL** against a real engine. `storage/influx/rollups_sql.py`
    was written for InfluxDB 2.x-shaped SQL and has never been executed; the
    two-field limit already forced a redesign of its output, and its `DELETE` +
