@@ -217,6 +217,12 @@ Two things that will waste your time if nobody told you:
   init has to be a separate container — putting a start-up script in the
   couchbase service's `command` replaces the entrypoint and stops the server from
   running at all.
+- **N1QL needs two things that are easy to miss**, and both are now in
+  `compose.yaml`. `cluster-init` with no `--services` enables only `kv`, so the
+  Query service never runs and every query fails; and the **query port 8093** must
+  be published, or the SDK reaches KV fine on 11210 — so every read and write
+  appears to work — and then each query is dispatched to a port the host cannot
+  see. Only reads fail, and the message mentions neither the network nor ports.
 - **The CLI wants different flags per subcommand.** `cluster-init` takes
   `--cluster-username`/`--cluster-password`; `bucket-*` takes
   `--username`/`--password`; and `-u`/`-p` are deprecated aliases of the latter,

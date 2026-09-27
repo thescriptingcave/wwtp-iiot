@@ -444,19 +444,53 @@ much more expensive.
   does not, because a one-shot init that prints an error and exits 0 is worse than
   one that fails loudly. It caught its own bug on the first run.
 
-### Still not verified
+### N1QL reads: two more causes, and neither was the code
 
-**N1QL reads.** `cluster.query(...)` returns successfully; iterating `.rows()`
-raises `ServiceUnavailableException` for every statement tried, including
-`SELECT COUNT(*) FROM bucket` and a bare key lookup. The index service does not
-appear to be up on this single-node container. Marked `xfail` with that reason —
-it looks like an environment problem rather than a project bug, but it is not
-*proven* to be one, so it is not claimed.
+For a long while every query failed — `cluster.query(...)` returned successfully
+and then iterating `.rows()` raised for *every* statement, including
+`SELECT COUNT(*) FROM bucket`. I marked it `xfail` and moved on. It was worth
+another look, because I had assumed the environment was at fault, and the
+assumption turned out to be wrong twice.
 
-  A related trap found on the way: immediately after a bulk seed, a query needs
-  `scan_consistency="request_plus"`. The default does not see the new documents or
-  the new index and fails with a `ServiceUnavailableException` that never mentions
-  indexing.
+1. **The Query service was never enabled.** `cluster-init` with no `--services`
+   brings the cluster up with `kv` alone. Community Edition accepts exactly three
+   service combinations, and the error message helpfully lists them: `data`,
+   `query,data,index`, or `query,fts,data,index`. The project's compose file was
+   doing the first thing, so **N1QL could never have worked in this stack at all.**
+
+2. **Port 8093 was never published.** This one has a long fuse. The SDK reaches
+   the KV service on 11210, so every `get` and `upsert` succeeds and the stack
+   looks perfectly healthy. The cluster topology then dispatches each query to
+   **8093**, which the host cannot see, and the query fails after the SDK's entire
+   retry budget with *"Streaming operation failed"* — a message that mentions
+   neither the network nor ports. **Only a read ever fails.** A write-only test
+   suite would never have found it, and neither would a healthcheck.
+
+Both are fixed in `compose.yaml`, and the seven passing tests now include the
+N1QL read path. Neither cause was in the project's code, which is the useful part:
+the environment was not broken, the *configuration* was, and only a read that
+actually ran could tell the difference.
+
+A related trap on the way: immediately after a bulk seed a query needs
+`scan_consistency="request_plus"`. The default sees neither the new documents nor
+the new index, and fails with a `ServiceUnavailableException` that never mentions
+indexing.
+
+### A test that was wrong in an instructive way
+
+The read tests first failed with *two* rows for one tag. The second was a
+leftover document under a test-only key from an earlier run — the test had
+prefixed its keys to avoid collisions, and then queried by the ``id`` **field**,
+which is not the key.
+
+The fix was to query by key, which is the production pattern anyway: a tag read
+out of InfluxDB already carries its identity, and the key *is* the identity. But
+the underlying point is worth keeping: **`id` is a field, so querying by it can
+return one row per document that merely shares the value.** A document store where
+the key and the id field can disagree is a document store that will eventually be
+asked a question it answers wrongly.
+
+Also: `SELECT META().id AS key` is a parse error. `key` is reserved.
 
 ### The gap I could not close, and did not paper over
 

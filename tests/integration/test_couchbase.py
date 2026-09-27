@@ -27,7 +27,9 @@ fatal and every one of them raised loudly rather than failing quietly:
    and every document carries ``doc_type``, so a second level of names would be
    redundant.
 
-The read path is a different story and is marked xfail below.
+The read path took two more causes, both of them invisible to a write-only test:
+the Query service was never enabled, and the query port was never published.
+Both are in ``compose.yaml`` now, and both are explained where they are fixed.
 
 ## Skipping
 
@@ -130,7 +132,14 @@ def _collection(cluster):
 
 
 def _prefixed(prefix: str = "it_") -> str:
-    """A key prefix unique to one test run, so reruns do not collide."""
+    """A key prefix unique to one test run.
+
+    Only for tests that read their document back **by key**. Querying by the
+    ``id`` *field* instead finds both the canonical document and the prefixed
+    copy, which is exactly the confusion this prefix caused: a query for
+    ``id = 'AERATION:AHU-1:DO'`` returned two rows, one of them a leftover from a
+    test that had written the same document under a test-only key.
+    """
     return f"{prefix}{os.getpid()}"
 
 
@@ -139,7 +148,9 @@ def _prefixed(prefix: str = "it_") -> str:
 
 @requires_couchbase
 def test_a_document_round_trips_through_couchbase(cluster, upsert) -> None:
-    key = _prefixed() + "tag::AERATION:AHU-1:DO"
+    # The canonical key, not a prefixed one: this test is checking that the key
+    # format survives the round trip, and the format *is* the canonical key.
+    key = tag_key("AERATION:AHU-1:DO")
     upsert(key, tag_document(C.signals["AERATION:AHU-1:DO"]))
 
     got = _collection(cluster).get(key)
@@ -187,7 +198,7 @@ def test_seeding_twice_updates_rather_than_duplicating(cluster, upsert) -> None:
 @requires_couchbase
 def test_upsert_overwrites_a_changed_document(cluster, upsert) -> None:
     """The behaviour the idempotency test depends on."""
-    key = _prefixed() + "site::PLANT-A"
+    key = _prefixed() + site_key("PLANT-A")
     doc = site_document(C)
     upsert(key, doc)
     doc["permit"] = {**doc["permit"], "eff_nh4_mg_l_30d_mean": 7.0}
@@ -234,33 +245,66 @@ def test_colon_separated_keys_survive_the_round_trip(cluster, upsert) -> None:
 # ─── the read path, which is not verified ─────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    reason=(
-        "N1QL row streaming does not work on a single-node Couchbase Community "
-        "7.6.2 container in this environment. `cluster.query(...)` returns "
-        "successfully; iterating `.rows()` then raises "
-        "ServiceUnavailableException with 'Streaming operation failed', for "
-        "every statement tried including `SELECT COUNT(*) FROM bucket` and a "
-        "bare key lookup. The index service does not appear to be up. This looks "
-        "like an environment problem rather than a project bug - the write path "
-        "is verified above, and the statements themselves are ordinary N1QL - but "
-        "it is not yet proven, so it is not claimed. See docs/LEARNING-LOG.md."
-    ),
-    strict=False,
-)
 @requires_couchbase
 def test_documents_are_queryable_by_type(cluster, upsert) -> None:
+    """The N1QL read path, which took two unrelated causes to get working.
+
+    The first was **not enabling the Query service**. ``cluster-init`` with no
+    ``--services`` brings the cluster up with ``kv`` alone, and every query then
+    fails. Community Edition accepts exactly three service combinations and the
+    error message helpfully lists them: ``data``, ``query,data,index`` or
+    ``query,fts,data,index``.
+
+    The second was **not publishing port 8093**. The SDK reaches the KV service on
+    11210, so every ``get`` and ``upsert`` succeeds and the stack looks healthy;
+    the cluster topology then dispatches each query to 8093, which the host
+    cannot see, and it fails after the entire retry budget with *"Streaming
+    operation failed"* - a message that mentions neither the network nor ports.
+    A write-only test suite would never have found it.
+    """
     MetadataWriter(upsert).seed_contract(C)
     from couchbase.options import QueryOptions
 
+    # request_plus, not the default: immediately after a bulk seed the default
+    # consistency sees neither the new documents nor the new index, and fails
+    # with a ServiceUnavailableException that never mentions indexing.
+    opts = QueryOptions(scan_consistency="request_plus")
     result = cluster.query(
-        "SELECT doc_type, COUNT(*) AS n FROM `" + CB_BUCKET + "` "
-        "GROUP BY doc_type",
-        # request_plus, not the default: immediately after a bulk seed the default
-        # consistency does not see the new documents or the new index, and fails
-        # with a ServiceUnavailableException that never mentions indexing.
-        QueryOptions(scan_consistency="request_plus"),
+        f"SELECT doc_type, COUNT(*) AS n FROM `{CB_BUCKET}` "
+        f"WHERE META().id NOT LIKE 'it_%' GROUP BY doc_type", opts
     )
     counts = {row["doc_type"]: row["n"] for row in result.rows()}
     assert counts["tag"] == len(C.signals)
     assert counts["equipment"] == len(C.equipment)
+    assert counts["site"] == 1
+
+
+@requires_couchbase
+def test_a_named_parameter_binds(cluster, upsert) -> None:
+    """The join the two databases exist for, expressed as one query.
+
+    Given a tag read out of InfluxDB, fetch its unit and range from here. This is
+    the whole argument for two stores, and it is worth having a test that says so
+    in as many words.
+    """
+    MetadataWriter(upsert).seed_contract(C)
+    from couchbase.options import QueryOptions
+
+    # By **key**, not by the ``id`` field. That is the production access pattern -
+    # a tag read out of InfluxDB already carries its identity, and the key *is*
+    # the identity. Querying by the field instead returns one row per document
+    # that happens to share the id, which is how this test first failed: a
+    # leftover under a test-only key from an earlier run.
+    rows = list(cluster.query(
+        # ``AS key`` is a parse error: `key` is reserved. The alias is spelled
+        # out here so the next person does not spend an afternoon on it.
+        f"SELECT META().id AS doc_key, unit, range_min, range_max FROM `{CB_BUCKET}` "
+        "WHERE META().id = $key",
+        QueryOptions(scan_consistency="request_plus",
+                     named_parameters={"key": tag_key("AERATION:AHU-1:DO")}),
+    ).rows())
+    assert len(rows) == 1
+    sig = C.signals["AERATION:AHU-1:DO"]
+    assert rows[0]["unit"] == sig.eu
+    assert rows[0]["range_min"] == pytest.approx(sig.range_min)
+    assert rows[0]["range_max"] == pytest.approx(sig.range_max)

@@ -160,8 +160,16 @@ services:
       - couchbase-data:/opt/couchbase/var
       - couchbase-logs:/opt/couchbase/logs
     ports:
-      - "${COUCHBASE_PORT:-8091}:8091"   # management / REST
+      - "${COUCHBASE_PORT:-8091}:8091"    # management / REST
       - "${COUCHBASE_KV_PORT:-11210}:11210"
+      # 8093 is the **query** port, and omitting it is a trap with a long fuse.
+      # The SDK reaches the KV service on 11210 and every `get` and `upsert` works,
+      # so the stack looks healthy; then a N1QL query is dispatched by the cluster
+      # topology to 8093, which the host cannot see, and it fails after the SDK's
+      # entire retry budget with `Streaming operation failed` - a message that
+      # mentions neither the network nor ports. Only a *read* ever fails, which is
+      # why a write-only test suite would never have found it.
+      - "${COUCHBASE_QUERY_PORT:-8093}:8093"
     networks: [plant]
     healthcheck:
       # `/nodes/self`, **authenticated**. Two traps in one line, both found by
@@ -225,7 +233,13 @@ services:
 
         # Idempotent: cluster-init fails on an already-initialised cluster, and
         # that is not a reason to fail the run.
-        if couchbase-cli cluster-init -c "$$mgmt" "$${init[@]}"; then
+        # `--services` is not optional. Without it the cluster comes up with `kv`
+        # alone and **N1QL never works** - the Query service is not running, so
+        # every query fails at the SDK with a streaming error. Community Edition
+        # accepts exactly three combinations, and the error message lists them:
+        # 'data', 'query,data,index' or 'query,fts,data,index'.
+        if couchbase-cli cluster-init -c "$$mgmt" "$${init[@]}" \
+             --services="query,data,index"; then
           echo "cluster initialised"
         else
           echo "cluster already initialised (or init failed; continuing)"
