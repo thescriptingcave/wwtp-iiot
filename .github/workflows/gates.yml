@@ -139,6 +139,14 @@ jobs:
           --ignore=tests/integration
           -m "not slow and not integration"
 
+      - name: the lesson courses
+        # In this job rather than the integration one, and that placement is the
+        # point: `tools/check_lessons.py` starts its own OPC UA server on an
+        # ephemeral port and needs no database, no seed and no compose. A lesson
+        # gate that needed a seeded week to demonstrate a browse would be a gate
+        # that ran a fortnight and then not ran.
+        run: uv run python tools/check_lessons.py
+
   # ── the gate that needs a database ────────────────────────────────────────
   integration:
     name: integration + SQL course

@@ -40,7 +40,7 @@ help:
 
 # ── the gates ────────────────────────────────────────────────────────────────
 
-check: lint lint-debt types test sql  ## everything CI would run
+check: lint lint-debt types test sql lessons  ## everything CI would run
 	@echo "── all gates green ──"
 
 # **Scoped, and the scoping is on the label.**
@@ -97,6 +97,10 @@ integration:  ## integration tests, against a throwaway database
 sql:  ## every SQL block in the course, against a real server
 	@echo "── the SQL course ──"
 	$(PY) tools/check_sql.py sql/
+
+lessons:  ## every python snippet in courses/, against a live OPC UA server
+	@echo "── the lesson courses ──"
+	$(PY) tools/check_lessons.py
 
 sql-check: seed sql  ## the one gate that needs a seeded week
 

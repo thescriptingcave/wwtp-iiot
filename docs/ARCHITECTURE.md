@@ -130,6 +130,16 @@ own loop on a background thread so the OPC UA server can bind to it.
 * **No MQTT.** It was excluded at the start, on the grounds that a broker would
   hide the protocol behaviour the project exists to teach. OPC UA is the primary
   protocol and Modbus TCP the secondary one, and both are implemented directly.
+
+  This reasoning was sound and the outcome was the opposite, which is worth
+  recording. Excluding MQTT avoided hiding the protocol behind a broker, but then
+  *generating* the address space hid it just as effectively: with the tree built
+  from `contracts/tags.yaml` by `softplc/servers/opcua.py`, there was nothing
+  left to browse and therefore nothing to learn. The SQL course escaped this
+  because the SQL is hand-written and runs against a live database — the artefact
+  *is* the lesson. The fix was not to stop generating, it was to add
+  [`courses/opcua/`](../courses/opcua/README.md), which makes a reader walk the
+  generated tree by hand and says what is wrong with it when they get there.
 * **No authentication in the demo stack.** The threat model is written down in
   [`SECURITY.md`](SECURITY.md) along with the two gaps and what closing them
   would take. A plant that pretends to be secure teaches the wrong lesson.

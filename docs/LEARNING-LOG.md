@@ -1771,6 +1771,113 @@ the same name.*
 
 ---
 
+### The two most worth learning were the two I automated
+
+Asked whether the charts were too basic — they were, and the fix is a curation
+layer and about eight days of work. Then asked what Node-RED was for and what
+there was to learn about OPC UA, and the honest answer to the second question was
+**nothing at all**.
+
+Measured, not asserted:
+
+```
+sql/ course:  21 lessons
+OPC UA:        0 lessons
+Node-RED:      0 lessons
+```
+
+Every mention of either protocol in the whole repository was one of four things:
+an architecture line, a command to run, a `45 nodes assembled` verification
+message, or a glossary entry. 500 lines of OPC UA server, a client, a browser
+tool, 370 lines of tests — and not one sentence that taught anything.
+
+The cause is the same cause as the dashboards, one level down. The SQL course
+works because the SQL is hand-written and runs against a live database: **the
+artefact is the lesson.** The flows and the address space did not work that way.
+`scada/build_flows.py` is 1 147 lines of Python generating 275 lines of
+JavaScript — four times more code deciding the flows than code inside them — and
+the Node-RED editor is switched off, so the two things that teach Node-RED
+(dragging nodes onto a canvas, reading messages in the debug sidebar) are both
+disabled. The address space is generated from `contracts/tags.yaml` for the same
+reason, and the thing that teaches OPC UA is *browsing a hierarchy by hand*,
+which is exactly what the generator removed.
+
+> I optimised for correct and reproducible, and treated teachable as a property
+> of the documentation rather than of the build.
+
+`docs/ARCHITECTURE.md` said, in the "what is deliberately not here" section, that
+excluding MQTT avoided hiding "the protocol behaviour the project exists to
+teach". The reasoning was right and the outcome was the opposite, and the sentence
+should have been evidence rather than a claim. It now says so.
+
+### The gate caught two things I had written from memory
+
+`tools/check_lessons.py` runs every Python block in a course against a server it
+starts itself. It is stricter than `check_sql.py` for the reason it can be: a SQL
+block returning no rows is indistinguishable from a correct one, whereas an OPC UA
+snippet either connects or it does not.
+
+Lesson 01 failed twice on its first run, and both failures were mine:
+
+* **`await root.get_references()[:4]`** slices the *coroutine*, not the list.
+  `TypeError: 'coroutine' object is not subscriptable`. A precedence mistake that
+  is invisible in a code block and unmissable in a running one.
+* **`Organizes` where the answer is `HasComponent`.** I wrote that the eight
+  areas are `Organizes` references from reading the code's intent, and the real
+  answer is 16 references — `35 Organizes x1`, `40 HasTypeDefinition x1`,
+  `46 HasProperty x6`, `47 HasComponent x8`. The two `get_children()` hides are
+  the interesting ones: an inverse reference to the parent, and the type
+  definition. Which is a *better* lesson than the one I had written, and I would
+  never have found it by reading the markdown.
+
+The generalisation, and it is the same shape as the thread about `has_table_privilege`
+and `dwell_for`: **I can write plausible text about a system faster than I can
+observe it, and nothing complains.** A lesson is the most dangerous artefact in
+this repository for exactly that reason — it is prose that looks like
+verification. Hence the gate, and hence pasting real output instead of writing it.
+
+### Four things this OPC UA implementation gets wrong, now written down
+
+Writing the course meant reading the server properly, and four claims did not
+survive:
+
+1. **Every numeric value is a `Double`.** `_variant_type()` takes an engineering
+   unit and ignores it. The storm flag — `{Boolean}` in the contract — is
+   published as a floating-point number, and a pH and a m³/h are
+   indistinguishable by type. The module docstring claims a typed address space;
+   that is currently true only of `RunState`.
+2. **`Bad` is never published.** `publish()` maps quality to `Good`/`Uncertain`,
+   and `grep -c 'StatusCodes.Bad' softplc/servers/opcua.py` is **0**, while the
+   docstring says a failing sensor reports `Bad`. The historian's whole honesty
+   argument rests on that distinction.
+3. **The engineering range is not enforced on the wire** — already a known gap in
+   `SECURITY.md`, now the subject of a lesson instead of a caveat.
+4. **`RunState` is 0 until the process model drives it.** A bare `OpcUaServer` —
+   a unit test, or the snippet gate — publishes 22 pieces of equipment all
+   reading `0`, which is indistinguishable from 22 stopped motors. This is the
+   deadband problem again in a different costume: **a value that is always zero
+   is indistinguishable from a value that is genuinely zero**, which is why the
+   historian records *when a signal last changed* and why there is a "What has
+   stopped reporting" panel next to every trend.
+
+### Two smaller ones, in my own new code
+
+**`exec` does not allow top-level `await`.** The gate's docstring claimed it did,
+with a comment explaining that the snippet was "compiled inside a coroutine". It
+is not; `exec` compiles as a module. `ast.PyCF_ALLOW_TOP_LEVEL_AWAIT` would work
+but makes `exec` return a coroutine that has to be awaited separately, and getting
+that wrong passes a snippet without running a line. Wrapping the source in an
+`async def` is the version that fails loudly. I wrote an explanatory comment
+asserting a behaviour I had not tested, which is the same mistake as the wrong
+comment in `softplc/main.py` that is already in this log.
+
+**`len(Counter(...))` is the number of distinct keys.** The lesson-gate test
+asserted "16 references" and got 4. The lesson itself does not use it, so this
+was a bug in the test rather than the teaching — but it is the sort of thing that
+becomes a lesson the moment somebody copies the snippet.
+
+---
+
 ## Thread triage
 
 Twenty-two threads were open at the end of Phase 5a. Triaged, they are not

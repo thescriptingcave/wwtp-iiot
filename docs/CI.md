@@ -79,7 +79,7 @@ from them, because a named volume over `/data` silently shadows the image's
 
 | Job | Runs | What it is for |
 |---|---|---|
-| `unit` | every push | ruff (scoped), mypy (everything), pytest without a database |
+| `unit` | every push | ruff (scoped), mypy (everything), pytest without a database, **the lesson courses** |
 | `integration` | every push | a real seeded TimescaleDB, the integration suite, the SQL course, the flow SQL, the dashboard queries, the replay |
 | `drift` | every push | generated files vs the contract, and `docker compose config` |
 | `images` | every push | the three images build, and the two non-core node types resolve |
@@ -89,6 +89,25 @@ from them, because a named volume over `/data` silently shadows the image's
 That is five on every push and one on a schedule, and the count is asserted by
 `tests/test_readme_claims.py::test_no_document_says_the_ci_workflow_has_five_jobs`
 — which found the wrong number in *this file* the day it was written.
+
+### Why the lesson courses run in the `unit` job
+
+`tools/check_lessons.py` runs every Python block in `courses/` against a live OPC
+UA server that **it starts itself**, on an ephemeral port. It needs no database,
+no seeded week and no compose, so it runs in the `unit` job rather than the
+`integration` one.
+
+That placement is the design, not a convenience. A lesson gate that needed a
+seeded fortnight to demonstrate a browse would be a gate that ran a fortnight and
+then did not run. The gate is stricter than `check_sql.py` for the same reason it
+can be: a SQL block that returns no rows is indistinguishable from a correct one,
+whereas an OPC UA snippet either connects to a server or it does not.
+
+It is also the gate that keeps the course honest. Writing lesson 01 surfaced a
+reference id (`Organizes` where the answer was `HasComponent`) that had been
+guessed rather than observed, and a precedence bug in a snippet
+(`await f()[:4]`, which slices a coroutine). Neither was findable by reading the
+markdown.
 
 ### Why the database tests run in CI
 

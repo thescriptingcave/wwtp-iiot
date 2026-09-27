@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -263,6 +264,7 @@ def _count_tests(path: str) -> int:
         ("tests/test_scada_contract.py", 37),
         ("tests/test_grafana_dashboards.py", 15),
         ("tests/test_web_page.py", 22),
+        ("tests/test_opcua_course.py", 12),
     ],
 )
 def test_the_per_area_test_counts(path: str, claimed: int) -> None:
@@ -405,6 +407,48 @@ def test_no_document_quotes_a_stale_query_count() -> None:
     )
 
 
+def test_the_documented_unit_suite_total_matches() -> None:
+    """`docs/TESTING.md`'s headline unit count, against `pytest --co`.
+
+    The per-file table above is guarded entry by entry. The *total* was not, and
+    it was 49 out of date — which is the interesting part: a number nobody checks
+    rots, and it rots silently, and the document about verification is where you
+    would least expect to find an unverified number.
+    """
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
+         "--ignore=tests/integration", "-m", "not slow and not integration",
+         "--collect-only"],
+        capture_output=True, text=True, check=False,
+    )
+    m = re.search(r"(\d+)/(\d+) tests collected", out.stdout)
+    assert m, f"could not count the unit suite:\n{out.stdout[-400:]}"
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    claimed = int(re.search(r"Unit, no database \| (\d+) \|", doc).group(1))
+    assert int(m.group(1)) == claimed, (
+        f"docs/TESTING.md says {claimed} unit tests; pytest collects {m.group(1)}"
+    )
+
+
+def test_the_documented_lesson_snippet_count_matches() -> None:
+    """The OPC UA course row, against the gate's own `--list`."""
+    out = subprocess.run(
+        [sys.executable, "tools/check_lessons.py", "--list"],
+        capture_output=True, text=True, check=False,
+    )
+    m = re.search(r"(\d+) to run, (\d+) skipped, across (\d+) lessons", out.stdout)
+    assert m, f"could not count the lesson snippets:\n{out.stdout[-400:]}"
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    row = re.search(r"OPC UA course \| (\d+) snippets? in (\d+) lesson", doc)
+    assert row, "docs/TESTING.md has no OPC UA course row"
+    assert int(row.group(1)) == int(m.group(1)), (
+        f"docs/TESTING.md says {row.group(1)} snippets; the gate found {m.group(1)}"
+    )
+    assert int(row.group(2)) == int(m.group(3)), (
+        f"docs/TESTING.md says {row.group(2)} lessons; the gate found {m.group(3)}"
+    )
+
+
 def test_no_document_quotes_a_stale_test_count() -> None:
     """"31 tests" on the Node-RED flows; it is 37."""
     offenders = [
@@ -481,7 +525,8 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 41,
+    "tests/test_readme_claims.py": 45,
+    "tests/test_opcua_course.py": 12,
     "tests/test_alarm_engine.py": 17,
 }
 
