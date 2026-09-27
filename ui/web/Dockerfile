@@ -69,7 +69,25 @@ COPY --from=deps --chown=app:app /app/node_modules ./node_modules
 COPY --from=build --chown=app:app /app/.next ./.next
 COPY --from=build --chown=app:app /app/public ./public
 COPY --from=build --chown=app:app /app/package.json ./package.json
-COPY --from=build --chown=app:app /app/next.config.* ./ 2>/dev/null || true
+# Named explicitly, not globbed. This line used to be
+#
+#     COPY --from=build --chown=app:app /app/next.config.* ./ 2>/dev/null || true
+#
+# and **the image could not be built at all**, because `COPY` is not a shell:
+# BuildKit parsed `2>/dev/null` and `|| true` as two more source paths and
+# failed with
+#
+#     cannot copy to non-directory: .../app/true
+#
+# Which is the sixth Dockerfile or compose file in this project that ships
+# broken, and the first found by the CI job rather than by running `docker
+# compose up` — the `images` job in `.github/workflows/gates.yml` was written
+# yesterday and would have caught it on the first push.
+#
+# The explicit name is better anyway: a glob that matches nothing copies nothing
+# and the app starts with Next's defaults, which is the "it came up" failure one
+# more time. A missing file here is a loud build error.
+COPY --from=build --chown=app:app /app/next.config.mjs ./next.config.mjs
 
 USER 10002:10002
 EXPOSE 3000

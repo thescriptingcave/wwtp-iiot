@@ -111,6 +111,16 @@ instead of a plugin.
   relative import in the health route, and an unreachable `'none'` branch in the
   permit page that `as const` had proved impossible by narrowing every candidate
   to `never`.
+* `docker compose --profile ui build web` — **the image could not be built at
+  all.** `COPY … ./ 2>/dev/null || true` is shell syntax inside a `COPY`, and
+  BuildKit parsed the redirect and the `||` as two more source paths. Now an
+  explicit `COPY … /app/next.config.mjs`.
+* The container, running: `--read-only` with a tmpfs for `.next/cache`, a
+  non-root user, and it reports **healthy**. `/api/health` returned 200 with a
+  1 ms database round trip and the overview rendered 95 kB. The client bundle was
+  grepped for the password, for `POSTGRES_HOST` and for `NEXT_PUBLIC` — nothing.
+* The `wwtp_ui` role, against a live database: `INSERT`, `DELETE`, `TRUNCATE` and
+  `CREATE TABLE` all refused.
 
 ## What is *not* verified, and it is the weakest part of the project
 

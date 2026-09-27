@@ -187,6 +187,24 @@ and run ten minutes earlier.**
   rows. A sparkline's correctness is a thing you can only see by looking at the
   path data, and it was the only assertion in this phase that no test makes.
 
+- **`COPY` is not a shell, and the web image could not be built at all.** The
+  Dockerfile ended with
+
+      COPY --from=build --chown=app:app /app/next.config.* ./ 2>/dev/null || true
+
+  BuildKit parsed `2>/dev/null` and `|| true` as two more source paths and failed
+  with `cannot copy to non-directory: .../app/true`. The sixth Dockerfile or
+  compose file in this project that ships broken.
+
+  **And the first one found by a CI job rather than by running `docker compose
+  up`** — the `images` job was written the day before and would have caught it on
+  the first push. That is the whole return on the CI work, in one line: the
+  failure mode is unchanged, but it now costs ninety seconds instead of shipping.
+
+  The explicit name is better anyway. A glob that matches nothing copies nothing
+  and the app starts on Next's defaults, which is the "it came up" failure for the
+  seventh time. A missing file is a loud build error.
+
 **What is still weak, and it is the weakest part of the project:** there is no
 TypeScript test runner, so "the JSX renders" is a manual claim — `npm run build`,
 `next start`, a `curl` per route, all four 200, zero errors in the log. The data
