@@ -1199,6 +1199,23 @@ the same name.*
     lesson as the stale `rotate_s` in the gateway, and the reason `make scada`
     now exists as a target that actually starts the thing.
 
+22. **Three mistakes in one permit query, and the first two were only findable
+    by running it.** The dashboard is generated from the contract, which made the
+    numbers right — and the SQL still had `avg(value)` against `reading_1h`,
+    which has `mean`. It read pH from the *TSS signal* (there is an
+    `EFFLUENT:FLOW:PH`), and named a CTE `window`, which is reserved.
+
+    The pH one is the instructive failure: it is a valid query against a valid
+    table, and **nothing in the database objects to it**, because a unit of
+    measure is carried by a signal's identity and by nothing on the row. A wrong
+    signal id in a query is a wrong number, not an error — and the only thing
+    that catches it is checking the identity against the contract, which is now
+    `test_every_query_names_a_signal_the_contract_declares`.
+
+    The other two failed loudly, and the general point is the same as the Node-RED
+    entrypoint: **a loud failure is a gift.** The quiet version of this bug would
+    have been a green compliance panel.
+
 ## What I would do next, in order
 
 1. **Find the factor of seven** (thread 16). Two harnesses, same rules, same

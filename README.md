@@ -185,7 +185,12 @@ then written down as though it were a principle.
   a range-checked setpoint, all **generated from the contract** and all behind a
   `scada` profile. 31 tests guard the generator rather than the output.
   [`scada/README.md`](scada/README.md)
-- [ ] **Phase 5** — Grafana dashboards and the custom Next.js page. Not started.
+- [x] **Phase 5a** — Grafana: a provisioned datasource and **two dashboards
+  generated from the contract**, including the only place a discharge-permit
+  number is computed. 15 tests, two of which run every dashboard query against a
+  live database. `python -m ui.grafana.generate_dashboards`
+- [ ] **Phase 5b** — the custom Next.js page. `ui/web/` has a correct Dockerfile
+  and no source.
 
 Phase 3 is complete and exercised against a live database: 378 unit tests, 17
 integration tests, 57 course queries, all passing. The open threads are in

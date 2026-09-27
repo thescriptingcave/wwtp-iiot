@@ -1,0 +1,217 @@
+{
+  "uid": "wwtp-permit",
+  "title": "WWTP \u2014 discharge permit",
+  "description": "The consent conditions, from the contract's `permit:` block, with the signals that evidence them. Generated from contracts/tags.yaml.",
+  "tags": [
+    "wwtp",
+    "generated"
+  ],
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "timezone": "utc",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Ammonia \u2014 permit 10 mg/L 30-day mean",
+      "description": "The permit is a **30-day mean**, and this panel is not one. It is here to show the signal, and the report against the permit is computed below \u2014 because a panel of hourly values and a compliance number that is a 30-day mean are two different facts and putting the second next to the first without saying so is how a plant talks itself into a breach.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 9,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, mean AS value FROM reading_1h WHERE signal_id = 'EFFLUENT:FLOW:NH4'   AND bucket >= $__timeFrom() AND bucket <= $__timeTo() ORDER BY time -- nh4_mg_l, hourly tier",
+          "interval": "5s",
+          "legendFormat": "nh4_mg_l"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mg/L",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 0.5,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 8.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Suspended solids \u2014 permit 30 mg/L",
+      "description": "Suspended solids against a 30 mg/L permit, hourly tier. The band is the contract's normal band and is *not* the permit: the permit is a limit and the band is where the process usually is, and they are different numbers doing different jobs. The permit computation is in the table below.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 9,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, mean AS value FROM reading_1h WHERE signal_id = 'EFFLUENT:FLOW:TSS'   AND bucket >= $__timeFrom() AND bucket <= $__timeTo() ORDER BY time -- tss_mg_l, hourly tier",
+          "interval": "5s",
+          "legendFormat": "tss_mg_l"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mg/L",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 5.0,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 5.0
+              },
+              {
+                "color": "green",
+                "value": 30.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Permit compliance, from the contract",
+      "description": "The **only** place in this project that computes a compliance number, and it is the `reading_1h` tier on purpose: a 30-day mean over 4.3 million raw rows is a query nobody runs, and over 720 hourly buckets it is one nobody notices. A false number computed quickly is still a false number, so the arithmetic is checked in `tests/test_grafana_dashboards.py` rather than trusted here.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 24,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH span AS (SELECT now() - interval '30 days' AS since)\nSELECT 'ammonia, 30-day mean' AS parameter,\n       'mg/L'  AS unit,\n       10.0::float AS permit_value,\n       'max'  AS direction,\n       round(avg(h.mean)::numeric, 3) AS measured,\n       avg(h.mean) <= 10.0 AS compliant\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:NH4' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'suspended solids, 30-day mean', 'mg/L', 30.0::float, 'max',\n       round(avg(h.mean)::numeric, 3), avg(h.mean) <= 30.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:TSS' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'pH, minimum', 'pH', 6.0::float, 'min',\n       round(min(h.mean)::numeric, 3), min(h.mean) >= 6.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'pH, maximum', 'pH', 9.0::float, 'max',\n       round(max(h.mean)::numeric, 3), max(h.mean) <= 9.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'coliforms, geometric mean', '{MPN}/100mL', 200::float, 'max',\n       round(exp(avg(ln(h.mean)))::numeric, 1), exp(avg(ln(h.mean))) <= 200\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:DIS-CL-2:BACTI' AND h.bucket >= w.since\n  AND h.mean > 0\nHAVING count(*) > 0\nORDER BY parameter"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}

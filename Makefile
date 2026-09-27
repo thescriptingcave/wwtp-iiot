@@ -31,7 +31,7 @@ TEST_PORT  ?= 55432
 
 .PHONY: help check lint types test integration sql sql-check \
         up seed wait down clean logs \
-        scada scada-flows scada-check \
+        scada scada-flows scada-check dashboards dashboards-check grafana \
         coverage coverage-json alarms browse watch psql query roles contract
 
 help:
@@ -114,6 +114,16 @@ scada-flows:  ## regenerate the tag list and the flows from the contract
 scada-check:  ## report drift between the contract and the generated files
 	$(PY) -m scada.generate_tags --check
 	$(PY) -m scada.build_flows --check
+
+dashboards:  ## regenerate the Grafana dashboards from the contract
+	$(PY) -m ui.grafana.generate_dashboards
+
+dashboards-check:  ## report drift between the contract and the dashboards
+	$(PY) -m ui.grafana.generate_dashboards --check
+
+grafana:  ## Grafana, provisioned from files in git
+	@echo "── Grafana on http://127.0.0.1:$${GRAFANA_PORT:-3000} ──"
+	docker compose --profile observability up -d grafana
 
 coverage:  ## the fault x rule matrix, about eight minutes
 	@echo "── alarm coverage: eleven faults against thirteen rules ──"

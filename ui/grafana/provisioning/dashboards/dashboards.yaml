@@ -1,0 +1,22 @@
+# Where the dashboards come from.
+#
+# `allowUiUpdates: false` is the important line. The dashboards in
+# `ui/grafana/dashboards/` are **generated** by `python -m ui.grafana
+# .generate_dashboards` from `contracts/tags.yaml`, exactly as the Node-RED
+# flows are. If Grafana were allowed to write them, an edit made in the UI would
+# be silently reverted by the next generation — the same failure as an
+# operator editing a generated flow in the Node-RED editor, and the reason
+# `NODE_RED_EDITOR=false` is the default there.
+apiVersion: 1
+
+providers:
+  - name: wwtp
+    orgId: 1
+    folder: WWTP
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

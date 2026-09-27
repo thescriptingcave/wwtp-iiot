@@ -1,0 +1,43 @@
+# Grafana datasource provisioning.
+#
+# Provisioned from a file rather than configured by hand, for the same reason the
+# SQL course is checked rather than trusted: **a datasource configured in the UI
+# is a datasource that exists on one machine.** Provisioning means a fresh clone
+# with `docker compose --profile observability up` has a working datasource, and
+# that its settings are reviewable in a diff.
+apiVersion: 1
+
+datasources:
+  - name: TimescaleDB
+    uid: wwtp-postgres
+    type: postgres
+    access: proxy
+    # **The built-in PostgreSQL datasource, with no plugin.**
+    #
+    # `compose.yaml` says "Timescale's Postgres datasource, which is a
+    # first-party plugin and needs no configuration beyond this". That is not
+    # right: Grafana's PostgreSQL datasource is built in, and the TimescaleDB
+    # plugin is a *separate, optional* one. None is needed here, because a
+    # hypertable is a table with extra storage attached and the PostgreSQL
+    # datasource cannot tell the difference — which is the point of the decision
+    # to use TimescaleDB rather than a database that needed its own client.
+    #
+    # `GF_INSTALL_PLUGINS: ""` in compose.yaml is correct as a result and
+    # unexplained as a reason. Left, with this as the explanation.
+    url: ${POSTGRES_HOST}
+    database: ${POSTGRES_DB}
+    user: ${POSTGRES_USER}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable            # the database is on the internal `plant` network
+      postgresVersion: 1600       # 16, the `major_version` from docker-compose
+      timescaledb: true           # sets the default interval for $__timeGroup
+      maxOpenConns: 10            # a dashboard opens several queries at once;
+                                  # the default 0 means unlimited and will
+                                  # exhaust `max_connections` on a busy dashboard
+      postgresExtraOptions:
+        - "application_name=grafana"
+    isDefault: true
+    editable: false               # see the note below
+    jsonData_managed: true

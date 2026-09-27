@@ -1,0 +1,440 @@
+{
+  "uid": "wwtp-overview",
+  "title": "WWTP \u2014 overview",
+  "description": "The plant at a glance. Generated from contracts/tags.yaml; the band on each panel is the contract's `normal_low`/`normal_high`, which is a *specification* and not an alarm threshold \u2014 see docs/ALARM-TUNING.md.",
+  "tags": [
+    "wwtp",
+    "generated"
+  ],
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "timezone": "utc",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Influent and effluent flow",
+      "description": "Two different quantities on one axis is wrong, and they are here anyway because the *shape* comparison is the point: effluent above influent means water is being added. The unit is the shared one.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'INFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "interval": "5s",
+          "legendFormat": "flow_m3h"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'EFFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "interval": "5s",
+          "legendFormat": "flow_m3h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m3/h",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Dissolved oxygen",
+      "description": "Aeration basin DO. The band is the contract's 1.5-3.0 mg/L.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- do_mg_l, raw tier",
+          "interval": "5s",
+          "legendFormat": "do_mg_l"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mg/L",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 1.5,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 1.5
+              },
+              {
+                "color": "green",
+                "value": 3.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Blower speed and air flow",
+      "description": "Two quantities, two units, **no band**. A threshold in rev/min drawn on a panel whose other series is m3/h is a number with no meaning, and a reader cannot tell which series it belongs to. When two units have to share a panel, the band is the thing that has to go, and the panel says so rather than implying the units agree.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:BLOWER_RPM'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- blower_rpm, raw tier",
+          "interval": "5s",
+          "legendFormat": "blower_rpm"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- air_flow_m3h, raw tier",
+          "interval": "5s",
+          "legendFormat": "air_flow_m3h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Effluent quality",
+      "description": "Ammonia and suspended solids, hourly tier, so a week on screen is 168 points rather than 12 000.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, mean AS value FROM reading_1h WHERE signal_id = 'EFFLUENT:FLOW:NH4'   AND bucket >= $__timeFrom() AND bucket <= $__timeTo() ORDER BY time -- nh4_mg_l, hourly tier",
+          "interval": "5s",
+          "legendFormat": "nh4_mg_l"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, mean AS value FROM reading_1h WHERE signal_id = 'EFFLUENT:FLOW:TSS'   AND bucket >= $__timeFrom() AND bucket <= $__timeTo() ORDER BY time -- tss_mg_l, hourly tier",
+          "interval": "5s",
+          "legendFormat": "tss_mg_l"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Sludge and digester",
+      "description": "Secondary clarifier blanket depth and digester pH. No band: metres and pH are not comparable, and a blanket depth band drawn on this panel would silently be read as a pH limit. Each needs its own panel to have a band, which is a layout decision this generator makes by refusing to draw one here.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 12,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'SECONDARY:SEC-CL-1:BLANKET'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- blanket_m, raw tier",
+          "interval": "5s",
+          "legendFormat": "blanket_m"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'SLUDGE:DIG-1:PH'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- ph, raw tier",
+          "interval": "5s",
+          "legendFormat": "ph"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "What has stopped reporting",
+      "description": "**The deadband's honest limit, shown rather than hidden.** A row exists when the value *moved*, so a signal whose value never moves produces one row and then nothing. Thirteen of the 57 signals do exactly that in a seeded week, and on a trend panel that looks like an outage and is not one. This table is why a panel that simply stops drawing is not evidence that a signal has failed \u2014 see sql/02-intermediate/02-04_gaps.md.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 24,
+        "w": 10,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT s.id AS signal,\n       s.area,\n       s.unit,\n       max(r.ts) AS last_reading,\n       now() - max(r.ts) AS silence\nFROM signal s\nLEFT JOIN reading r ON r.signal_id = s.id\nGROUP BY s.id, s.area, s.unit\nHAVING max(r.ts) IS NULL\n    OR now() - max(r.ts) > interval '1 hour'\nORDER BY silence DESC NULLS FIRST\nLIMIT 30"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}
