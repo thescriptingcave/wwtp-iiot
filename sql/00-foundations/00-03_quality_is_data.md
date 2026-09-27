@@ -204,9 +204,29 @@ SELECT ts, value
 FROM reading
 WHERE signal_id = 'AERATION:AHU-1:DO'
   AND quality = 0
-  AND ts >= now() - interval '6 hours'
+  AND ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
 ORDER BY ts;
 ```
+
+**Why `(SELECT max(ts) FROM reading)` and not `now()`.** It was `now()` here
+until the pre-push review ran `tools/check_sql.py` against a database seeded six
+hours earlier and this query came back **empty** — with the runner's own warning,
+`an empty result in a seeded database is usually a wrong signal id`, which is
+right and was not the problem.
+
+The problem is that `now()` is the wrong anchor for a retrospective question. A
+seeder writes history *up to the moment it ran*, so a seeded database's newest
+reading is as old as the seed; six hours later "the last six hours" contains
+nothing, and the lesson silently becomes an empty result set that looks like a
+broken signal. The pattern is already taught in
+[01-beginner](../01-beginner/README.md) — `now() - interval '24 hours'` for
+"the last day", and this for "the last day *of the data*".
+
+The distinction is not pedantry. **In a historian, `now()` and "the end of the
+data" are different questions**, and a query that silently conflates them will
+return an empty set rather than an error on any database that is not being
+written to right now. Every retrospective query in a historian has to choose, and
+this is the lesson that says so.
 
 Two things about this query that are worth more than the query:
 

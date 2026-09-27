@@ -338,6 +338,46 @@ DOCS = sorted(
 )
 
 
+def _claims_only(path: Path) -> list[str]:
+    """The lines of a document that *assert* something, not the lines that quote.
+
+    **Double-quoted text and markdown code spans are removed first**, so a
+    document recording a mistake ("it said '57 queries' until a test caught it")
+    is not treated as making the claim.
+
+    This rule was arrived at the hard way, three times in one review, because
+    three separate sweep tests each caught their own correction note:
+
+    * `test_no_document_says_the_ci_workflow_has_five_jobs` failed on
+      `docs/CI.md` saying *"It said 'five jobs' until a test caught it"*;
+    * `test_no_document_quotes_a_stale_query_count` failed on this file's own
+      Phase 6b entry quoting "57 queries";
+    * `test_no_document_quotes_a_stale_test_count` failed on the same entry
+      quoting "31 tests".
+
+    A check that cannot tell a **claim** from a **quotation** cannot be fixed
+    without deleting the explanation of what it is for, and the explanation is
+    worth more than the check's convenience. So the rule is explicit and shared.
+
+    The failure mode is real: a document *could* hide a wrong claim inside
+    quotation marks. That is a price worth paying, and a document that wants to
+    assert a wrong number in scare quotes deserves the failure.
+    """
+    text = path.read_text(encoding="utf-8")
+    # Strip quoted spans from the **whole document** first, not line by line: a
+    # quoted sentence wraps, and a per-line regex cannot match across the
+    # newline. `docs/TESTING.md` quotes the old claim over two lines and the
+    # first version of this rule reported it as a live claim.
+    text = re.sub(r"\"[^\"]*\"", " ", text, flags=re.S)
+    text = re.sub(r"`[^`]*`", " ", text, flags=re.S)
+    out = []
+    for raw in text.splitlines():
+        line = re.sub(r"[*_>#]", "", raw)
+        if line.strip():
+            out.append(line)
+    return out
+
+
 def test_no_document_quotes_a_stale_query_count() -> None:
     """"57 queries" appeared in five files. None of them now does.
 
@@ -349,10 +389,8 @@ def test_no_document_quotes_a_stale_query_count() -> None:
     offenders = [
         f"{p}: {ln.strip()}"
         for p in DOCS
-        for ln in p.read_text(encoding="utf-8").splitlines()
+        for ln in _claims_only(p)
         if re.search(r"\b57 (queries|course)", ln)
-        # The README quotes the wrong number in order to say it was wrong.
-        and "had 64" not in ln
     ]
     assert not offenders, (
         "these documents quote 57 course queries; it is 64:\n  "
@@ -365,7 +403,7 @@ def test_no_document_quotes_a_stale_test_count() -> None:
     offenders = [
         f"{p}: {ln.strip()}"
         for p in DOCS
-        for ln in p.read_text(encoding="utf-8").splitlines()
+        for ln in _claims_only(p)
         if re.search(r"\b31 tests\b", ln)
     ]
     assert not offenders, (
@@ -377,25 +415,16 @@ def test_no_document_quotes_a_stale_test_count() -> None:
 def test_no_document_says_the_ci_workflow_has_five_jobs() -> None:
     """Six, including the lint-debt ratchet added after the prose was written.
 
-    **Quoted text does not count as a claim.** `docs/CI.md` now says *"It said
-    'five jobs' until a test caught it"*, and the first version of this test
-    failed on its own correction — which is the third time in this review that a
-    check has caught the record of the mistake rather than the mistake. So double
-    quotes are stripped before matching: a number inside quotation marks is
-    somebody being cited, not the document asserting something.
-
-    That is a rule with a failure mode — a document could hide a wrong claim in
-    quotes — and the alternative is a test that cannot be fixed without deleting
-    the explanation of what it is for.
+    Uses the shared `_claims_only` rule, which is where the reasoning lives: a
+    number in quotation marks is somebody being cited, not this document
+    asserting something.
     """
-    offenders = []
-    for path in DOCS:
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            # Drop anything in double quotes, and markdown code spans.
-            line = re.sub(r"`[^`]*`", "", raw)
-            line = re.sub(r"\"[^\"]*\"", "", line)
-            if re.search(r"\b(?:five|5) jobs\b", line, re.I):
-                offenders.append(f"{path}: {raw.strip()}")
+    offenders = [
+        f"{path}: {line.strip()}"
+        for path in DOCS
+        for line in _claims_only(path)
+        if re.search(r"\b(?:five|5) jobs\b", line, re.I)
+    ]
     assert not offenders, (
         "the workflow has six jobs; these lines claim five:\n  "
         + "\n  ".join(offenders)
@@ -425,4 +454,77 @@ def test_the_lint_debt_baseline_matches_the_files() -> None:
     assert actual == baseline, (
         f"lint-debt-baseline.txt says {baseline} and the tree has {actual}. "
         f"Lower the baseline in the same commit as any fix."
+    )
+
+
+#: The per-file counts `docs/TESTING.md` states, in the same order as its table.
+#:
+#: Added because the document claimed its own numbers were asserted before they
+#: were. **A claim about a check, made before the check exists, is the same
+#: failure as a stale number** — it reads as a control and is not one.
+DOCUMENTED_SUITE_COUNTS = {
+    "tests/test_contract.py": 63,
+    "tests/test_alarm_detectors.py": 61,
+    "tests/test_modbus.py": 63,
+    "tests/test_process.py": 40,
+    "tests/test_scada_contract.py": 37,
+    "tests/test_scanloop.py": 31,
+    "tests/test_faults.py": 28,
+    "tests/test_control.py": 26,
+    "tests/test_spool.py": 23,
+    "tests/test_alarm_replay.py": 22,
+    "tests/test_web_page.py": 22,
+    "tests/test_readme_claims.py": 31,
+    "tests/test_alarm_engine.py": 17,
+}
+
+
+@pytest.mark.parametrize("path", sorted(DOCUMENTED_SUITE_COUNTS))
+def test_the_documented_test_counts_match_the_suite(path: str) -> None:
+    """`docs/TESTING.md`'s per-file table, against `pytest --co`.
+
+    Collect-only, so it costs nothing and needs no database: a count is a
+    property of the files, not of whether they pass.
+
+    Note the self-reference: this file's own row says 17, and it will be wrong
+    the moment a test is added here. Which is the point — the failure is
+    announced rather than discovered, and a stale row in a table about staleness
+    would be a poor joke.
+    """
+    documented = DOCUMENTED_SUITE_COUNTS[path]
+    actual = _count_tests(path)
+    assert actual == documented, (
+        f"{path} collects {actual} tests; docs/TESTING.md says {documented}."
+        f" Update the table in the same commit as the test."
+    )
+
+
+def test_testing_md_does_not_deny_the_gates_exist() -> None:
+    """`docs/TESTING.md` said the repository had no CI and no `Makefile`.
+
+    Both were true when written and both were false when read. A document that
+    reports a control as *missing* when it is present is not being careful — it
+    is wrong in the direction that makes a project look unrigorous, which is the
+    mirror image of `docs/SECURITY.md` claiming the database was unprotected
+    when it was the most carefully built part of the project.
+
+    Both were the same mistake: prose written once and never revisited, describing
+    a state the code had left behind.
+    """
+    # The shared `_claims_only` rule: the correction paragraph quotes the old
+    # sentence, and a quotation is not a claim.
+    body = "\n".join(_claims_only(Path("docs/TESTING.md")))
+    for line in body.splitlines():
+        if "no ci" in line.lower():
+            pytest.fail(
+                f"docs/TESTING.md still claims there is no CI: {line.strip()!r}"
+            )
+    assert Path(".github/workflows/gates.yml").exists()
+    assert Path("Makefile").exists()
+    # Against the *raw* text, not `body`: the workflow path is written in a code
+    # span, and `_claims_only` strips code spans. Checking the stripped text here
+    # was a second mistake in this one test — the rule that excludes quotations
+    # also excludes the thing being pointed at.
+    assert "gates.yml" in Path("docs/TESTING.md").read_text(encoding="utf-8"), (
+        "TESTING.md should point at the workflow it describes"
     )

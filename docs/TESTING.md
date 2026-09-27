@@ -14,18 +14,64 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit | 378 | no |
-| Integration | 17 | yes, and refuses a seeded one |
-| SQL course | 64 queries | yes |
-| Alarm detectors | 58 | no — pure functions over hand-built windows |
-| Alarm engine | 17 | no — a list for a sink, an injected clock |
-| Alarm rules | 12 fast + 4 slow | the slow ones run the plant model |
-| Contract ↔ schema | 11 | no — asserts against the DDL text |
-| `mypy` | clean across 30 source files | no |
-| `ruff` | clean on every file the migration touched | no |
+| Unit, no database | 592 | no |
+| Integration | 46 | yes, and refuses to truncate a seeded one |
+| Slow (`-m slow`) | 4 | no — they run the plant model, ~18 min |
+| SQL course | 64 queries in 17 lessons | yes |
+| `mypy` | clean across 55 source files | no |
+| `ruff` | clean on the gated packages; 159 tracked findings elsewhere | no |
 
-The repository has **no CI configuration and no `Makefile`**. The gates above are
-run by hand. That is a real gap, listed at the bottom rather than hidden.
+Per file, for the ones worth naming:
+
+| File | Tests | What it is for |
+|---|---|---|
+| `test_contract.py` | 63 | the loader's rules: units, ranges, bands, register links, write paths |
+| `test_alarm_detectors.py` | 61 | pure functions over hand-built windows |
+| `test_modbus.py` | 63 | word order, the register model, the client |
+| `test_process.py` | 40 | the chemistry and the control loops, dimensionally |
+| `test_scada_contract.py` | 37 | the generated flows — and it *executes their SQL* |
+| `test_scanloop.py` | 31 | pacing, metrics, fault propagation |
+| `test_faults.py` | 28 | the eleven faults and what each one does to the plant |
+| `test_control.py` | 26 | DO control, chlorine dose, SRT |
+| `test_spool.py` | 23 | durability across rotation and restart |
+| `test_alarm_replay.py` | 22 | rebuilding alarm state from the event log |
+| `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
+| `test_readme_claims.py` | 31 | that the numbers this document states are the real ones |
+| `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
+
+**Every number in both tables is asserted by
+`tests/test_readme_claims.py`** — each per-file count by `pytest --co`, the
+course count against `tools/check_sql.py`'s own output, and `mypy`'s file count.
+Which is a claim, and the first version of it was written before the assertions
+existed; it is now true and `test_the_documented_test_counts_match_the_suite`
+fails if it stops being so.
+
+This table understated the unit suite by 57 % — it said 378 unit tests against
+592, 17 integration tests against 46, and `mypy` over 30 source files against
+55 — and it said the repository had "no CI configuration and no `Makefile`",
+which was false in both halves. That is five documents carrying the same stale
+figure, and the reason the checks now sweep every markdown file rather than this
+one.
+
+## The gates run in CI, and what each one is
+
+`make check` runs the fast gates locally. `.github/workflows/gates.yml` runs them
+on a machine that is not mine, in six jobs — see [`docs/CI.md`](CI.md) for what
+each covers and, more usefully, what it deliberately does not.
+
+The line that was here before said "The repository has no CI configuration and no
+`Makefile`. The gates above are run by hand." Both halves were false, and the
+sentence is worth keeping as an example: **a document that says a control is
+missing when it is present is not conservative, it is wrong in the direction that
+gets a project trusted.** It was written when it was true, which is the only
+defence, and that is not one.
+
+**`ruff` is the one gate that is not clean**, and the table above used to say
+"clean on every file the migration touched" — which was true and misleading, the
+same trick in miniature. It is now scoped: `make lint` checks the packages that
+are clean, `make lint-all` shows everything, and `make lint-debt` fails if the
+count in `lint-debt-baseline.txt` goes **up**. 159 findings, tracked openly, unable
+to grow.
 
 ---
 
@@ -159,12 +205,23 @@ age out is a test that gets deleted rather than fixed. **This is a real gap**: t
 shown outputs in `sql/` were generated from real runs and are correct as of this
 commit, and nothing will tell you when they stop being.
 
-**The alarm engine exists but six of its fifteen rules fire on a healthy plant,
-and three faults are caught only incidentally.** Both are measured and both are in
-[`ALARMS.md`](ALARMS.md); the false-positive count is a ratchet in
-`test_a_healthy_plant_raises_almost_nothing`, so a regression is a failing test and
-a fix is a deliberate edit. Four rules have never fired, so their thresholds are
-also unverified.
+**The alarm engine has five of its fifteen rules firing on a healthy plant, and
+the remaining five cannot be tuned away.** It was six before the thresholds were
+measured; `docs/ALARM-TUNING.md` has the measurement behind every one, and the
+count is a ratchet in `test_a_healthy_plant_raises_almost_nothing`, so a
+regression is a failing test and a fix is a deliberate edit.
+
+The five are not untuned — they are impossible, and the document says which way
+each one is impossible: `secondary_blanket_stuck` because a deadband makes a
+healthy steady signal and a failed instrument the same observation;
+`lift_pump_flow_lost` because both lift signals are station totals and the
+controller compensates; `influent_flow_surge` because a storm's flow *slope*
+never exceeds a healthy flow's; and the two `cross_validation` rules because the
+simulator publishes one source, so there is nothing to cross-validate.
+
+**Four rules have never fired**, so their thresholds are unverified in the other
+direction — a threshold nobody has seen fire may be unreachable rather than
+tuned.
 
 **The coverage matrix is a simulation, not a plant.** It answers "given a plant
 that behaves this way, does this rule fire?" — which is the question about the
@@ -172,15 +229,33 @@ that behaves this way, does this rule fire?" — which is the question about the
 any of this would help anybody, and `docs/ALARMS.md` says so in the place somebody
 would otherwise skip past it.
 
-**The dashboard is untested.** `ui/web` has no test suite. It is four services
-and a Next.js app, and it is the least verified part of the project.
+**The dashboard's *rendering* is untested.** `ui/web` has 22 tests in
+`test_web_page.py` and they cover the data path: the generated read model is in
+step with the contract, every signal id the pages name exists, all four SQL
+statements run against a live database, the credential cannot reach a browser,
+and there is no second write path.
 
-**No CI.** No workflow, no pre-commit, no `Makefile`. The gates in the table above
-are run by hand, which means they are run when somebody remembers. A three-line
-workflow running pytest, mypy, ruff and `check_sql.py` against a service
-container is the highest-value missing piece, and it is missing on purpose
-because doing it properly is a separate piece of work rather than something to
-half-do at the end.
+What is *not* covered is the JSX. **There is no TypeScript test runner**, so
+"the page renders" is a manual claim — established by `npm run build`,
+`next start`, and a `curl` per route, with the container verified healthy and its
+client bundle grepped for the password. That is a materially worse position than
+the other twelve components are in, and the fix is a test runner rather than
+another assertion about source text. `ui/web/README.md` says so in the place
+somebody would look.
+
+**The two alarm harnesses disagree by a factor of seven, and nobody has explained
+why.** `alarms.tune` and `alarms.scenarios.run_fault` measure the same rules over
+the same window and report healthy DO slopes an order of magnitude apart. Every
+threshold in the project is set from the wider of the two, with 3× the margin —
+so the thresholds' provenance is a guess. This is the first item on the open
+list in [`LEARNING-LOG.md`](LEARNING-LOG.md) and the only one that undermines
+work already done.
+
+**The CI gates are only as good as the machine they run on, and the slow half runs
+nightly rather than per push.** The 18-minute coverage matrix and the four slow
+tests are in the `nightly` job, because the whole `unit` job is 2 m 12 s and a
+gate that takes 20 minutes is a gate people learn to skip. So a change that adds a
+false positive is caught within a day rather than on the push.
 
 ---
 

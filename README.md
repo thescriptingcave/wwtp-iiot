@@ -64,7 +64,7 @@ git grep -l 'fault-scenarios' -- '*.py' | grep -v '^tests/'
 > The original failure and this one are the same failure. **A count in prose is a
 > measurement or it is nothing**, and five of the README's were stale — the
 > `03-advanced/` stage was described as unwritten *after* it was written, and the
-> course was described as 57 queries when it had 64. None was caught by a test
+> course was described as "57 queries" when it had 64. None was caught by a test
 > or by reading the code; they were caught by counting, once, by hand, on the way
 > to a push. `tests/test_readme_claims.py` now asserts the numbers that *can* be
 > asserted, and the point of that file is the sentence above it: it can prove the
