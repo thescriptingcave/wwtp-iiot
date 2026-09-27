@@ -45,6 +45,7 @@ operator actions. None are simulated and none are claimed.
 | Modbus write protection | **By contract only** | See gap 2 |
 | Network segmentation | **Partial** | One flat bridge network |
 | TLS termination | **None** | Local development only |
+| Database credentials scoped per service | **Not enforced** | One password, shared by `db`, `init-db`, `gateway` and `seed`. See below. |
 
 The two gaps in bold at the bottom of the first block are the ones worth
 understanding, and they get their own sections.
@@ -119,23 +120,53 @@ when it was given an IP transport. Nothing about it was designed for a network
 that strangers share. Choosing it is choosing that, and the choice should be
 visible in the architecture rather than buried in a config file.
 
-## The two databases hold different things, and that matters for security
+## One database, so one credential — and that is a regression
 
-| | InfluxDB 3 | Couchbase |
-|---|---|---|
-| Holds | Numeric time series | Documents, metadata, events |
-| Access pattern | Range scans and time buckets | Key lookup and N1QL joins |
-| A compromise yields | A trend line | The plant's description and its weak points |
+**This is the security cost of the migration, and it is real.**
 
-Couchbase is the more valuable target. A bucket of equipment metadata tells an
-attacker which pumps matter, which sensors are trusted, and what the alarm
-thresholds are — which is a map of where to push. The raw trend data is largely
-reconstructible from public documentation about how treatment works; the
-metadata is not.
+The previous stack had two databases and therefore two credentials. The gateway
+authenticated to Couchbase with a **bucket-scoped** application user —
+`bucket_full_access[wwtp]`, verified by running the gateway against a freshly
+initialised cluster and confirming both that its own writes succeeded *and* that
+cluster administration was denied. That is a genuinely good property and it is
+gone.
 
-That asymmetry is a reason to keep credentials separate per service, which this
-project does: the gateway has one `COUCHBASE_PASSWORD` scoped to its bucket,
-and nothing in the stack has the admin credential.
+Now there is one `POSTGRES_PASSWORD`, shared by four services, and it is the
+*owner* of the database. The gateway can `DROP TABLE`. The seeder can
+`TRUNCATE`. The one-shot init can do anything, and it holds the same credential
+the long-running gateway holds.
+
+**What was lost, precisely.** In the old arrangement the application user could
+read and write documents in one bucket and nothing else — no cluster
+administration, no other buckets. In the new arrangement the equivalent grant
+does not exist, because PostgreSQL's default is all-or-nothing at the database
+level.
+
+**What a real deployment would do.** Three roles, and this is the whole list:
+
+```sql
+CREATE ROLE wwtp_owner;      -- owns the schema, used only by init-db
+CREATE ROLE wwtp_writer;     -- INSERT on reading, INSERT on event
+CREATE ROLE wwtp_reader;     -- SELECT only, used by Grafana and the dashboard
+```
+
+`GRANT INSERT ON reading TO wwtp_writer` — not `ALL`. A compromised gateway
+should be able to write history and read history, and nothing else. Notably it
+should not be able to `DELETE`, because a historian that can be made to forget is
+worse than one that stops: an operator who sees a gap investigates it, and an
+operator who sees a plausible-but-truncated trend does not.
+
+**Why it is not implemented here.** It is about fifteen lines of SQL and a
+compose change, and it is deliberately left as a gap rather than added silently,
+for the same reason gap 1 is left open: **a silently-closed gap in a teaching
+project is worse than a documented one.** The threat model above is the useful
+artefact; pretending the demo stack implements it would not be.
+
+The compensating control that does exist: the gateway's spool means a compromise
+of the database does not lose you the *incoming* data, only the *outgoing*. An
+attacker with write access can corrupt history, but the plant keeps producing and
+the spool keeps filling, so the tampering is bounded and detectable rather than
+total.
 
 ## Secrets
 
@@ -144,10 +175,13 @@ and nothing in the stack has the admin credential.
 - No real credential appears anywhere in the repository, including in comments
   and in `docs/`.
 - The compose file fails loudly on a missing required variable
-  (`${INFLUX_TOKEN:?...}`) rather than starting a container that cannot work.
-- Nothing is baked into an image layer. The licence key and the tokens are
-  passed as environment variables at run time, so they live in the container's
-  configuration, not in `docker history`.
+  (`${POSTGRES_PASSWORD:?...}`) rather than starting a container that cannot
+  work. This was found the hard way and is deliberate: the `${VAR:?}` form fails
+  at `docker compose up`, where you are looking, rather than producing four
+  containers that exit 1 with a message nobody scrolls to.
+- Nothing is baked into an image layer. Passwords are passed as environment
+  variables at run time, so they live in the container's configuration, not in
+  `docker history`.
 
 **What is not done, and would be in production:**
 
@@ -159,18 +193,30 @@ and nothing in the stack has the admin credential.
 - No secret scanning in CI. Worth adding, and deliberately not added here rather
   than added badly.
 
-## The licence question, stated plainly
+## The licence question, and why there is not one any more
 
-InfluxDB 3 Enterprise requires a licence key. This project uses the **home-use**
-licence: free, non-commercial, at home, single node. It is appropriate for this
-repository and inappropriate for a plant, a pilot, or a company. That is not a
-technicality — using a home-use key commercially is a licence violation, and it
-is called out here because the alternative is that someone finds out later.
+The previous stack had one, and it is worth recording what it cost.
 
-Couchbase runs Community Edition, which is genuinely free and genuinely
-single-node. It is fine for a demonstration and has no path to a cluster without
-a commercial licence, which matters if this architecture is ever more than a
-teaching project.
+InfluxDB 3 Enterprise requires a licence key. This project used the **home-use**
+licence: free, non-commercial, at home, single node. That is appropriate for this
+repository and inappropriate for a plant, a pilot, or a company — and the
+practical cost was that **a fresh `docker compose up` on a new machine could not
+succeed**, because a human had to obtain a key from InfluxData first. A
+demonstration that will not start is a demonstration nobody runs.
+
+There is also a subtler cost. The stable query planner — without which nine of
+twenty-three course queries failed *intermittently* — is in the Enterprise
+edition. So the licence was not only a key: it was the difference between a
+teaching project that teaches and one that intermittently 500s.
+
+PostgreSQL and TimescaleDB are open source. The database section of this document
+is now about scoping and segmentation rather than about which edition you are
+permitted to run, which is where a security document should be spending its
+attention.
+
+**What did not improve.** Neither TimescaleDB's Community edition nor Postgres has
+a "home use" boundary that you can accidentally cross, but both are now *in* the
+project's supply chain in a way the previous stack was not. See below.
 
 ## Base image pinning
 
@@ -190,23 +236,32 @@ that runs unattended, pin the digest and automate the bump. The one thing not to
 do is pick a tag and then not check whether the base has a known vulnerability
 in it.
 
-### The argument above is wrong in general, and InfluxDB proved it
+### The argument above is wrong in general, and the previous stack proved it
 
-InfluxDB 3 is not on Docker Hub. It is on Quay, and its complete tag list is 17
-entries: `latest`, `latest-arm64`, `latest-amd64`, `arm64`, `intel`, and one
-commit SHA per build. **There is no version tag.** `influxdb:3.2` does not exist,
-which is the tag this project originally wrote before trying to run it.
+The section above argued for tags over digests, and reached the right conclusion
+for the wrong reason. It is kept because being wrong in an instructive way is
+more useful than being right quietly.
+
+The counter-example is real. InfluxDB 3 is not on Docker Hub. It is on Quay, and
+its complete tag list is 17 entries: `latest`, `latest-arm64`, `latest-amd64`,
+`arm64`, `intel`, and one commit SHA per build. **There is no version tag.**
+`influxdb:3.2` does not exist — which is the tag this project originally wrote
+before trying to run it.
 
 So the question is not "tag or digest" in the abstract. It is **what does this
-vendor publish** — and for a vendor that publishes only SHAs, the SHA tag *is*
-the pinnable version, and `latest` is not pinnable at all. `compose.yaml` now
-pins the bare commit SHA, which is the multi-architecture manifest list; the
-`-arm64` and `-amd64` variants are the per-architecture manifests beneath it.
+vendor publish**. For a vendor that publishes only SHAs, the SHA tag *is* the
+pinnable version and `latest` is not pinnable at all. `compose.yaml` pinned the
+bare commit SHA, which is the multi-architecture manifest list.
 
-The general lesson is worth more than the rule I started with: a pinning policy
-should be written per dependency, from what that dependency actually publishes,
-rather than applied uniformly from a principle. A uniform policy is either
-unenforceable (no version tags) or ignored (a digest nobody can update).
+TimescaleDB publishes `2.30.1-pg16` — version *and* Postgres major in the tag —
+so `timescale/timescaledb:2.30.1-pg16` is a genuinely informative pin, and
+nothing about the decision required an argument.
+
+**The general lesson is worth more than the rule I started with:** a pinning
+policy should be written per dependency, from what that dependency actually
+publishes, rather than applied uniformly from a principle. A uniform policy is
+either unenforceable (no version tags exist) or ignored (a digest nobody can
+update).
 
 ## What this project would need before facing a real network
 

@@ -1,22 +1,26 @@
 # Getting started
 
-From nothing to a running plant you can query, in about ten minutes.
+From nothing to a running plant with a week of history and a dashboard you can
+query.
 
-## 0. What you need
+**Time: about five minutes.** Nothing here needs a licence key, an account, or
+anything from outside this repository.
 
-| Tool | Why | Check |
-|---|---|---|
-| Docker + Compose v2 | Everything except the front end | `docker compose version` |
-| `uv` | Python environment and the SQL track's tooling | `uv --version` |
-| Python 3.13 | Only if you want to run the PLC outside Docker | `python3 --version` |
-| An InfluxDB 3 home-use licence key | InfluxDB 3 Enterprise will not start without one | [influxdata.com](https://www.influxdata.com/) |
+---
 
-> **On the licence.** InfluxDB 3 splits into Community (free, no key) and
-> Enterprise (needs a key). The Community edition has no native SQL ingest path,
-> and SQL is the entire point of this project — the `sql/` track would be
-> teaching a dialect you cannot query the real data with. So: Enterprise, with a
-> **home-use** licence, which is free for non-commercial use at home. That is
-> this project. It is not free for a company. See `docs/SECURITY.md`.
+## Requirements
+
+* Docker with Compose v2
+* [`uv`](https://docs.astral.sh/uv/) for Python — or any Python 3.13
+* About 2 GB of disk for a seeded week
+
+```bash
+docker --version      # v2 or later
+docker compose version
+uv --version
+```
+
+---
 
 ## 1. Configure
 
@@ -24,323 +28,256 @@ From nothing to a running plant you can query, in about ten minutes.
 cp .env.example .env
 ```
 
-`.env` is gitignored and must stay that way. Fill in at minimum:
+There is **nothing marked REQUIRED**, and that is the single biggest change from
+the previous version of this stack. It used to begin with
 
-| Variable | Where to get it |
-|---|---|
-| `INFLUX_LICENSE_KEY` | InfluxData account → Licenses |
-| `INFLUX_ADMIN_PASSWORD` | Yours. Created on first boot. |
-| `INFLUX_TOKEN` | Created by you at first boot — see step 4 |
-| `COUCHBASE_ADMIN_PASSWORD` | Yours |
-| `COUCHBASE_PASSWORD` | Yours, for the app user |
-| `GRAFANA_ADMIN_PASSWORD` | Only if you start the `observability` profile |
+```
+INFLUX_LICENSE_KEY=replace-me-with-your-home-use-licence-key
+```
 
-The compose file uses `${VAR:?message}` for each of these, so a missing value
-fails at `docker compose up` with a message naming the variable — rather than
-producing a container that exits with code 1 and a log line nobody scrolls to.
+and a paragraph explaining that InfluxDB 3 Enterprise refuses to start without
+one, that the licence is non-commercial and home-use only, and that the key had to
+be obtained from InfluxData by a human. Every fresh `docker compose up` on a new
+machine started by failing, for a reason that had nothing to do with the project.
 
-> `INFLUX_LICENSE_KEY` is read by the image at build/run time from the
-> environment. It is never baked into a layer, and never appears in `git log`.
-
-## 2. Build
+At minimum, change the two passwords:
 
 ```bash
-docker compose build
+POSTGRES_PASSWORD=…
+GRAFANA_ADMIN_PASSWORD=…      # only if you use the observability profile
 ```
 
-One Python image serves the PLC, the gateway and the rollup worker. That is
-deliberate: they share a dependency surface, and three near-identical images mean
-three times the build time and three times the CVEs to track. The build
-argument in `docker/Dockerfile.python` is what lets one definition serve all
-three.
+---
 
-Watch for this line, which is the whole reason the file is shaped as it is:
-
-```
-CACHED
-```
-
-Dependencies are installed before any application source is copied, so editing
-`softplc/` does not reinstall `pymodbus`. If you ever see a full dependency
-reinstall after a one-line change, that layer order has been broken.
-
-## 3. Start the plant on its own
-
-Start the PLC alone first. It is the only service with no dependencies, and
-getting it working alone means the next failure is unambiguously not the
-database's fault.
+## 2. Start the plant
 
 ```bash
-docker compose up -d softplc
-docker compose logs -f softplc
+docker compose up -d
 ```
 
-You should see, within a few seconds:
-
-```
-Modbus TCP listening on 0.0.0.0:5020 (device 1)
-OPC UA server listening on opc.tcp://0.0.0.0:4840/wwtp/server/
-soft PLC up — 57 signals, 22 equipment
-```
-
-**If it does not, in order of likelihood:**
-
-1. Port already in use. `lsof -i :5020`. Change `MODBUS_PORT` in `.env`.
-2. The endpoint name `softplc` does not resolve. That happens if the service is
-   not on the `plant` network. It is, by default.
-3. The healthcheck is failing but the container is up. `docker inspect
-   --format '{{json .State.Health}}' wwtp-softplc | jq`.
-
-### Prove it speaks both protocols
-
-The PLC exposes 22 equipment items and 57 signals across two protocols. Check
-both, from your host, with the tool that replaces UaExpert:
+Five services come up: `db`, `softplc`, `init-db` (which runs once and exits),
+`gateway` and `web`. Watch it work:
 
 ```bash
-uv run python tools/opcua_browser.py browse
+docker compose logs -f softplc gateway
 ```
 
-```
-Endpoint      opc.tcp://127.0.0.1:4840/wwtp/server/
-  Objects
-    PLANT-A
-      AERATION
-        AHU-1
-          do_mg_l          2.03 mg/m3   [2.0 .. 8.0]
-          air_flow_m3h     7120    m3/h
-```
+You should see the soft PLC announce 57 signals and 22 assets, and the gateway
+reporting readings written per poll.
 
-The units and ranges come from `contracts/tags.yaml`, not from the code. A
-client that can read the engineering unit and the permit limit without a lookup
-table is a client that cannot be misconfigured into reading millimetres as
-metres.
-
-Watch one value move:
+**If `init-db` failed**, the gateway will not have started — it waits for it. That
+ordering is deliberate: `reading.signal_id` is a foreign key onto `signal`, so
+history cannot be written before the contract is in place. Check:
 
 ```bash
-uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
+docker compose logs init-db
 ```
 
-Then break something on purpose:
+---
+
+## 3. Check that data is arriving
 
 ```bash
-docker compose stop softplc
-docker compose up -d softplc
-# in another terminal
-uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
+docker compose exec db psql -U wwtp -d wwtp -c "SELECT count(*) FROM reading;"
 ```
 
-The value resumes from where it stopped, not from zero. The process model is
-continuous, so an interruption is a gap in the record, not a reset. That is the
-behaviour you want, and it is why the plant holds its state rather than
-recomputing it.
-
-## 4. Arm a fault scenario
-
-The scenarios in `contracts/fault-scenarios.yaml` are the interesting part.
-`wet_weather` is the best first one, because it exercises the whole plant:
+Zero is a legitimate answer for the first few seconds and **not** a legitimate
+answer a minute later. If it stays zero:
 
 ```bash
-docker compose up -d softplc \
-  --force-recreate
-# with the scenario:
-docker compose run --rm --entrypoint python softplc \
-  -m softplc.main --scenario wet_weather
+docker compose logs gateway | grep -i 'postgres\|spool'
 ```
 
-Or more simply, list them and pick one:
+`no POSTGRES_DSN; spooling only` means the environment block did not reach the
+container — and the spool is absorbing everything, so nothing has been lost, it
+just is not landing in the database yet.
 
-```bash
-uv run python -m softplc.main --list-scenarios
-```
+---
 
-```
-baseline                   Healthy plant, one week
-wet_weather                Storm over a healthy plant
-aeration_loss              Blower trip and recovery
-night_shift_compliance     Ammonia shock at night
-bad_instrument             DO probe fouling behind a healthy process
-everything_at_once         Compound event
-```
+## 4. Seed a week of history
 
-`bad_instrument` is the one to spend time on. The plant is **healthy** and the
-DO probe is **wrong**. Every flow-based alarm stays quiet, because the flows are
-correct. The only way to catch it is to compare the probe against something the
-probe does not measure — which is the whole argument for the alarm engine in
-Phase 4.
-
-## 5. Start the databases
-
-```bash
-docker compose up -d influxdb couchbase
-docker compose ps          # wait for both to be healthy
-```
-
-> **InfluxDB 3 does not work the way InfluxDB 1.x and 2.x do**, and this cost a
-> long afternoon. There is no `DOCKER_INFLUXDB_INIT_*` setup mode, no port 8086,
-> and no Docker Hub image. The compose service starts it with an explicit
-> `influxdb3 serve --host-id … --object-store … --bearer-token …`, and the
-> database and first token are created with the bundled CLI:
->
-> ```bash
-> docker compose exec influxdb influxdb3 create database wwtp --token "$INFLUX_TOKEN"
-> docker compose exec influxdb influxdb3 create token
-> ```
->
-> `create token` prints both a plaintext token (for clients) and a hash (which
-> must be passed to `serve --bearer-token`). **The server must be restarted with
-> that hash**, or the API answers 404 to everything — including `/api/v3/*`,
-> which does not make it obvious that the server is misconfigured rather than
-> absent. The full sequence, and what each failure looks like, is in
-> `docs/LEARNING-LOG.md`.
->
-> This build is **not stable enough to rely on**: query results were observed to
-> be non-deterministic. See the recommendation at the end of that section before
-> building anything on it.
-
-Couchbase needs two steps, and neither is optional:
-
-```bash
-docker compose up -d couchbase          # the server
-docker compose up couchbase-init         # cluster-init + bucket-create, one shot
-```
-
-The second command exits when it is done. `gateway` and `seed` depend on
-`couchbase-init` having *succeeded*, so a normal `docker compose up -d` handles it
-and you only need this by hand when bringing the stack up piecemeal.
-
-Two things that will waste your time if nobody told you:
-
-- **Nothing initialises a Couchbase container by itself.** On a fresh volume the
-  server starts, `/nodes/self` answers, and every query fails because the cluster
-  and the bucket do not exist yet. The image's entrypoint is the server, so the
-  init has to be a separate container — putting a start-up script in the
-  couchbase service's `command` replaces the entrypoint and stops the server from
-  running at all.
-- **N1QL needs two things that are easy to miss**, and both are now in
-  `compose.yaml`. `cluster-init` with no `--services` enables only `kv`, so the
-  Query service never runs and every query fails; and the **query port 8093** must
-  be published, or the SDK reaches KV fine on 11210 — so every read and write
-  appears to work — and then each query is dispatched to a port the host cannot
-  see. Only reads fail, and the message mentions neither the network nor ports.
-- **The CLI wants different flags per subcommand.** `cluster-init` takes
-  `--cluster-username`/`--cluster-password`; `bucket-*` takes
-  `--username`/`--password`; and `-u`/`-p` are deprecated aliases of the latter,
-  so they are the wrong thing to reach for first. And the address is the
-  management port **8091**; `cluster-init` defaults to `127.0.0.1:8091`, which from
-  a separate container is its own loopback.
-
-Create the InfluxDB token the gateway will use. The `DOCKER_INFLUXDB_INIT_*`
-variables create an org, a bucket and an initial admin token on first boot, so
-the simplest path is to take the token you put in `INFLUX_TOKEN` and confirm it:
-
-```bash
-curl -s -H "Authorization: Token $INFLUX_TOKEN" \
-  http://localhost:8086/api/v3/buckets | jq '.buckets[] | {name, retentionRules}'
-```
-
-## 6. Start the rest
-
-```bash
-docker compose up -d gateway rollup web
-```
-
-`gateway` waits for `softplc`, `influxdb` **and** `couchbase` to be *healthy*,
-not merely started. That distinction is the difference between a stack that comes
-up cleanly and one that comes up eventually, after a burst of connection errors
-in the logs that everyone learns to ignore.
-
-Verify data is landing:
-
-```bash
-docker compose logs gateway | tail -20
-```
-
-```
-scan 8412  published 57 signals (3 changed)  influx ok  spool 0
-```
-
-- **3 changed**, not 57: the deadband is working. A gateway that writes 57 points
-  per scan regardless is generating 300× the data and telling you nothing extra.
-- **spool 0**: nothing queued, so nothing lost.
-
-## 7. Seed history
-
-An empty database teaches nothing. The seeder generates a week of plant
-operation — including a storm — so the dashboards and the SQL track have
-something to bite on:
+This is the step people skip, and skipping it teaches the wrong lesson. An empty
+database returns no rows for everything, and the natural conclusion — "my SQL is
+wrong" — is usually right, but for the wrong reason.
 
 ```bash
 docker compose --profile demo run --rm seed
 ```
 
-## 8. The SQL track
+About 4.3 million readings in about two minutes, ~29 000/second. The
+seeder replays the *actual* process model through the *actual* fault scenarios, at
+high speed, so the history contains a diurnal load pattern, a wet-weather storm
+near the end, a blower trip and recovery, and the deadband gaps that make
+`WHERE ts` interesting.
 
-With data in place, the course in `sql/` becomes the main event. Start here:
-
-```bash
-uv run sql/00-foundations/01_read_one_signal.sql
-```
-
-Each lesson states a question, gives a query, and has its expected output in
-`sql/_answers/`. Work through them in order — the later stages assume the shapes
-the earlier ones introduced.
-
-The single most useful lesson is `sql/02-intermediate/` on **time bucketing**,
-because it is the point where time-series stops being "a table with a timestamp
-column" and starts being its own thing.
-
-## 9. The front end
+Then:
 
 ```bash
-docker compose up -d web                       # http://localhost:3001
-docker compose --profile observability up -d grafana   # http://localhost:3000
+docker compose exec db psql -U wwtp -d wwtp -c \
+  "SELECT count(*), min(ts), max(ts) FROM reading;"
 ```
 
-Grafana is behind a profile because it is genuinely optional: this project ships
-a custom dashboard, and Grafana is there so you can see how much work a
-bespoke one saves.
+```
+   count    |          min          |          max
+------------+------------------------+------------------------
+  4289810   | 2026-09-20 02:56:23.89 | 2026-09-27 02:56:22.89
+```
 
-## 10. Tear down
+**The seeder refuses to run twice into the same window.** It uses `COPY`, which
+cannot upsert, so a duplicate timestamp is an error rather than a silent doubling.
+A doubled history would be worse than an error message. If you want to start
+again:
 
 ```bash
-docker compose down          # stops containers, KEEPS data
-docker compose down -v       # stops containers and DELETES all volumes
+docker compose exec db psql -U wwtp -d wwtp -c "TRUNCATE reading;"
 ```
 
-`down` keeping your data is deliberate. If you have ever lost a week of history
-to a `down -v` while cleaning up an unrelated service, you already know why this
-is called out.
+---
+
+## 5. Look at the plant
+
+Two clients, both speaking to the soft PLC directly.
+
+```bash
+uv run python tools/opcua_browser.py browse
+uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
+```
+
+Or with any OPC UA client — the address space is generated from
+`contracts/tags.yaml`, so it is the contract, not the server, that tells you what
+exists.
+
+Modbus is a binary protocol and has no browser, which is the point. The register
+map is in the contract:
+
+```bash
+uv run python -c "
+from softplc.contract import contract
+for r in contract().registers:
+    mark = ' <- ' + r.signal if r.signal else ''
+    print(f'{r.address}  {r.name:24} {r.word_order or \"\":6}{mark}')
+"
+```
+
+The five registers with no signal are not oversights: a heartbeat, a fault code, a
+state bitfield, and the two halves of a 32-bit counter. Not everything on a Modbus
+map is a measurement, and a system that assumes it is will produce a dashboard
+full of nonsense.
+
+---
+
+## 6. Query it
+
+```bash
+docker compose exec db psql -U wwtp -d wwtp
+```
+
+or, if you would rather not install `psql` locally:
+
+```bash
+uv run python tools/sqlrun.py "SELECT count(*) FROM reading"
+```
+
+Then work through [`sql/`](../sql/README.md). Start with
+[`sql/00-foundations`](../sql/00-foundations/) — it is three lessons and it is the
+foundation for everything else.
+
+```bash
+uv run python tools/check_sql.py sql/    # 57 queries, all against a live server
+```
+
+---
+
+## 7. Optional: Grafana and the custom dashboard
+
+```bash
+docker compose --profile observability up -d
+```
+
+Grafana on <http://localhost:3000>, the Next.js dashboard on
+<http://localhost:3001>. Grafana reads the hypertable through TimescaleDB's
+Postgres datasource.
+
+---
+
+## Running the tests
+
+```bash
+uv sync --all-extras
+.venv/bin/python -m pytest tests/ -q -p no:cacheprovider
+```
+
+`-p no:cacheprovider` is not optional decoration — it keeps pytest from writing
+into `.pytest_cache` in the repo root, which the Modbus socket test objects to.
+
+The unit tests need nothing. The integration tests need a database and **refuse to
+run against one holding real data**, because they truncate `reading`:
+
+```bash
+docker compose exec db psql -U wwtp -d wwtp -c "CREATE DATABASE wwtp_test;"
+POSTGRES_TEST_DB=wwtp_test .venv/bin/python -m pytest tests/integration -q
+```
+
+If you point it at the seeded database instead, it will skip with an explanation
+rather than quietly destroy a week of history. That guard exists because it
+already destroyed one.
+
+---
+
+## Configuration reference
+
+| Variable | Default | What it does |
+|---|---|---|
+| `POSTGRES_USER` | `wwtp` | database user |
+| `POSTGRES_PASSWORD` | — | **set this** |
+| `POSTGRES_DB` | `wwtp` | database name |
+| `POSTGRES_PORT` | `5432` | host port mapping |
+| `RETENTION_RAW_DAYS` | `7` | retention on `reading`; `0` disables |
+| `RETENTION_MINUTE_DAYS` | `90` | retention on `reading_1m`; `0` disables |
+| `SOFTPLC_SCAN_HZ` | `50` | PLC scan rate |
+| `SEED_DAYS` | `7` | days of history the seeder replays |
+| `DEMO_STORM_AT_HOURS` | `2` | hours before the *end* of the run to arm the storm; negative to skip |
+| `GATEWAY_DEADBAND_DEFAULT` | `0.0` | deadband for signals the contract does not specify; `0` disables filtering |
+| `GATEWAY_SPOOL_MAX_MB` | `512` | spool size cap before the oldest data is dropped |
+| `GATEWAY_LOG_LEVEL` | `INFO` | |
+
+---
 
 ## Troubleshooting
 
-**`address already in use` on startup.** Something else holds the port.
-`lsof -i :5020`. The PLC is not special here; a container is not a reservation
-system.
+**`init-db` exits non-zero and the gateway never starts.** The gateway waits for
+it, on purpose. `docker compose logs init-db` will say why — usually the password.
 
-**`connection refused` from the gateway to `influxdb`.** Either the service name
-is wrong or you are on the default bridge network. On a user-defined network
-Docker's DNS resolves service names; on the default bridge it does not, and
-`influxdb` resolves to nothing useful.
+**`no POSTGRES_DSN; spooling only` in the gateway log.** `POSTGRES_HOST` is not in
+the container's environment. Inside a container, `localhost` is that container —
+a mistake that produces a connection-refused loop that looks like a networking
+problem and is really a naming one. The gateway should say `db`, not `localhost`.
 
-**The gateway logs connection errors every few seconds and recovers.** The
-databases were not healthy when it started. Check `docker compose ps` for
-`starting` rather than `healthy`.
+**`pg_isready` says healthy but connections are refused.** The Postgres image
+starts a *temporary* server on a unix socket to run its init scripts. A health
+check that does not pass `-h 127.0.0.1` reports ready during that window. This is
+already handled in `compose.yaml`; if you have copied the health check, copy that
+part too.
 
-**Everything works but the dashboards are empty.** You have not seeded. Step 7.
+**The seeder says `duplicate key value violates unique constraint`.** It has
+already seeded that window. `TRUNCATE reading` first — see step 4.
 
-**A test hangs on a Modbus socket.** Run pytest with `-p no:cacheprovider`.
-pytest's cache provider can hold a session-scoped fixture's socket open between
-the write and the read.
+**A query returns no rows.** Almost always the time window. The seeded data is in
+the past, so `now() - interval '1 day'` is empty. Anchor to the data:
 
-**The PLC exits after one scan from the CLI.** A signal handler fired. In a
-container, check for a healthcheck that restarts it; locally, run without
-`--duration` and watch for `Ctrl-C`.
+```sql
+WHERE ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+```
 
-## Where to go next
+**Thirteen signals have one reading all week.** That is the deadband, not a bug, and
+it is a real limitation rather than a misconfiguration.
+[`sql/02-04`](../sql/02-intermediate/02-04_gaps.md) explains it.
 
-- `docs/DESIGN.md` — why it is built this way
-- `docs/DATA-FLOW.md` — one scan, all the way through
-- `docs/LEARNING-LOG.md` — what surprised the author, which is usually the
-  interesting part
-- `sql/` — the course
+---
+
+## Next
+
+* [`DESIGN.md`](DESIGN.md) — why it is shaped this way, and what was rejected
+* [`LEARNING-LOG.md`](LEARNING-LOG.md) — every wrong assumption, including the
+  occasions when the tests were wrong before the code was
+* [`SECURITY.md`](SECURITY.md) — the threat model and the two known gaps

@@ -1,7 +1,7 @@
 # 00-03 — A broken instrument is data, not a gap
 
 **Previous:** [00-02](00-02_identity_and_values.md) ·
-**Next:** [01-beginner](01-beginner/) · [Back to the course](../README.md)
+**Next:** [01-beginner](../01-beginner/) · [Back to the course](../README.md)
 
 This is the most important idea in the course, and it is one line of schema:
 

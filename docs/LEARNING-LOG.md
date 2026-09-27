@@ -582,6 +582,143 @@ that returned two rows because a document from an earlier run shared an `id`. Bo
 were found by the checker and the integration suite respectively, which is the
 argument for having both.
 
+## Phase 3g — Leaving InfluxDB and Couchbase
+
+**What was built.** The storage layer ported from InfluxDB 3 plus Couchbase to
+one PostgreSQL 16 database with TimescaleDB 2.30. Five services instead of seven,
+no licence key, and a `sql/02-intermediate` stage that was previously unwritable.
+
+**What was expected.** A translation exercise. Replace the encoder, delete the
+document writer, adjust the queries, done in an afternoon.
+
+**What actually happened.** The port was a day. The interesting part was
+afterwards, and it split into four things I did not expect.
+
+### The justification for two databases ran backwards
+
+The README said the project "stores its own history in two databases chosen for
+two different jobs". I believed that and had written it.
+
+Counting the shapes killed it: **80 documents, three key-sets, exactly one shape
+each, zero heterogeneity.** A document store's value is flexibility across
+heterogeneous documents, and there were none to be flexible about. It was a
+relational dataset being stored as documents because a document store was
+available.
+
+Worse, the split had no other reason. The two stores could not be joined, and
+*that* was the only reason there were two. The argument for the document store
+was "these are genuinely different jobs", and the reason they were in different
+jobs was the first decision — the time-series choice. **A design decision was
+being defended with a justification derived from itself.**
+
+**Cost of being wrong:** the entire `sql/02` stage, and one security property that
+had been verified and worked — a bucket-scoped application user that could not
+administer the cluster. See `docs/SECURITY.md`.
+
+### A foreign key found a modelling error immediately
+
+The first `INSERT` into the new `signal` table failed:
+
+```
+ERROR:  insert or update on table "signal" violates foreign key constraint
+DETAIL:  Key (equipment_id)=(FLOW) is not present in table "equipment".
+```
+
+Fifteen signals were naming a holder — `FLOW`, `LIFT`, `SITE`, `WEATHER` — that
+is not a piece of equipment, because `Signal.equipment` was doing two jobs at
+once: *"the asset id"* and *"whatever the middle of the signal id happens to
+be"*.
+
+Nothing had complained for the whole life of the project, because **nothing could
+have**: a tag said `equipment=FLOW` and there was no constraint anywhere capable
+of saying there is no such asset. The two concepts are now `equipment`
+(nullable) and `holder` (derived from the id), and 24 signals correctly have
+`equipment = NULL`.
+
+This is the strongest argument I have for the migration and it took ten minutes
+to find. **A constraint found a modelling error that a year of querying had not.**
+
+### The first design rule was reverse-engineered from a write rejection
+
+*"Tag by identity, field by value"* was in the design document as a principle. It
+is not a principle. It is what you deduce from InfluxDB 3 rejecting a write with
+*"Detected a new tag in write"* — an implementation detail of one database,
+promoted to a law and then defended as though it were about data.
+
+Nobody noticed, because the rule was **correct**. It was correct for a reason that
+had nothing to do with data modelling, and that is the dangerous shape: a rule
+that is right for the wrong reason survives every challenge that tests its
+conclusions rather than its premises.
+
+### Three bugs in my own new code, all the same shape
+
+Every one was found by running the thing rather than by reading it.
+
+**`COPY` and `INSERT` disagreed about a timestamp.**
+`InvalidDatetimeFormat: invalid input syntax for type timestamp with time zone:
+"1.0"`. A parameterised `INSERT` quietly coerces a float epoch; `COPY` parses its
+input as text and refuses. One row type, one representation, both transports
+agreeing — much cheaper to design out than to diagnose.
+
+**A failed write became a denial-of-service tool aimed at the database.** A failed
+flush keeps its rows (correct — the spool is the durable copy), so the buffer is
+still over the row bound, so the next `add` triggers another flush. At one poll
+per second over 57 signals: **57 doomed round trips per second, against a
+database that is already unwell.** Found by a test I had written for a different
+reason. Fixed with a retry deadline.
+
+**The test suite deleted a week of seeded data.** The integration fixture read
+`POSTGRES_TEST_DB` for its skip message and `POSTGRES_DB` for the connection, so
+it connected to and truncated the real database while appearing to use a scratch
+one. It failed as an *authentication error*, which is a wonderfully misleading
+message for a port mistake.
+
+That last one is now a guard, not a promise: the suite refuses to run against a
+database holding more than 50 000 readings. And `tools/check_sql.py` was making
+the same class of mistake in a different place — it executed the course's own
+`INSERT` statements, so a lesson collided with its own primary key on run 2 and
+was reported as a failing query. Every block now runs in a transaction that is
+rolled back.
+
+**The pattern across all three, and the reason I am writing it down:** a program
+that runs SQL on somebody else's behalf needs a rollback, not a promise. Twice I
+wrote the promise.
+
+### And one thing about floating point that I did not expect at all
+
+While writing `sql/01-03` I noticed `avg()` returning a different answer on
+consecutive runs. Chased it down:
+
+```
+ 6391.155254170624
+ 6391.155254170615
+ 6391.155254170614
+ 6391.1552541706105
+```
+
+Floating-point addition is not associative, so `sum()` depends on the order rows
+are added in; Postgres aggregates in parallel by default and does not pin the
+plan. That much is arithmetic and unremarkable.
+
+**The part I did not expect is that the *order of the result* moves.** Two signals
+whose daily means differ by 10⁻¹² produce two different orderings across fifteen
+runs, from identical data, under `ORDER BY mean_value DESC`. A changed number is a
+diff somebody investigates. A changed ranking reads as "the database is broken"
+and is much harder to dismiss.
+
+The fix is to round in the `ORDER BY` as well as the `SELECT`, and to tie-break on
+a stable column. It is now lesson 01-03, and the course checker distinguishes
+value jitter from order instability from real non-determinism, because treating
+those three the same is what made the original tool useless.
+
+**What it cost to find:** about ninety minutes, and only because I was writing an
+example output by hand and the numbers did not match what I had written down.
+Three other drafts of that lesson contained invented numbers as well. The checker
+now runs every query in the course, which is the only reason those were caught
+before anyone read them.
+
+---
+
 ## Open threads
 
 1. **Modbus wire addressing — resolved, and it took three attempts.** The net
@@ -618,51 +755,88 @@ argument for having both.
    read — which could not disagree loudly: a register renamed in the contract
    would keep working on the server and break every client. It is derived from the
    contract now, and a test asserts the two agree.
-6. **Storage runs against live databases — both halves, and both were wrong.**
-   Seventeen integration tests: eight against InfluxDB 3, nine against Couchbase.
-   Between them they found **fifteen bugs** — six in the InfluxDB schema and
-   transport, four in the Couchbase SDK wrapper, and five in `compose.yaml`, three
-   of which would each have stopped the stack from starting at all.
+6. **Storage runs against live databases — resolved, by removing the problem.**
+   Seventeen integration tests against InfluxDB 3 and Couchbase found **fifteen
+   bugs**: six in the InfluxDB schema and transport, four in the Couchbase SDK
+   wrapper, and five in `compose.yaml`, three of which would each have stopped
+   the stack from starting at all.
 
    Two of those five were found only by writing a *read*: the Query service was
    never enabled, and port 8093 was never published, so every write and every
-   `get` succeeded while every query failed. A write-only test suite would have
-   found neither.
+   `get` succeeded while every query failed. **A write-only test suite would have
+   found neither.** That observation outlived the databases it was made about.
 
-   **The remaining problem is InfluxDB 3 Core itself.** Its query results are
-   non-deterministic — the same statement returns rows on one call and an error on
-   the next, with no writes in between — and its planner fails intermittently on
-   `GROUP BY time(...)`. Two integration tests are `xfail` and nine of the
-   course's 23 queries are intermittently failing, all for that reason.
+   The blocker this thread existed for — InfluxDB 3 Core's non-deterministic
+   planner, two `xfail`s and nine intermittently-failing course queries — was not
+   fixed. It was **removed**, along with the licence key that would have fixed it.
+   The replacement is 17 integration tests against Postgres that are all passing,
+   all of which assert a constraint by showing it bite.
 
-   The recommendation is unchanged and is the highest-value thing anyone can do
-   for this project: **an InfluxDB 3 Enterprise home-use licence key.** The schema
-   work transfers unchanged — it is all InfluxDB 3, Core is the same engine — and
-   what Enterprise buys is a query engine that returns the same answer twice.
+   The lesson from the whole exercise, and it is not about either database:
+   **not one of the fifteen would have been found by unit tests, and not one by
+   reading the code.** Three would have been found by `docker compose up`.
+
 7. **Lint debt in the older test files.** `ruff check tests/` reports ~60
    findings, nearly all in the Phase 1–2 test files: import ordering, function-
    local imports, unused unpacked variables. The files are correct and the
    findings are cosmetic. Left visible rather than swept in a commit that
    claims to be about something else.
 
+8. **The deadband makes "no data" ambiguous, and thirteen signals show it.** A row
+   exists when the value moved, so a signal whose value never moves produces one
+   row, forever. Thirteen of the 57 signals produced exactly **one** reading across
+   a seeded week. Nothing in the schema objects: the signal is present, the
+   foreign key is satisfied, the row is valid.
+
+   The industry answer is periodic key-value reporting — force a reading every N
+   minutes regardless of movement. This project does not do it because it would
+   roughly triple the row count, and that is a trade with a cost rather than a
+   free improvement. Whether it is the right trade depends on what the data is
+   for, and I do not currently know the answer. `sql/02-04` states the problem
+   rather than papering over it.
+
+9. **Database credentials are not scoped, and that is a regression.** The old
+   gateway authenticated to Couchbase with a bucket-scoped user, verified to be
+   unable to administer the cluster. The new stack has one `POSTGRES_PASSWORD`
+   shared by four services, and it owns the database: the gateway can `DROP
+   TABLE`. The three roles that would fix it are written out in
+   `docs/SECURITY.md` and deliberately not implemented, for the same reason the
+   OPC UA range gap is not: a silently-closed gap in a teaching project is worse
+   than a documented one.
+
+10. **The SQL course's shown outputs are not tested.** `tools/check_sql.py`
+    verifies that every query runs and returns rows. Whether the output printed in
+    a lesson is still what the query produces is unchecked, because the answers
+    change as the seeder's random seed changes. Every shown output in `sql/` was
+    generated from a real run and is correct as of this commit, and nothing will
+    tell me when that stops being true. A test that fails when a lesson's
+    illustrative numbers age out is a test that gets deleted rather than fixed, so
+    the right fix is pinning the seeder's seed and checking the outputs — which is
+    a piece of work, not a patch.
+
 ## What I would do next, in order
 
-1. **Get an InfluxDB 3 Enterprise home-use licence key** and re-run
-   `tests/integration/`. Everything downstream — the rollup SQL, the seeder, the
-   whole `sql/` track — is blocked on a query engine that returns the same answer
-   twice. This is the single highest-value thing anyone can do for this project,
-   and it takes about five minutes.
-2. **Get N1QL reads working** (thread 6) — probably by enabling the index service
-   on the Couchbase container, or by accepting that the document store is
-   write-only in this environment and saying so in the docs.
-3. **Re-verify the rollup SQL** against a real engine. `storage/influx/rollups_sql.py`
-   was written for InfluxDB 2.x-shaped SQL and has never been executed; the
-   two-field limit already forced a redesign of its output, and its `DELETE` +
-   `INSERT` idempotency claim is currently a comment.
-4. **Write `sql/02-intermediate/`** — CTEs, window functions, and the join
-   across the two databases. The foundations and beginner stages exist and are
-   checked; this is the next stage, and the long-format dialect means the window
-   functions have to do the work `CASE` would have done in another database.
-   `sql/_shared/DIALECT.md` is the constraint list to write it against.
-5. Phase 4's alarm engine, which is the piece the whole fault library was built
-   to feed.
+1. **Scope the database roles** (thread 9). Fifteen lines of SQL and a compose
+   change. It is the only place in this project where I have made something
+   *worse* on purpose and left it, and "on purpose, with the fix written down" is
+   a much better state than not noticing.
+
+2. **Phase 4 — the alarm engine.** The fault library was built to feed it and
+   currently feeds nothing. The `NOT_detectable_by` field in
+   `contracts/fault-scenarios.yaml` is the interesting part and the whole reason
+   that file exists.
+
+3. **Pin the seeder's seed and check the course's shown outputs** (thread 10).
+
+4. **`sql/03-advanced`**: continuous aggregates, retention, `EXPLAIN`, chunk
+   behaviour. The material is now available and the stage is no longer blocked by
+   a dialect.
+
+5. **A CI workflow.** There is no `.github/workflows`, no `Makefile` and no
+   pre-commit. Pytest, mypy, ruff and `check_sql.py` against a service container
+   is three lines of YAML and it is the highest-value missing piece in the
+   repository, because right now the gates are run by hand, which means they are
+   run when I remember.
+
+6. **`ui/web` has no tests at all.** It is the least verified part of the project
+   and it is the part a portfolio reviewer will click first.

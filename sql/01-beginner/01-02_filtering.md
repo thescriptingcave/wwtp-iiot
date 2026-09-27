@@ -136,7 +136,7 @@ WHERE signal_id NOT IN (SELECT equipment_id FROM signal)
 
 `IN` works by comparing against every candidate, and one `NULL` candidate poisons
 the whole thing. `NOT EXISTS` does not have this problem, and
-[02-intermediate](02-intermediate/) is where you will meet both.
+[02-intermediate](../02-intermediate/) is where you will meet both.
 
 ## The habit that makes filtering safe
 
@@ -180,4 +180,4 @@ exactly what they are looking at and what has been discarded.
    use for a shift report and why.
 5. Find a `NOT IN` query on this schema that silently returns nothing because of a
    `NULL`, using only the tables you have. You may need to look at
-   [02-intermediate](02-intermediate/) for the shape, or invent it.
+   [02-intermediate](../02-intermediate/) for the shape, or invent it.

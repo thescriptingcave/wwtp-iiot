@@ -81,10 +81,10 @@ and a real alarm state.
 
 **`source` is in the primary key.** Both protocol faces can record the same signal
 at the same instant. That is deliberate, and
-[00-02](00-02_identity_and_values.md) is about why.
+[00-02]](../00-foundations/00-02_identity_and_values.md) is about why.
 
 **`signal_id` is a foreign key.** This is the single largest correctness gain in
-the schema, and the reason to read [00-02](00-02_identity_and_values.md) before
+the schema, and the reason to read [00-02]](../00-foundations/00-02_identity_and_values.md) before
 writing any query. A reading cannot name a signal that does not exist.
 
 ## `event` — the one genuinely document-shaped thing

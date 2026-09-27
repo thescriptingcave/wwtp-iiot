@@ -23,6 +23,26 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+#: Row count above which this suite considers the database to be holding
+#: somebody's data rather than its own scratch space.
+#:
+#: 50 000 is roughly an hour of seeded plant, well below the week the seeder
+#: produces, and well above the largest fixture this file creates (3 510 rows, in
+#: the deliberately-uneven aggregate test). The gap on both sides is deliberate:
+#: a threshold that was merely "large" would eventually be crossed by the tests
+#: themselves, and one that was merely "small" would refuse a legitimately
+#: nearly-empty database.
+_DESTRUCTIVE_ABOVE_READINGS = 50_000
+
+
+def _db_name() -> str:
+    """The database name, with the same default `storage.postgres.schema.dsn()`
+    uses. Reading it from the environment directly raised a `KeyError` when
+    `POSTGRES_DB` was unset — which is the *default* case, and the error arrived
+    from inside the refusal message, seventeen times.
+    """
+    return os.environ.get("POSTGRES_DB", "wwtp")
+
 
 def _use_test_port() -> None:
     """Point the whole process at the throwaway database, once.
@@ -73,7 +93,7 @@ def db():
     except Exception as exc:
         pytest.skip(
             f"no Postgres at {os.environ.get('POSTGRES_HOST', '127.0.0.1')}:"
-            f"{os.environ['POSTGRES_PORT']}: {exc}\n"
+            f"{os.environ.get('POSTGRES_PORT', '5432')}: {exc}\n"
             "  docker compose up -d db && docker compose run --rm init-db\n"
             "  then set POSTGRES_PASSWORD (it defaults to 'itpass' for a local "
             "scratch instance)"
@@ -91,15 +111,19 @@ def db():
     with connect() as probe, probe.cursor() as cur:
         cur.execute("SELECT count(*) FROM reading")
         existing = cur.fetchone()[0]
-    if existing > 50_000:
-        pytest.fail(
-            f"{os.environ['POSTGRES_DB']} holds {existing} readings. This suite "
-            "truncates `reading`, so it must not be pointed at seeded history.\n"
-            "  Either point POSTGRES_TEST_DB at a scratch database, or:\n"
+    if existing > _DESTRUCTIVE_ABOVE_READINGS:
+        # A skip, not a failure. The distinction matters: a failure says "this
+        # suite is broken", and it would say it seventeen times because the
+        # fixture is session-scoped. A skip says "not here, and here is why",
+        # which is the truth.
+        pytest.skip(
+            f"refusing to run: {_db_name()} holds {existing} "
+            f"readings. This suite truncates `reading`, so it must not be "
+            "pointed at seeded history.\n"
             "    docker exec wwtp-db createdb -U wwtp wwtp_test\n"
             "    POSTGRES_TEST_DB=wwtp_test pytest tests/integration\n"
-            "  To keep the seeded week, take a copy first:"
-            " `docker compose exec db pg_dump -U wwtp wwtp > wwtp.sql`"
+            "  To keep the seeded week, take a copy first:\n"
+            "    docker compose exec db pg_dump -U wwtp wwtp > wwtp.sql"
         )
     return True
 
