@@ -27,11 +27,48 @@ written down.
 
 ## What makes it a teaching project rather than a demo
 
-**The contract is the source of truth.** [`contracts/tags.yaml`](contracts/tags.yaml)
-defines all 57 signals, 22 pieces of equipment, their engineering units, their
-permit limits, their Modbus addresses and word orders, 11 faults and 6 scenarios.
-The PLC, the gateway, the database, the alarm engine, the dashboards and the tests
-all read that one file. Nothing is declared twice, so nothing can drift.
+**Two contract files, and nothing is declared twice.**
+[`contracts/tags.yaml`](contracts/tags.yaml) describes the plant: 57 signals, 22
+pieces of equipment, their engineering units and ranges, their permit limits,
+their Modbus addresses and word orders.
+[`contracts/fault-scenarios.yaml`](contracts/fault-scenarios.yaml) describes the
+eleven faults the plant can be asked to suffer and the six scenarios that drive
+them.
+
+They are separate on purpose, and the reason is the interesting part: **a fault
+is a test instrument, not a description of the plant.** Putting eleven
+hypothetical failures in the same file as 57 real signals would make both harder
+to read, and — worse — would make it easy to read a fault's expected signature as
+if it were a fact about the equipment. A reader who sees `lift_pump_failure` next
+to `PUMP-1` should be uncertain about which of them is real.
+
+The PLC, the gateway, the database seeder, the alarm engine, the Node-RED flows,
+the Grafana dashboards, the web page and the tests all derive from them, so a
+signal renamed in one place is renamed everywhere. To see the current list:
+
+```bash
+git grep -l 'tags\.yaml' -- '*.py' | grep -v '^tests/'   # the plant contract
+git grep -l 'fault-scenarios' -- '*.py' | grep -v '^tests/'
+```
+
+> This paragraph used to say `tags.yaml` held "11 faults and 6 scenarios" and
+> that "all" of the above "read that one file". Both were wrong.
+>
+> The correction then replaced the vague claim with "nineteen source files read
+> the first" — **a new number, in the same sentence, that was wrong the moment it
+> was written.** A grep for the filename gives twelve; a grep for the filename
+> *or* the loader gives twenty-five, and four of those are a comment, a JSON
+> import and a page footer. There is no single integer that is both true and
+> cheap, so there is no integer here: there is a command you can run.
+>
+> The original failure and this one are the same failure. **A count in prose is a
+> measurement or it is nothing**, and five of the README's were stale — the
+> `03-advanced/` stage was described as unwritten *after* it was written, and the
+> course was described as 57 queries when it had 64. None was caught by a test
+> or by reading the code; they were caught by counting, once, by hand, on the way
+> to a push. `tests/test_readme_claims.py` now asserts the numbers that *can* be
+> asserted, and the point of that file is the sentence above it: it can prove the
+> counts are right and it cannot prove the claims are true.
 
 **The database enforces what used to be a convention.** `reading.signal_id` is a
 foreign key onto `signal`, so a reading cannot name a signal that does not exist.
@@ -170,13 +207,13 @@ the questions the plant exists to answer.
 | [00](sql/00-foundations/) | What a hypertable is; identity versus value and why they are different *tables*; why `value` can be NULL |
 | [01](sql/01-beginner/) | `SELECT`, `WHERE`, aggregation, `time_bucket`, `CASE`, `HAVING` |
 | [02](sql/02-intermediate/) | CTEs, joins, window functions, and telling a quiet signal from a dead one |
-| `03-advanced/` | Unwritten — continuous aggregates, retention, `EXPLAIN`, chunk behaviour |
+| [03](sql/03-advanced/) | Continuous aggregates and why a policy cannot refresh a backfill; chunks and chunk exclusion; retention; `EXPLAIN` and reading a plan |
 | `04-expert/` | Unwritten — time-weighted averages, change detection, query planning |
 
 Every ````sql` block is executed against a live server:
 
 ```bash
-uv run python tools/check_sql.py sql/    # 57 queries across 16 files
+uv run python tools/check_sql.py sql/    # 64 queries across 21 files
 ```
 
 The checker runs each query three times inside a transaction it rolls back, fails
@@ -203,7 +240,8 @@ then written down as though it were a principle.
   [`docs/ALARMS.md`](docs/ALARMS.md) · [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md)
 - [x] **Phase 4b** — Node-RED operator flows: a mimic, an alarm annunciator, and
   a range-checked setpoint, all **generated from the contract** and all behind a
-  `scada` profile. 31 tests guard the generator rather than the output.
+  `scada` profile. 37 tests guard the generator rather than the output — and four
+  of them execute every flow's SQL against a live database.
   [`scada/README.md`](scada/README.md)
 - [x] **Phase 5a** — Grafana: a provisioned datasource and **two dashboards
   generated from the contract**, including the only place a discharge-permit
@@ -213,8 +251,10 @@ then written down as though it were a principle.
   pages, server-rendered, **no credential in the browser**, generated read model,
   a read-only Postgres role, and a read-only container. 22 tests from Python; the
   rendering verified by building and running it. [`ui/web/README.md`](ui/web/README.md)
-- [x] **Phase 6** — CI: five jobs, and writing the file found that two of the
-  four local gates had been failing the whole time. [`docs/CI.md`](docs/CI.md)
+- [x] **Phase 6** — CI: six jobs, and writing the file found that **three of the
+  four local gates had been failing, or not doing what their labels said, the
+  whole time** — `make lint`, `make types` and `make test`. I had been reporting
+  the subsets that pass. [`docs/CI.md`](docs/CI.md)
 
 Every phase is exercised against a live database. The open threads are in
 [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md), triaged into **five things to do,

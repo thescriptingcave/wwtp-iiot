@@ -31,8 +31,18 @@ make web-check     # the drift gate: is the read model in step with the contract
 
 ### 1. The read model is generated; the JSX is not
 
-`contracts/tags.yaml` is the source of truth for six consumers, and this is the
-seventh. A hand-written page holds signal ids somebody typed, and **a wrong
+`contracts/tags.yaml` is the source of truth, and `generate_page.py` is its
+twentieth-odd consumer.
+
+The "twentieth-odd" is deliberate and it is a correction. This file previously
+said "six consumers, and this is the seventh" — a count I had made up by listing
+the *interesting* consumers, the flows and the dashboards, and forgetting every
+module that loads the contract to resolve a signal id. Replacing it with a
+precise integer was no better: `git grep -l 'tags\.yaml'` gives twelve files and
+grepping for the loader as well gives twenty-five, four of which are a comment, a
+JSON import and a page footer. **A count in prose is a measurement or it is
+nothing**, and a wrong one is a plausible wrong number, which is the failure this
+whole project keeps meeting. A hand-written page holds signal ids somebody typed, and **a wrong
 signal id is a wrong number, not an error** — thread 22 of the learning log, where
 a Grafana permit dashboard read pH from the TSS signal and rendered a plausible
 number.

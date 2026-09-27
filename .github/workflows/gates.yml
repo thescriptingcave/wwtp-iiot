@@ -272,9 +272,20 @@ jobs:
       # The cheapest gate in the file and the one most likely to catch a real
       # mistake. `contracts/tags.yaml` is the source of truth for the Modbus
       # register map, the OPC UA address space, the SQL schema, the Node-RED tag
-      # list, the flows and the Grafana dashboards — six consumers, and a signal
-      # renamed in one of them is the classic industrial integration bug: it
-      # produces plausible-looking wrong data rather than an error.
+      # list, the flows, the Grafana dashboards and the web page — and for the
+      # thirteen modules that load it to resolve a signal id. A signal renamed in
+      # one consumer and not another is the classic industrial integration bug:
+      # it produces plausible-looking wrong data rather than an error.
+      #
+      # What is asserted, rather than counted: `tests/test_contract.py` checks the
+      # generated artefacts agree with the loader, and
+      # `tests/test_readme_claims.py` checks the numbers the README states. A
+      # consumer that stops deriving from the contract fails here rather than at
+      # run time.
+      #
+      # Note what is *not* here: a count of consumers. Two attempts at one are
+      # recorded in the README — "six", then "nineteen" — and both were wrong
+      # before the commit that wrote them.
       - name: tag list
         run: uv run python -m scada.generate_tags --check
       - name: flows

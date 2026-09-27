@@ -39,12 +39,24 @@ One Python image, parameterised by command. One database. See
 
 ## The four boundaries
 
-### 1. `contracts/tags.yaml` is the only place meaning is declared
+### 1. `contracts/` is the only place meaning is declared — in two files
 
-57 signals, 22 assets, their units, engineering ranges, normal bands, deadbands,
-sample rates, permit limits, Modbus addresses and word orders, 11 faults and 6
-scenarios. The PLC, the gateway, the database seeder, the tests and the course
-all read that one file.
+`tags.yaml` holds 57 signals, 22 assets, their units, engineering ranges, normal
+bands, deadbands, sample rates, permit limits, Modbus addresses and word orders.
+The PLC, both protocol servers, the gateway, the database schema and seeder, the
+alarm engine, the Node-RED tag list and flows, both dashboards and the tests all
+derive from it.
+
+`fault-scenarios.yaml` holds the 11 faults and 6 scenarios, read by the fault
+engine, the coverage audit and the alarm scenarios. It is a **separate file
+because a fault is a test instrument, not a description of the plant** — and a
+reader who finds `lift_pump_failure` beside `PUMP-1` should be unsure which of
+the two is real.
+
+This section used to claim `tags.yaml` held the faults and scenarios and that
+everything read "that one file". Both halves were false, and a review before the
+first push found it. The replacement count was also wrong, which is why there is
+no count here either — see the note in the README.
 
 Nothing is declared twice, so nothing can drift. Three rules are enforced by the
 loader and covered by tests:
