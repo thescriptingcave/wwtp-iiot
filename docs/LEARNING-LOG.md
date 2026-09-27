@@ -279,6 +279,64 @@ mine that were passing for the wrong reason.
   and a ratchet nobody re-reads is a ratchet that is wrong on the day somebody adds
   a file.
 
+## Phase 6c — The rest of the documents
+
+**Expected:** `docs/TESTING.md` to be the last one, since it is the newest.
+
+**What happened:** it was the worst of the three, and then `make check` failed
+for a reason that had nothing to do with documentation.
+
+**Learned:**
+
+- **`docs/TESTING.md` said the repository had "no CI configuration and no
+  `Makefile`."** Both false, and it is the document whose entire job is telling a
+  reader what is and is not verified. It also said "the dashboard is untested"
+  (22 tests), understated the suite by 57 %, and said six alarm rules fire on a
+  healthy plant when it is five.
+
+  The shape of it is identical to `SECURITY.md` claiming the database was
+  unprotected, and the pairing is the finding: **one understated a protection and
+  the other a verification, and both are wrong in the direction that makes a
+  project look worse rather than better.** Neither is cautiousness. Both are prose
+  written once and never revisited.
+- **The dashboard correction had to be careful not to overclaim in the other
+  direction.** "The dashboard is untested" is false, but the replacement is not
+  "the dashboard is tested": 22 tests cover the *data path* and nothing covers the
+  JSX, because there is no TypeScript test runner. Swapping one overclaim for
+  another is the failure mode this whole review is about, so the correction says
+  precisely which half is covered.
+- **A course query had rotted, and `make check` is what found it.** One lesson
+  came back *empty*, with the runner warning that an empty result in a seeded
+  database is usually a wrong signal id. It was not a wrong signal id: it filtered
+  `ts >= now() - interval '6 hours'`, and **a seeder writes history up to the
+  moment it runs**, so six hours later the window contains nothing. It is now
+  anchored to `(SELECT max(ts) FROM reading)`, which `01-beginner/README.md`
+  already taught and this query did not follow.
+
+  The generalisation is the lesson: **in a historian, `now()` and "the end of the
+  data" are different questions**, and a query that conflates them returns an empty
+  set rather than an error on any database that is not being written to at that
+  moment. Two more lessons use `now() - interval '1 hour'` and will rot the same
+  way; both are `check: skip` because they are *meant* to come back empty, and
+  that is recorded rather than changed — because a reader cannot otherwise tell a
+  clock problem from a lesson.
+- **A test can fail on its own fixture, and that is the point.**
+  `test_the_documented_test_counts_match_the_suite` asserts `docs/TESTING.md`'s
+  per-file table *including a row for itself*. Adding fourteen tests to that file
+  made its own row wrong. A stale row in a table about staleness would be a poor
+  joke, so the failure is announced instead.
+- **A check cannot tell a claim from a quotation, and it bit four times.** The
+  sweep tests each caught their own correction note — `docs/CI.md` quoting "five
+  jobs", the learning log quoting "57 queries" and "31 tests", and
+  `docs/TESTING.md` quoting its old sentence over two lines. So there is one
+  shared rule now (`_claims_only`): strip double-quoted text and code spans from
+  the **whole document** before matching, because a per-line regex cannot match a
+  quotation that wraps.
+
+  The cost is real and stated in the helper: a document *could* hide a wrong claim
+  inside quotation marks. That is worth paying, because the alternative is a test
+  that cannot be fixed without deleting the explanation of what it is for.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.
