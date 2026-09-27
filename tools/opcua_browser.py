@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections.abc import Awaitable
 from typing import Any
 
 from asyncua import Client, ua
@@ -211,7 +212,7 @@ async def cmd_diagnose(args: argparse.Namespace) -> int:
         # in the spec, so each is attempted independently — a server is entitled
         # to omit any of them, and a diagnostic tool that dies on the first
         # missing attribute is worse than useless.
-        async def try_read(label: str, coro) -> None:
+        async def try_read(label: str, coro: Awaitable[Any]) -> None:
             try:
                 v = await coro
                 raw = v.Value if isinstance(v, ua.Variant) else v
@@ -340,7 +341,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return asyncio.run(args.func(args))
+        # `int(...)` and not the bare call. `args.func` is a callable on an
+        # argparse Namespace, so its return type is `Any` to a type checker, and
+        # `main` declares `int`. Without the cast mypy is right that the function
+        # claims to return an integer and the expression has no idea.
+        #
+        # Found by writing `.github/workflows/gates.yml`, which runs mypy over
+        # `tools` — and it failed, on a file that has carried the error since
+        # Phase 2 while every mypy invocation in this project was run over a
+        # subset of the packages. **A gate reported as passing because it was run
+        # over the wrong subset is worse than no gate**, and that is the second
+        # time in this project that the real problem was the check rather than
+        # the thing being checked.
+        return int(asyncio.run(args.func(args)))
     except ConnectionRefusedError:
         print(f"Cannot reach {args.endpoint}")
         print("Is the soft PLC running?  docker compose ps")

@@ -25,6 +25,83 @@ set -eu
 
 DATA_DIR="${NR_DATA_DIR:-/data}"
 CRED_FILE="$DATA_DIR/flows_cred.json"
+FLOWS_DIR="${NR_FLOWS_DIR:-/flows}"
+
+# ── assemble the flows ───────────────────────────────────────────────────────
+# Node-RED loads exactly one `flows.json`. The generator writes one file per flow
+# — `01-mimic.json`, `02-annunciator.json`, `03-control.json` — because they are
+# built by three independent functions and importing one of them should not
+# import the other two.
+#
+# They are three *tabs* in one runtime, and concatenating them is what makes the
+# `global` context shared. Node-RED's `global` is per flow *file*, so loading
+# them as three files would mean three copies of the tag list and a `?? []`
+# default quietly emptying two of them.
+#
+# Done in `sh` because this is the only place it happens and it is four lines.
+# It cannot be `cat` — the files are JSON *arrays*, and three arrays concatenated
+# is not a JSON document.
+assemble_flows() {
+    out="$DATA_DIR/flows.json"
+
+    # Concatenated with `node`, not with `sed`.
+    #
+    # The first version of this was a `sed` pipeline that stripped the leading
+    # `[` and the trailing `]` and joined with commas, and it produced
+    # `Extra data: line 212 column 5` — invalid JSON, from a shell script, in a
+    # container, at deploy time. `sed` cannot do this correctly because JSON
+    # arrays have no line structure to key off: with `indent=4` the opening `[` and
+    # the closing `]` are on their own lines *sometimes*, and the interesting case
+    # is when a node is long enough to wrap.
+    #
+    # `node` is already in the image — it is the runtime — so this costs nothing
+    # and the output is valid JSON by construction rather than by careful quoting.
+    # A `sed` pipeline that quietly produces invalid JSON gives a runtime that
+    # starts cleanly and deploys nothing, which is the same shape as every other
+    # "it came up" failure in this project.
+    #
+    # `tags.json` is excluded by name: it is a tag list, not a flow, and
+    # concatenating it would produce a document that is valid JSON and means
+    # nothing.
+    # **Written to a temporary and renamed into place**, because the base image
+    # ships a root-owned `/data/flows.json` and the container runs as `node-red`.
+    #
+    #     Error: EACCES: permission denied, open '/data/flows.json'
+    #
+    # The *directory* `/data` is owned by `node-red`, so a new file can be created
+    # and an existing one can be replaced by renaming over it — but the shipped
+    # file is `-rw-r--r-- root`, so opening it for writing needs permission on
+    # the file and fails. Renaming does not.
+    #
+    # Which is the sixth time in this project that a thing looked like it worked
+    # and the only difference was ownership. A generated file that cannot replace
+    # the generated file is a runtime that starts, serves the base image's
+    # example flow, and reports no error at all.
+    node -e '
+      const fs = require("fs"), path = require("path");
+      const dir = process.argv[1], out = process.argv[2];
+      const files = fs.readdirSync(dir)
+        .filter((f) => f.endsWith(".json") && f !== "tags.json")
+        .sort();
+      if (files.length === 0) {
+        console.error("nodered: no flows found in " + dir);
+        process.exit(1);
+      }
+      const nodes = files.flatMap((f) => JSON.parse(
+        fs.readFileSync(path.join(dir, f), "utf8")));
+      fs.writeFileSync(out + ".new", JSON.stringify(nodes, null, 4) + "\n");
+      console.log("nodered: assembled " + out + " from " + files.length
+        + " file(s), " + nodes.length + " nodes");
+    ' "$FLOWS_DIR" "$out"
+
+    # The rename is the part that needs the permissions, and it is also what makes
+    # the replace atomic: a Node-RED restart cannot see a half-written document.
+    mv -f "$out.new" "$out"
+}
+
+# Before the credential: a runtime with no flows starts cleanly and shows an
+# empty editor, which looks like a working Node-RED with nothing deployed.
+assemble_flows
 
 if [ ! -f "$CRED_FILE" ]; then
     # `POSTGRES_PASSWORD` is required. Without it there is nothing to write, and

@@ -99,7 +99,9 @@ class CycleMetrics:
         self.mean_us += (micros - self.mean_us) / n
 
     def as_dict(self) -> dict[str, Any]:
-        budget_us = self.worst_case_us
+        # No `budget_us` local. It was assigned and never used — dead since the
+        # scan-pacing fix, and the only F841 in this file — and it was invisible
+        # because the ruff gate had been running over a subset of the packages.
         return {
             "cycles": self.cycles,
             "overruns": self.overruns,
@@ -277,7 +279,10 @@ class ScanLoop:
                 # scan and raises a controller fault. Swallowing it here would
                 # hide a logic bug behind a plausible-looking trace. Re-raise
                 # after recording, so the loop's own error handling decides.
-                self.metrics.record(f"block:{block.name}", (time.perf_counter() - t0) * 1e6)
+                self.metrics.record(
+                    f"block:{block.name}",
+                    (time.perf_counter() - t0) * 1e6,
+                )
                 self.faulted = True
                 raise
             self.metrics.record(f"block:{block.name}", (time.perf_counter() - t0) * 1e6)

@@ -19,6 +19,7 @@ forgotten regeneration — and a broken generator produces confidently wrong flo
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import pytest
 from scada import build_flows, generate_tags
+from scada.build_flows import build_all_names
 from softplc.contract import Contract
 from softplc.contract import contract as get_contract
 
@@ -707,6 +709,25 @@ def test_the_flows_name_a_credential_the_entrypoint_writes(flows: dict) -> None:
                 )
 
 
+def _minimal_flows(dirpath) -> None:
+    """A directory with one valid flow, for the tests that only care about
+    credentials.
+
+    The entrypoint assembles flows *before* it touches the credential, because a
+    runtime with no flows and a runtime with no credential are both broken and the
+    flow one is louder. Which means every credential test now has to provide a
+    flows directory, and the three that did not were failing on
+    `no flows found` before they ever reached the thing they were about.
+    """
+    flows = Path(dirpath)
+    flows.mkdir(parents=True, exist_ok=True)
+    (flows / "01-test.json").write_text(
+        '[{"id": "a1", "type": "tab", "name": "t", "label": "t", "wires": []}]',
+        encoding="utf-8",
+    )
+    return flows
+
+
 def env_cmd(name: str) -> str:
     """`sh`, resolved rather than hard-coded.
 
@@ -730,8 +751,10 @@ def test_the_entrypoint_writes_valid_json() -> None:
     script = Path("scada/nodered/entrypoint.sh")
     for password in ("simple", 'has "quotes"', "back\\slash", "both \" and '", "!"):
         with tempfile.TemporaryDirectory() as tmp:
+            _minimal_flows(Path(tmp) / "flows")
             env = {
                 "NR_DATA_DIR": tmp,
+                "NR_FLOWS_DIR": str(Path(tmp) / "flows"),
                 "POSTGRES_PASSWORD": password,
                 "POSTGRES_HOST": "db",
                 "POSTGRES_PORT": "5432",
@@ -770,10 +793,12 @@ def test_the_entrypoint_never_overwrites_an_existing_credential() -> None:
     """
     script = Path("scada/nodered/entrypoint.sh")
     with tempfile.TemporaryDirectory() as tmp:
+        _minimal_flows(Path(tmp) / "flows")
         existing = Path(tmp) / "flows_cred.json"
         existing.write_text('{"hand-written": {}}', encoding="utf-8")
         env = {
-            "NR_DATA_DIR": tmp, "POSTGRES_PASSWORD": "ignored",
+            "NR_DATA_DIR": tmp, "NR_FLOWS_DIR": str(Path(tmp) / "flows"),
+            "POSTGRES_PASSWORD": "ignored",
             "POSTGRES_HOST": "db", "POSTGRES_USER": "u", "POSTGRES_DB": "d",
         }
         result = subprocess.run(
@@ -792,9 +817,11 @@ def test_the_entrypoint_fails_loudly_with_no_password() -> None:
     """
     script = Path("scada/nodered/entrypoint.sh")
     with tempfile.TemporaryDirectory() as tmp:
+        _minimal_flows(Path(tmp) / "flows")
         result = subprocess.run(
             [env_cmd("sh"), str(script), "true"],
-            env={"NR_DATA_DIR": tmp}, capture_output=True, text=True, check=False,
+            env={"NR_DATA_DIR": tmp, "NR_FLOWS_DIR": str(Path(tmp) / "flows")},
+            capture_output=True, text=True, check=False,
         )
         assert result.returncode != 0
         assert "POSTGRES_PASSWORD" in result.stderr, result.stderr
@@ -879,6 +906,19 @@ def test_every_flow_query_runs_against_a_live_database(flows: dict) -> None:
     """
     from storage.postgres.schema import connect
 
+    # Skip cleanly when there is no database, rather than fail.
+    #
+    # It carries `@pytest.mark.integration` and the `unit` make target
+    # deselects that marker — but a test that needs a database and reports a
+    # connection error as a *failure* is a test that fails on every machine
+    # without one, and a test suite with a permanently red test is a test suite
+    # people stop reading. Skipping is the honest answer: nothing was verified.
+    try:
+        with connect() as probe:
+            probe.rollback()
+    except Exception as exc:
+        pytest.skip(f"no database: {exc}")
+
     ok = total = 0
     for name, nodes in flows.items():
         for node in nodes:
@@ -903,9 +943,178 @@ def test_every_flow_query_runs_against_a_live_database(flows: dict) -> None:
                         cur.fetchall()
                     conn.rollback()
                 ok += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 pytest.fail(
                     f"{name} / {node['name']!r} does not run: {exc}\n\n{sql}"
                 )
     assert total > 0, "no postgresql nodes found; the flow files are not parsing"
     assert ok == total
+
+
+# ── assembling three files into one runtime ──────────────────────────────────
+
+
+def test_the_three_flows_assemble_into_one_json_document() -> None:
+    """Three generated files, one `flows.json`, and it has to be valid JSON.
+
+    Node-RED loads exactly one flow file. The generator writes three — one per
+    flow, because they are built by three independent functions and importing
+    one should not import the others — and the runtime needs them as three *tabs*
+    in a single file, which is also what makes their `global` context shared.
+
+    It cannot be `cat`. The three files are JSON *arrays*, and three arrays
+    concatenated is not a JSON document. `scada/nodered/entrypoint.sh` does it
+    with `sed` and the result is asserted here, because a `sed` pipeline that
+    quietly produces invalid JSON gives a runtime that starts cleanly and deploys
+    nothing — the same shape as the "it came up" failure everywhere else in this
+    project.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    assembled: dict[str, list] = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        flows = Path(tmp) / "flows"
+        data = Path(tmp) / "data"
+        flows.mkdir()
+        data.mkdir()
+        for name in build_all_names():
+            (flows / name).write_text(
+                Path(build_flows.FLOWS_DIR / name).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        # `tags.json` must be *excluded*: it is a tag list, not a flow, and
+        # concatenating it would produce a document that is valid JSON and means
+        # nothing.
+        (flows / "tags.json").write_text('{"tags": []}', encoding="utf-8")
+
+        env = {"NR_DATA_DIR": str(data), "NR_FLOWS_DIR": str(flows),
+               "POSTGRES_PASSWORD": "x", "POSTGRES_USER": "u",
+               "POSTGRES_HOST": "h", "POSTGRES_DB": "d"}
+        result = subprocess.run(
+            [env_cmd("sh"), "scada/nodered/entrypoint.sh", "true"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "assembled" in result.stdout, result.stdout
+        assembled = json.loads((data / "flows.json").read_text(encoding="utf-8"))
+
+    # Every node from every flow, and the tabs among them.
+    expected = sum(
+        len(json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(build_flows.FLOWS_DIR.glob("0*.json"))
+    )
+    assert len(assembled) == expected
+    assert sum(1 for n in assembled if n["type"] == "tab") == 3
+    assert not any(
+        n.get("type") == "tags" for n in assembled
+    ), "tags.json was concatenated into the flow document"
+
+
+def test_the_assembly_fails_loudly_with_no_flows() -> None:
+    """A runtime with no flows starts cleanly and shows an empty editor.
+
+    Which looks exactly like a working Node-RED with nothing deployed, and is the
+    fifth variant of "it came up" in this project. The entrypoint has to say so.
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {"NR_DATA_DIR": f"{tmp}/data", "NR_FLOWS_DIR": f"{tmp}/flows",
+               "POSTGRES_PASSWORD": "x", "POSTGRES_USER": "u",
+               "POSTGRES_HOST": "h", "POSTGRES_DB": "d"}
+        Path(f"{tmp}/flows").mkdir()
+        Path(f"{tmp}/data").mkdir()
+        result = subprocess.run(
+            [env_cmd("sh"), "scada/nodered/entrypoint.sh", "true"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0
+        assert "no flows found" in result.stderr, result.stderr
+
+
+def test_the_scada_service_itself_is_valid() -> None:
+    """`docker compose config`, and the two things that broke this service before.
+
+    First arrangement: a named volume for the credentials nested inside a
+    read-only bind mount, which Docker refuses with
+
+        mkdirat .../data/credentials: read-only file system
+
+    and the container never starts. Found by running it, from the CI file.
+    """
+    import subprocess
+
+    if shutil.which("docker") is None:
+        pytest.skip("no docker")
+
+    env = {**os.environ, "POSTGRES_PASSWORD": os.environ.get(
+        "POSTGRES_PASSWORD", "unused-in-this-check")}
+    result = subprocess.run(
+        ["docker", "compose", "--profile", "scada", "config", "-q"],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    compose = Path("compose.yaml").read_text(encoding="utf-8")
+    assert "./scada/flows:/flows:ro" in compose, (
+        "the flows are mounted read-only at /flows; a volume at /data would "
+        "shadow the image's settings.js and every setting in it would be ignored"
+    )
+    assert "scada-credentials" not in compose.replace(
+        "scada-credentials/_data", ""
+    ), (
+        "a credentials volume nested inside the read-only /data mount is the "
+        "arrangement that does not start"
+    )
+
+
+def test_the_assembly_replaces_a_root_owned_flows_file() -> None:
+    """The base image ships `/data/flows.json` owned by root, and the container
+    runs as `node-red`.
+
+    So `writeFileSync('/data/flows.json', …)` fails with
+
+        Error: EACCES: permission denied, open '/data/flows.json'
+
+    while writing a temporary and renaming over it succeeds — the *directory* is
+    owned by `node-red`, so creating and replacing are allowed even though
+    opening the shipped file for writing is not.
+
+    The symptom without the rename is the worst one available: the runtime starts
+    healthy, serves the base image's own example flow, and logs nothing. A
+    generated file that cannot replace the generated file is invisible.
+    """
+    import subprocess
+    import tempfile
+
+    script = Path("scada/nodered/entrypoint.sh")
+    with tempfile.TemporaryDirectory() as tmp:
+        data = Path(tmp) / "data"
+        flows = Path(tmp) / "flows"
+        data.mkdir()
+        _minimal_flows(flows)
+
+        # A pre-existing file the current user cannot write, which is exactly the
+        # base image's arrangement.
+        existing = data / "flows.json"
+        existing.write_text('[{"id": "x", "type": "comment"}]', encoding="utf-8")
+        existing.chmod(0o444)
+
+        env = {
+            "NR_DATA_DIR": str(data), "NR_FLOWS_DIR": str(flows),
+            "POSTGRES_PASSWORD": "x", "POSTGRES_USER": "u",
+            "POSTGRES_HOST": "h", "POSTGRES_DB": "d",
+        }
+        result = subprocess.run(
+            [env_cmd("sh"), str(script), "true"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        nodes = json.loads(existing.read_text(encoding="utf-8"))
+        assert nodes and nodes[0].get("name") != "x", (
+            "the shipped example flow is still in place; the replace did not "
+            "happen and the runtime would serve the wrong flows"
+        )

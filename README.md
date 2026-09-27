@@ -114,6 +114,7 @@ Full walkthrough, including troubleshooting, in
 | [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
 | [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) | Every threshold, the measurement it came from, and the four that still do not work |
 | [`scada/README.md`](scada/README.md) | The Node-RED operator flows, and how they are kept in step with the contract |
+| [`docs/CI.md`](docs/CI.md) | The five CI jobs, and the three broken things writing the file found |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
 
@@ -138,6 +139,24 @@ rules that still do not work — including one fault with no signature anywhere 
 the signals the contract collects.
 
 A rule set with no audit is a set of thresholds somebody liked the look of.
+
+## Acknowledgement, and why it took a phase
+
+`AlarmEngine.acknowledge()` existed for two phases, was tested, and was called by
+nothing — and the annunciator flow I shipped carried a comment saying it closed
+that gap. It could not acknowledge anything, because an acknowledgement is a
+*write* to `event` and no flow performed one.
+
+Fixing it meant rebuilding alarm state from the event log
+([`alarms/replay.py`](alarms/replay.py)), which forces a question the state
+machine had been dodging: **is an acknowledgement per rule or per occurrence?**
+Per occurrence means an operator acknowledges a flapping alarm on every flap. Per
+rule forever means an alarm that is genuinely new an hour later is silenced by an
+acknowledgement for something that is not the same. So: **per rule, cleared when
+the condition clears** — which is what an operator means by "I've seen this".
+
+The restart path is still not right, and `scada/README.md` says so: a restarted
+engine re-raises an already-acknowledged critical. The operator path works.
 
 ## The SQL track
 

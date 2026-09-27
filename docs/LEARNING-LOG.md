@@ -8,6 +8,100 @@ Format: what was built, what was expected, what actually happened, what it cost.
 
 ---
 
+## Phase 5b — Acknowledgement, CI, triage
+
+**Expected:** wire up the alarm acknowledgement, add CI, and write a web page.
+Roughly a day each.
+
+**What happened:** the acknowledgement took most of it, and the reason is that
+it forced a design question the codebase had been avoiding for two phases. The
+other two items were shorter than expected and found more.
+
+**Learned:**
+
+- **An acknowledgement that does not survive a restart is not an
+  acknowledgement.** `AlarmEngine.acknowledge()` was written, tested, and called
+  by nothing; and the Node-RED flow shipped a comment saying it "closed the gap".
+  It could not acknowledge anything, because an acknowledgement is a *write* to
+  `event` and no flow performed one. Rebuilding state from the event log forces
+  the question the state machine had dodged: **is an acknowledgement per rule or
+  per occurrence?** Per occurrence (`event.id`) means an operator acknowledges a
+  flapping alarm on every flap — a rule cycling every thirty seconds produces
+  2 880 acknowledgements a day and a panel nobody works through. Per rule
+  *forever* means an alarm that is genuinely new an hour later is silenced by an
+  acknowledgement for something that is not the same. So: per rule, cleared when
+  the condition clears. And the test that pins it
+  (`test_a_recurrence_is_a_new_alarm_and_does_not_inherit_the_acknowledgement`)
+  exists because inheriting would be a **confident false negative**, which is the
+  worst thing an alarm system can produce — the alarm system suppressing a
+  real fault using the very mechanism built to suppress nuisance.
+- **The obvious definition of "active" is wrong for exactly the alarms this
+  project is about.** `cleared_at is None` looks right and is not: a `critical`
+  **latches**, so the engine never writes an `alarm_cleared` for one at all, and
+  an acknowledged critical has `cleared_at is None` forever. The test caught it
+  — two active alarms where there should have been one — and the fix is three
+  separate concepts: `resolved` (off the panel, for either of two independent
+  reasons), `latched` (the condition never cleared), and `on_panel`.
+- **`make_interval(hours => %s)` is a type error and the error message does not
+  say so.** It takes an `int`; psycopg sends a `float`; the reply is `function
+  make_interval(hours => double precision) does not exist` with a hint about
+  matching argument types, which reads as a schema problem. `(interval '1 hour' *
+  %s)` is the same intent and also accepts the fractional lookback of 0.5 h that
+  you want when debugging.
+- **The flow SQL is in a dialect nothing else speaks.** `node-red-contrib-postgresql`
+  uses `$name` placeholders. `psql` and libpq understand `$1`, not `$name`.
+  **psycopg3 does not understand `$1` at all** — it uses pyformat, and given
+  `$1` with a parameter it says `the query has 0 placeholders but 1 parameters
+  was passed`, which is a message about the *driver*, not the query, and sends
+  you looking in the wrong place. So there was exactly one implementation in the
+  world that could run the four flow queries, it was a node inside a container,
+  and it reported failures as a red box. Translating to `%s` in a test made it
+  the second, and **running it immediately found a real bug**: `$rule` inside
+  `jsonb_build_object` has no inferable type
+  (`could not determine data type of parameter $3`) and needs `::text`. The same
+  parameter in a `VALUES` list infers fine from the column types; the ones
+  inside a function call have nothing to infer from. This is the
+  `test_grafana_dashboards.py` lesson arriving a commit later than it should
+  have — the two `test_scada_*.py` files were written *before* it and had no SQL
+  execution in them at all.
+- **A test that cries wolf about `LATERAL` is a test people learn to ignore.**
+  The "flows only touch reviewed tables" test reported
+  `query touches 'LATERAL', which is not in the reviewed set`, because a regex
+  cannot tell a keyword from a table. Fixed by teaching it the difference
+  rather than by adding `LATERAL` to the allow-list, which would have hidden the
+  real check.
+- **Writing the CI file found that `make lint` and `make types` had been failing
+  for four phases**, because every invocation in this project was over a subset
+  of the packages the Makefile names. Two mypy errors in `tools/opcua_browser.py`
+  and 159 ruff findings, the latter mostly `E501` and `PLC0415` in
+  `softplc/process/units.py`. The lesson is not "run more checks" — it is that
+  **a gate reported as passing because it was run over the wrong subset is worse
+  than no gate**, and this project produced that mistake twice in one day. The
+  ruff gate is now scoped to what is clean and the debt has a ratchet
+  (`lint-debt-baseline.txt`) that fails only if the count goes *up*.
+- **`docker compose run scada` found the fourth broken compose file in this
+  project.** The credential volume was nested inside a read-only bind mount, so
+  the service could not start at all
+  (`mkdirat .../data/credentials: read-only file system`). The second attempt —
+  a named volume over `/data` — works and silently *shadows the image's
+  `settings.js`*, so every setting in it is ignored and nothing says so. Both
+  are recorded in `compose.yaml` because the reasons are the useful part.
+- **Three JSON arrays cannot be concatenated with `sed`.** The first attempt at
+  assembling the three generated flows into one `flows.json` stripped the
+  leading `[` and trailing `]` and produced `Extra data: line 212 column 5` —
+  invalid JSON, from a shell script, in a container, at deploy time. JSON arrays
+  have no line structure to key off. `node -e` is in the image already because
+  it is the runtime, and the output is valid by construction.
+- **The base image ships a root-owned `/data/flows.json` and the container runs
+  as `node-red`.** So `writeFileSync` fails with `EACCES` while writing a
+  temporary and renaming over it succeeds — the *directory* is owned by
+  `node-red`, so creating and replacing are allowed even though opening the
+  shipped file for writing is not. Without the rename the runtime starts
+  **healthy**, serves the base image's example flow, and logs nothing. A
+  generated file that cannot replace the generated file is invisible. That is
+  the sixth time in this project that the only difference between working and
+  apparently working was ownership.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.
@@ -1229,9 +1323,10 @@ the same name.*
 3. **Make the settle window depend on the rules under test** (thread 19), which
    takes the slow suite from 18 minutes back under two.
 4. **Pin the seeder's seed and check the course's shown outputs** (thread 12).
-5. **A CI workflow.** `make check` runs the four gates in the order that fails
-   fastest, so the YAML is thin — but it is missing, which means the gates run when
-   I remember.
+5. ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, five jobs.
+   And writing it found that `make lint` and `make types` **had both been failing
+   the whole time**: I had been reporting the subsets that pass. See
+   `docs/CI.md`.
 6. **`ui/web` has no tests at all.** The least verified part of the project and
    the part a portfolio reviewer will click first. Phase 5.
 7. **Phase 5** — Grafana dashboards and the custom Next.js page. `ui/web` has a

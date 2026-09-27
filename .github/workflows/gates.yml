@@ -1,0 +1,405 @@
+# The gates, on every push.
+#
+# Exists because until now every claim in every commit message in this repository
+# was something I verified by hand, on one machine, at one moment. That is not
+# nothing, and it is not the same thing either: a gate nobody runs is a gate
+# that is *sometimes* true, and a test that is sometimes true is worse than no
+# test because it is trusted.
+#
+# `make check` already exists and already runs these four gates in the order that
+# fails fastest. This file is the thin YAML that runs it on a machine that is not
+# mine, on a commit that is not mine, and says so in a place a badge can point at.
+#
+# Three decisions worth stating, because each of them is a trade rather than a
+# default:
+#
+#   1. **The database-dependent tests run here, against a real TimescaleDB in a
+#      service container.** The obvious cheaper choice is to skip them in CI,
+#      which is what most projects do and what this one did implicitly by not
+#      having CI at all. Those are the tests that found the missing refresh policy
+#      and the `SET LOCAL ROLE` no-op, and skipping them would mean the least
+#      useful half of the suite was the half nobody ran.
+#
+#   2. **`alarms serve` is not started, and the coverage matrix is not computed.**
+#      The first takes 18 minutes because every scenario settles for 9h15m
+#      before measurement begins. The second is the same. Both are available
+#      through `make coverage`, and both are the right thing to run on a schedule
+#      rather than on every push — see the `nightly` job at the bottom.
+#
+#   3. **Node-RED and Grafana images are built but the flows are not executed.**
+#      The flows' *SQL* is executed, against the same database, by
+#      `tests/test_scada_contract.py`. Their JavaScript is not, because running
+#      Node-RED in CI to test three generated flows costs more than it is worth at
+#      this size — and the honest thing is to say which half is covered rather
+#      than let "flows tested" mean the weaker half.
+name: gates
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+  # Only the `nightly` job runs on this; the other four are gated on
+  # `github.event_name` and skip themselves on a schedule run, so a nightly
+  # execution costs one job rather than five.
+  #
+  # 04:17 rather than 04:00. Every scheduled job in the world is on the hour, and
+  # the ones on the hour queue behind each other's runners. Seventeen minutes past
+  # is the kind of number that looks like a mistake and is not.
+  schedule:
+    - cron: "17 4 * * *"
+
+# Cancel superseded runs on the same branch. A push that lands while a run is in
+# progress has already made the previous one irrelevant, and a queue of stale runs
+# is how people stop looking at badges.
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # One source of truth for the Python version, quoted from pyproject. A second
+  # place to change the version is a second place to forget.
+  PYTHON: "3.13"
+  # `uv` installs itself at whatever version is pinned here, so the cache key and
+  # the tool cannot drift apart.
+  UV_VERSION: "0.5.11"
+  # The CI database is a *different* database from the one a developer's stack
+  # runs, and the integration suite refuses to truncate a database with more than
+  # 50 000 rows. Pointing this at a seeded database destroys a week of history,
+  # which has happened in this project twice.
+  POSTGRES_TEST_DB: wwtp_test
+
+jobs:
+  # ── the fast gate: no database, no containers ──────────────────────────────
+  unit:
+    name: unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: install the project
+        # `--all-extras` and **not** `--no-sync`. The storage extras are what
+        # `storage.postgres` and `tests/integration` import, and an environment
+        # without them produces an `ImportError` that reads like a code problem.
+        # The project has been bitten by this locally: `uv run` without
+        # `--no-sync` strips the extras, and every database test fails as though
+        # the code were broken.
+        run: uv sync --all-extras --frozen
+
+      - name: ruff, the gated packages
+        # **Scoped, and the scoping is stated rather than hidden.**
+        #
+        # `ruff check .` reports 162 findings today. The overwhelming majority is
+        # `E501` (long lines) and `PLC0415` (function-local imports) in
+        # `softplc/process/units.py`, `softplc/servers/opcua.py` and the older
+        # test files — a debt this project has tracked openly as an open thread
+        # since Phase 1 rather than sweeping into a commit claiming to be about
+        # something else.
+        #
+        # So the hard gate is the set of packages that are actually clean, and
+        # the debt is measured separately in the `lint debt` job below. Writing
+        # this file is what surfaced the problem: `make lint` runs
+        # `ruff check .` and **has been failing the whole time**, while every
+        # ruff invocation in this project for four phases was run over a subset
+        # of the packages. Same story as mypy.
+        #
+        # A gate that is reported as passing because it was run over the wrong
+        # subset is worse than no gate, and this project has now produced that
+        # mistake twice in a day.
+        run: |
+          uv run ruff check alarms scada ui storage gateway softplc/scanloop.py
+
+      - name: mypy
+        # Every Python file in the project, not a subset. This one *is* currently
+        # clean, having just been made so: `tools/opcua_browser.py` carried two
+        # errors since Phase 2 and the gate was being run over a list that
+        # excluded it.
+        run: uv run mypy softplc gateway storage alarms scada tools ui
+
+      - name: pytest, no database
+        # `-p no:cacheprovider` is not optional. It is what makes the Modbus
+        # socket test's teardown deterministic, and a test that passes locally
+        # and hangs in CI is worse than a test that fails.
+        # `not integration` as well as `not slow`: this job has no database, and a
+        # test that needs one must skip here rather than report a connection error
+        # as a failure. The database tests run in the `integration` job below.
+        run: >-
+          uv run pytest tests/ -q -p no:cacheprovider
+          --ignore=tests/integration
+          -m "not slow and not integration"
+
+  # ── the gate that needs a database ────────────────────────────────────────
+  integration:
+    name: integration + SQL course
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      timescale:
+        image: timescale/timescaledb:2.19.3-pg16
+        # Pinned to a patch version, not `latest`. `2.19.3` because the
+        # continuous aggregates, the chunk exclusion and the retention policies
+        # are all version-sensitive, and "it worked when the tag moved" is not a
+        # thing anyone can debug.
+        env:
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wwtp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: install the project
+        run: uv sync --all-extras --frozen
+
+      - name: apply the schema, contract and roles
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        run: |
+          uv run python -m storage.postgres.schema --log-level INFO
+          uv run python -m storage.postgres.roles --check
+
+      - name: create the test database
+        env:
+          PGPASSWORD: itpass
+        run: |
+          psql -h 127.0.0.1 -U wwtp -d wwtp -c "CREATE DATABASE wwtp_test"
+
+      - name: seed a week
+        # **A real week, and this is the point of the job.**
+        #
+        # The gates that need data cannot be run against an empty database,
+        # because every query returns nothing and nothing returns nothing is a
+        # pass. The seed takes about two minutes and it is what makes the SQL
+        # course, the aggregates test and the coverage matrix mean anything.
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        run: uv run python -m storage.seed.main --days 7
+
+      - name: integration tests
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_TEST_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_TEST_DB: wwtp_test
+        run: uv run pytest tests/integration -q -p no:cacheprovider
+
+      - name: the SQL course, against the seeded week
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        run: uv run python tools/check_sql.py sql/
+
+      - name: the Node-RED flows' SQL
+        # Executed against the same database as everything else, and rolled back.
+        # These queries are in Node-RED's own `$name` dialect, which nothing but
+        # the node itself speaks — see the test's docstring.
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        run: uv run pytest tests/test_scada_contract.py -q -p no:cacheprovider
+
+      - name: the dashboard queries
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        run: uv run pytest tests/test_grafana_dashboards.py -q -p no:cacheprovider
+
+      - name: the alarm replay
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp
+        run: uv run python -m alarms.replay --log-level INFO
+
+  # ── generated files are in step with the contract ─────────────────────────
+  drift:
+    name: generated files vs the contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras --frozen
+
+      # The cheapest gate in the file and the one most likely to catch a real
+      # mistake. `contracts/tags.yaml` is the source of truth for the Modbus
+      # register map, the OPC UA address space, the SQL schema, the Node-RED tag
+      # list, the flows and the Grafana dashboards — six consumers, and a signal
+      # renamed in one of them is the classic industrial integration bug: it
+      # produces plausible-looking wrong data rather than an error.
+      - name: tag list
+        run: uv run python -m scada.generate_tags --check
+      - name: flows
+        run: uv run python -m scada.build_flows --check
+      - name: dashboards
+        run: uv run python -m ui.grafana.generate_dashboards --check
+      - name: compose parses
+        # A compose file that cannot parse fails `docker compose up` on a fresh
+        # machine for a reason that has nothing to do with the project. This file
+        # has shipped two such commits.
+        run: docker compose --profile ui --profile scada --profile observability config -q
+
+  # ── the images build ──────────────────────────────────────────────────────
+  images:
+    name: images build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: python image
+        run: docker compose build db
+      - name: node-red image
+        # The one that needs the network and the most time, and the one that has
+        # failed for reasons invisible in the Dockerfile: the base image is
+        # *prebuilt*, so it never installs a `package.json` added afterwards,
+        # and the runtime sits at "Waiting for missing types" forever.
+        run: docker compose --profile scada build scada
+      - name: the two non-core node types resolve
+        # Asserting the packages are installed, by *running* the lookup Node-RED
+        # does. Building the image successfully and having the flows load are
+        # different claims and only the second one matters.
+        run: |
+          docker compose --profile scada run --rm --no-deps --entrypoint sh scada \
+            -c "ls /data/node_modules | grep -qx node-red-contrib-postgresql && \
+                ls /data/node_modules | grep -qx node-red-contrib-modbus && \
+                echo 'both node types present'"
+
+  # ── the debt, measured so it cannot grow ──────────────────────────────────
+  lint-debt:
+    name: lint debt ratchet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras --frozen
+
+      # **A ratchet, not a gate.** 162 findings today. This job fails if the
+      # number goes *up* and does not fail if it goes down, which is the only shape
+      # that works on an existing debt: a hard gate at 162 blocks every commit,
+      # and deleting the debt in one sweeping commit is the thing this project has
+      # deliberately not done five times.
+      #
+      # The baseline is a file, so lowering it is a deliberate act with a diff that
+      # says so.
+      - name: count the findings
+        run: |
+          uv run ruff check . --output-format concise > ruff.txt || true
+          n=$(grep -cE ':[0-9]+:[0-9]+:' ruff.txt || true)
+          echo "findings: $n"
+          base=$(cat lint-debt-baseline.txt)
+          echo "baseline:  $base"
+          if [ "$n" -gt "$base" ]; then
+            echo "::error::lint debt grew from $base to $n. Fix the new findings,"
+            echo "or raise the baseline deliberately if you have decided to."
+            exit 1
+          fi
+          if [ "$n" -lt "$base" ]; then
+            echo "::notice::lint debt fell from $base to $n — lower"
+            echo "lint-debt-baseline.txt in this commit."
+          fi
+          cat ruff.txt | head -20
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ruff-findings
+          path: ruff.txt
+
+  # ── on a schedule rather than on every push ───────────────────────────────
+  nightly:
+    name: alarm coverage (nightly)
+    runs-on: ubuntu-24.04
+    # 4 a.m. UTC, and deliberately not on the hour. Every scheduled job in the
+    # world is on the hour, and the ones on the hour queue behind each other.
+    # On a schedule, or when dispatched by hand. *Not* on a push: this job is
+    # eighteen minutes of physics and the point of it is a trend over time, which
+    # a per-push run cannot show.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras --frozen
+
+      - name: the fault x rule matrix
+        # Eighteen minutes for the full matrix, which is why it is here and not in
+        # the `unit` job. **It is a measurement, not a gate**: it reports how many
+        # of the eleven faults are covered and which rules fire on a healthy
+        # plant, and those numbers are the ones most likely to drift without
+        # anybody noticing. The job uploads the JSON so the trend is visible.
+        run: |
+          uv run python -m alarms.main coverage --hours 8 --json > coverage.json
+          cat coverage.json
+
+      - name: upload the matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: alarm-coverage
+          path: coverage.json
+
+      - name: the false-positive ratchet, over the slow path
+        # 18 minutes on its own, for the four tests that run the plant model.
+        # They are the only tests that can tell a working rule from a twitchy one,
+        # and a change that adds a false positive should fail a build rather than
+        # be noticed a fortnight later.
+        run: uv run pytest tests/test_alarm_rules.py -q -p no:cacheprovider -m slow

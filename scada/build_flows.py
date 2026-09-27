@@ -1073,6 +1073,17 @@ BUILDERS: dict[str, Any] = {
 }
 
 
+def build_all_names() -> list[str]:
+    """The flow filenames, in deploy order.
+
+    Exposed so a test can name them without duplicating `BUILDERS`, which is the
+    kind of duplication that drifts. The *runtime* orders them by glob, so this is
+    also the order the entrypoint should produce — the filenames are numbered for
+    exactly that reason.
+    """
+    return list(BUILDERS)
+
+
 def build_all(c: Contract) -> dict[str, list[dict[str, Any]]]:
     return {name: builder(c) for name, builder in BUILDERS.items()}
 

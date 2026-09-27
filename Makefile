@@ -29,7 +29,7 @@ PY := .venv/bin/python
 TEST_DB    ?= wwtp_test
 TEST_PORT  ?= 55432
 
-.PHONY: help check lint types test integration sql sql-check \
+.PHONY: help check lint lint-all lint-debt types test integration sql sql-check \
         up seed wait down clean logs \
         scada scada-flows scada-check dashboards dashboards-check grafana \
         coverage coverage-json alarms browse watch psql query roles contract
@@ -40,20 +40,53 @@ help:
 
 # ── the gates ────────────────────────────────────────────────────────────────
 
-check: lint types test sql  ## everything CI would run
+check: lint lint-debt types test sql  ## everything CI would run
 	@echo "── all gates green ──"
 
-lint:  ## ruff
+# **Scoped, and the scoping is on the label.**
+#
+# `ruff check .` reports 160 findings, almost all `E501` and `PLC0415` in
+# `softplc/process/units.py`, `softplc/servers/opcua.py` and the Phase 1-2 test
+# files. That debt has been tracked as an open thread since Phase 1 rather than
+# swept into a commit claiming to be about something else, and
+# `make lint-debt` measures it so it cannot grow.
+#
+# This target previously ran `ruff check .` and **had been failing the whole
+# time**, while every ruff invocation in this project was run over a subset of
+# the packages. Same as mypy. A gate that is reported as passing because it was
+# run over the wrong subset is worse than no gate.
+lint:  ## ruff, on the packages that are clean
 	@echo "── ruff ──"
+	uv run --no-sync ruff check alarms scada ui storage gateway softplc/scanloop.py
+
+lint-all:  ## every finding, including the tracked debt
 	uv run --no-sync ruff check .
 
-types:  ## mypy
-	@echo "── mypy ──"
-	$(PY) -m mypy softplc gateway storage alarms tools
+lint-debt:  ## fail if the finding count has gone up; never fail if it has gone down
+	@echo "── lint debt ratchet ──"
+	@uv run --no-sync ruff check . --output-format concise > /tmp/ruff.txt || true
+	@n=$$(grep -cE ':[0-9]+:[0-9]+:' /tmp/ruff.txt || true); \
+	 b=$$(cat lint-debt-baseline.txt); \
+	 echo "   $$n findings, baseline $$b"; \
+	 if [ "$$n" -gt "$$b" ]; then \
+	   echo "   the debt grew — fix the new findings or raise the baseline"; exit 1; \
+	 elif [ "$$n" -lt "$$b" ]; then \
+	   echo "   the debt fell — lower lint-debt-baseline.txt in the same commit"; \
+	 fi
 
+types:  ## mypy, over every Python file in the project
+	@echo "── mypy ──"
+	$(PY) -m mypy softplc gateway storage alarms scada tools ui
+
+# `-m "not slow and not integration"` because the label on this target is a
+# promise: **no database, no containers, about two minutes.** Without the marker
+# filter it kept the four `slow` tests, which are eighteen minutes on their own
+# because every scenario settles for 9h15m before measurement begins, so the
+# label was wrong and the target was half an hour.
 test:  ## unit tests: no database, no containers, about two minutes
 	@echo "── unit tests ──"
-	$(PY) -m pytest tests/ -q -p no:cacheprovider --ignore=tests/integration
+	$(PY) -m pytest tests/ -q -p no:cacheprovider --ignore=tests/integration \
+	    -m "not slow and not integration"
 
 integration:  ## integration tests, against a throwaway database
 	@echo "── integration tests ──"
