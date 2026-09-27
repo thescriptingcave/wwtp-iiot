@@ -113,6 +113,7 @@ Full walkthrough, including troubleshooting, in
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The threat model, and the gaps stated plainly |
 | [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
 | [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) | Every threshold, the measurement it came from, and the four that still do not work |
+| [`scada/README.md`](scada/README.md) | The Node-RED operator flows, and how they are kept in step with the contract |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
 
@@ -180,7 +181,11 @@ then written down as though it were a principle.
   a settled healthy plant, which took the false-positive count from six rules to
   five — and the remaining five cannot be tuned away.
   [`docs/ALARMS.md`](docs/ALARMS.md) · [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md)
-- [ ] **Phase 5** — Grafana dashboards, the custom Next.js page, Node-RED SCADA flows
+- [x] **Phase 4b** — Node-RED operator flows: a mimic, an alarm annunciator, and
+  a range-checked setpoint, all **generated from the contract** and all behind a
+  `scada` profile. 31 tests guard the generator rather than the output.
+  [`scada/README.md`](scada/README.md)
+- [ ] **Phase 5** — Grafana dashboards and the custom Next.js page. Not started.
 
 Phase 3 is complete and exercised against a live database: 378 unit tests, 17
 integration tests, 57 course queries, all passing. The open threads are in

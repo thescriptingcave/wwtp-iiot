@@ -131,6 +131,7 @@ ignore = [
 "tests/test_scanloop.py" = ["PLC0415"]
 "tests/test_alarm_detectors.py" = ["PLC0415"]
 "tests/test_alarm_rules.py" = ["PLC0415"]
+"tests/test_scada_contract.py" = ["PLC0415"]
 "sql/*" = ["ALL"]
 # `main()` in both of these is a CLI: argparse, a connection, a loop, and an
 # error path for each of four ways the database can say no. Splitting it up would

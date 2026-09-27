@@ -31,6 +31,7 @@ TEST_PORT  ?= 55432
 
 .PHONY: help check lint types test integration sql sql-check \
         up seed wait down clean logs \
+        scada scada-flows scada-check \
         coverage coverage-json alarms browse watch psql query roles contract
 
 help:
@@ -100,6 +101,19 @@ logs:  ## follow the plant and the gateway
 	docker compose logs -f softplc gateway
 
 # ── the alarm engine ─────────────────────────────────────────────────────────
+
+scada:  ## Node-RED, the operator flows
+	@echo "── Node-RED on http://127.0.0.1:$${SCADA_PORT:-18880}/scada ──"
+	docker compose --profile scada up -d scada
+	@echo "   the editor is off; the flows are generated from the contract"
+
+scada-flows:  ## regenerate the tag list and the flows from the contract
+	$(PY) -m scada.generate_tags
+	$(PY) -m scada.build_flows
+
+scada-check:  ## report drift between the contract and the generated files
+	$(PY) -m scada.generate_tags --check
+	$(PY) -m scada.build_flows --check
 
 coverage:  ## the fault x rule matrix, about eight minutes
 	@echo "── alarm coverage: eleven faults against thirteen rules ──"

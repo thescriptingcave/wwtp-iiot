@@ -1,0 +1,14 @@
+{
+  "name": "wwtp-scada-nodered",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node-RED runtime for the WWTP operator flows. The flows themselves live in scada/flows/ and are generated from contracts/tags.yaml.",
+  "dependencies": {
+    "node-red": "5.0.7",
+    "node-red-contrib-postgresql": "0.16.2",
+    "node-red-contrib-modbus": "5.60.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

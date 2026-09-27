@@ -1172,6 +1172,33 @@ the same name.*
     longest rule lookback, so one long-horizon rule makes every scenario slow.
     Making it depend on the rules under test is exercise 5 of `03-04`.
 
+20. **A field called `unit` that held an area.** Every measurement in the contract
+    declared its area in a key called `unit`, and the loader passed it into
+    `Signal.unit`, so `signal.unit` was `"AERATION"` for every aeration signal.
+    The database, the OPC UA engineering units and the Modbus scaling were all
+    *correct*, because they all read `Signal.eu` — three consumers right, one
+    wrong, and no test, because the wrong one was the one nothing read.
+
+    Found by `scada/generate_tags.py`, the first consumer to *render* a unit. The
+    lesson is about what a test suite covers: **a bug in an attribute nobody
+    reads is not a bug that has not happened, it is a bug waiting for the first
+    consumer that does.**
+
+21. **Three Node-RED failures that all present as "it started".** The base image
+    never installed the two non-core nodes (it is prebuilt; its `npm install` ran
+    against *its* package.json), so the runtime sat at "Waiting for missing types"
+    indefinitely with no error and no exit. `settings.js` was copied to
+    `/opt/node-red/data` while the runtime reads `/data`, so every setting in it
+    was silently ignored. And the hand-written `flows_cred.json` closed three
+    braces for four opens, which Node-RED reported as a JSON parse error in a log
+    line about a file the reader did not know existed.
+
+    The common shape: **all three are things that start successfully.** A flow
+    that imports, a runtime that boots, and a container that is healthy are all
+    the same claim — "it came up" — and none of them is "it works". The same
+    lesson as the stale `rotate_s` in the gateway, and the reason `make scada`
+    now exists as a target that actually starts the thing.
+
 ## What I would do next, in order
 
 1. **Find the factor of seven** (thread 16). Two harnesses, same rules, same
@@ -1190,8 +1217,12 @@ the same name.*
    I remember.
 6. **`ui/web` has no tests at all.** The least verified part of the project and
    the part a portfolio reviewer will click first. Phase 5.
-7. **Node-RED flows** (`scada/`) — still the only part of the original brief I
-   have not touched at all.
+7. **Phase 5** — Grafana dashboards and the custom Next.js page. `ui/web` has a
+   Dockerfile and no `package.json`, and `ui/grafana/dashboards/` is empty.
+8. **A read-only Postgres role for the SCADA service.** It authenticates as the
+   owner while the gateway authenticates as `wwtp_gateway` and cannot delete a
+   reading. The mimic is read-only by construction, but "the flows are read-only"
+   is a claim about the flows and not about the credential.
 
 ### Done in this phase, and no longer on the list
 

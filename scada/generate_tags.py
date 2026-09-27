@@ -46,13 +46,15 @@ and it is the third thing in this project that has been declared and unused.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any
 
-from softplc.contract import Contract, contract as get_contract
+from softplc.contract import Contract
+from softplc.contract import contract as get_contract
 
 log = logging.getLogger("scada.generate_tags")
 
@@ -66,7 +68,7 @@ TAGS_PATH = Path("scada/flows/tags.json")
 SCHEMA = "wwtp.node-red.tags/1"
 
 
-def _label(signal_id: str, field: str) -> str:
+def _label(field: str) -> str:
     """A human label, derived rather than stored.
 
     Taken from the signal's `field` — the contract's own short name like
@@ -93,7 +95,7 @@ def build_tags(c: Contract) -> dict[str, Any]:
         s = c.signals[signal_id]
         entry: dict[str, Any] = {
             "id": s.id,
-            "label": _label(s.id, s.field),
+            "label": _label(s.field),
             "area": s.area,
             "field": s.field,
             "unit": s.unit or "",
@@ -165,8 +167,6 @@ def check(c: Contract | None = None, path: Path = TAGS_PATH) -> list[str]:
 
 def _diff(expected: str, actual: str, path: Path) -> list[str]:
     """A short, specific description of the drift."""
-    import difflib
-
     out: list[str] = [f"{path} is out of step with the contract:"]
     diff = list(
         difflib.unified_diff(
