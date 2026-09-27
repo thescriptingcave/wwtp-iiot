@@ -129,6 +129,12 @@ ignore = [
 "tests/test_postgres_schema.py" = ["PLC0415"]
 "tests/test_postgres_writer.py" = ["PLC0415"]
 "sql/*" = ["ALL"]
+# `main()` in both of these is a CLI: argparse, a connection, a loop, and an
+# error path for each of four ways the database can say no. Splitting it up would
+# move the branches around without reducing them, and a checker you have to read
+# in one screen is worth more than one with fewer lines.
+"tools/sqlrun.py" = ["PLC0415", "PLR0912", "PLR0915"]
+"tools/check_sql.py" = ["PLC0415", "PLR0912", "PLR0915"]
 
 [tool.mypy]
 python_version = "3.13"

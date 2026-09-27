@@ -1,159 +1,255 @@
-# 00-03 — Quality is data, and `value` can be NULL
+# 00-03 — A broken instrument is data, not a gap
 
-**Previous:** [00-02](00-02_the_six_tags.md) · **Next:** [01-beginner](../01-beginner/)
+**Previous:** [00-02](00-02_identity_and_values.md) ·
+**Next:** [01-beginner](01-beginner/) · [Back to the course](../README.md)
 
-This is the most important lesson in the course, and it is short.
+This is the most important idea in the course, and it is one line of schema:
 
-## The problem
-
-A dissolved-oxygen probe fouls. It keeps reporting — a number, every second,
-entirely plausible — and the number is wrong. Nothing about it looks wrong. It is
-in range, it is finite, and on a chart it is a line.
-
-If your historian stores that reading without recording that it is not to be
-trusted, you have built a system that cannot tell the difference between:
-
-* the process did this, and
-* the instrument thinks this.
-
-Those are different failures with the same appearance, and the second one is how a
-plant quietly discharges out of permit for six hours while a chart shows a flat,
-healthy, entirely fictional line.
-
-## What this project does about it
-
-Every reading carries a `quality` field alongside its `value`:
-
-| `quality` | Meaning |
-|---|---|
-| 0 | Good — the instrument is working |
-| 1 | Uncertain — the value may be wrong (drifting probe) |
-| 2 | Bad — the value is not to be used (sensor failure) |
-
-And when the reading is not a number at all, **`value` is NULL and `quality` is
-2**. The row still exists. That is deliberate, and it is the reason `value` is the
-one nullable column in the table.
-
-```
-time                  signal     value   quality
-2026-09-26T07:15:00   do_mg_l     2.03    0
-2026-09-26T07:15:01   do_mg_l     2.05    0
-2026-09-26T07:15:02   do_mg_l     <null>  2      ← the instrument failed
-2026-09-26T07:15:03   do_mg_l     2.11    0
+<!-- check: skip -->
+```sql
+CONSTRAINT reading_null_is_not_good CHECK (value IS NOT NULL OR quality <> 0)
 ```
 
-The NULL row is distinguishable from **both** of the alternatives:
+A reading with no value **cannot** claim to be Good. Not by convention. The
+database refuses it.
 
-| Representation | Distinguishable from "no data"? | From "a wrong number"? |
+## The three states, and why collapsing any two of them is a bug
+
+A sensor can be in one of three conditions, and each of them has a *different
+correct answer* to "what is the reading?":
+
+| `quality` | Meaning | `value` |
 |---|---|---|
-| Row dropped | no — looks like a gap | yes |
-| `value = 0` | yes | **no — it says the basin had no oxygen** |
-| `value = "nan"` | yes | no, and it is a *string* in a float column |
-| `value = NaN` | no — plots as a gap | no |
-| **`value` NULL, `quality` 2** | **yes** | **yes** |
+| 0 | Good | a number |
+| 1 | Uncertain | a number you should distrust |
+| 2 | Bad — the instrument is not working | `NULL` |
 
-## This was not my design. It was the database's.
+The tempting shortcuts are all wrong in a way that matters:
 
-InfluxDB 3 fixes a column's type on its first write, and the line protocol has no
-literal for `NaN` or `Infinity`. So every attempt to store a broken reading as a
-number is **refused**:
+* **Drop the bad rows.** Now a failed sensor is indistinguishable from a sensor
+  that was never read. Your chart shows a gap, and "gap" and "broken" are
+  different facts with different responses: one is a network question, the other
+  is a maintenance one.
+* **Store zero.** Zero is a *real* dissolved-oxygen concentration — it is what
+  anaerobic sludge smells like — and a real flow rate, and a real alarm state. A
+  bad sensor reading zero is a false alarm; a bad sensor reading nothing is
+  information.
+* **Store the last good value.** Now you cannot tell when the instrument died,
+  which is the single thing you most need to know.
+* **Store a string `"nan"`.** Not possible here, and worth knowing why: the column
+  is `DOUBLE PRECISION`, and the database will not put text in it. That refusal is
+  the feature.
 
-```
-value=NaN,quality=2i   -> "No fields were provided"
-value="nan",quality=2i -> invalid field value for field 'value':
-                         expected type iox::column_type::field::float
-```
-
-What *is* writable is a point carrying a quality and no value, and it lands exactly
-as the table above shows.
-
-InfluxDB 2.x would have accepted a quoted `"nan"` in a float column, or a float
-`NaN` that renders as a gap. Both would have been quietly, permanently wrong. **The
-refusal is the feature**, and the schema was rebuilt around what the database would
-not accept.
-
-### The question
-
-> Over the last hour, how much of this plant's dissolved-oxygen record is
-> trustworthy?
-
-### The queries
+## The scale
 
 ```sql
 SELECT
-  count(*)                     AS readings,          -- rows that exist
-  count(value)                 AS usable,            -- rows with a value
-  count(*) - count(value)      AS value_is_null,     -- failed instruments
-  min(time)                    AS first_seen,
-  max(time)                    AS last_seen
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T00:00:00Z';
+    quality,
+    CASE quality
+        WHEN 0 THEN 'Good'
+        WHEN 1 THEN 'Uncertain'
+        WHEN 2 THEN 'Bad'
+    END AS name,
+    count(*) AS readings,
+    count(value) AS with_a_value
+FROM reading
+GROUP BY quality
+ORDER BY quality;
 ```
 
-The quality breakdown, which needs one query per quality because this dialect has
-no `CASE`:
-
-```sql
-SELECT time, quality, count(*) AS readings
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T00:00:00Z'
-GROUP BY time(1h), quality
-ORDER BY time;
+```
+ quality |  name   | readings | with_a_value
+---------+---------+----------+--------------
+       0 | Good    |  4289810 |      4289810
 ```
 
-`quality` is a tag in that grouping, so you get one row per hour per quality rather
-than a pivot. Reading it is a little more work than a pivot and a lot more honest,
-because the row that *should not exist* is a row you can see is missing.
+Every seeded reading is Good, which is *itself* a finding worth pausing on. The
+seeder replays the plant model through real fault scenarios, and a blower trip
+takes out a signal's readings — so why is `quality` 2 nowhere in the data?
 
-To count one quality in one cell, filter for it:
+The answer is in the schema, and it is a real gap rather than a cosmetic one:
+**the gateway's deadband drops a non-Good reading before it reaches the database.**
 
-```sql
-SELECT count(*) AS bad_readings
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l' AND quality = 2;
+```python
+# gateway/deadband.py
+if quality != QUALITY_GOOD:
+    return True      # publish it — do not filter a fault
 ```
 
-### The part that will bite you
+That is the *correct* behaviour, and it is why `reading` is capable of holding
+`quality = 2` rows. But the seeder and the fault engine do not route through the
+gateway's deadband in the same way, so the seeded history contains faults visible
+in the *values* — a blower that stops, ammonia that climbs hours later — and
+almost none visible in the *quality column*.
 
-`COUNT(*)` and `COUNT(value)` are different numbers, and **that is the point**.
+The exercises at the bottom are about closing that gap by hand, which is the only
+honest way to practise writing queries about bad instruments before the alarm
+engine (Phase 4) starts producing them for real.
 
-* `COUNT(*)` counts rows. Every reading that happened.
-* `COUNT(value)` counts rows where the value is not NULL. Every reading you can
-  actually use.
-
-An aggregate like `mean(value)` ignores NULLs, which is the *right* behaviour: a
-failed sensor contributes nothing rather than dragging the average to zero. But
-`COUNT(*)` does not ignore them, so **a naive "how many readings do we have"
-under-reports how much data actually exists**, and a naive "what fraction is bad"
-computed as `bad / COUNT(*)` is measuring the wrong thing.
+## Writing some
 
 ```sql
--- Wrong: every Bad row is also a NULL, so this divides the bad count by
--- readings-that-exist rather than by readings-you-can-use.
-SELECT count(*) / count(*) FROM "wwtp"."aeration" WHERE quality = 2;
+INSERT INTO reading (ts, signal_id, value, quality, source)
+VALUES
+    ('2026-09-27 09:00:00+00', 'AERATION:AHU-1:DO', 2.14, 0, 'opcua'),
+    ('2026-09-27 09:00:01+00', 'AERATION:AHU-1:DO', 2.09, 1, 'opcua'),
+    ('2026-09-27 09:00:02+00', 'AERATION:AHU-1:DO', NULL, 2, 'opcua');
+```
 
--- Right: the fraction of *usable* readings that are Bad.
+Three readings of the same signal, one second apart, in three different states, in
+one statement.
+
+**The timestamps have to differ, and the reason is worth having.** Try it with
+`now()` three times:
+
+```
+ERROR:  duplicate key value violates unique constraint "85_reading_pkey"
+DETAIL:  Key (ts, signal_id, source)=(2026-09-27 03:00:08.203171+00,
+        AERATION:AHU-1:DO, opcua) already exists.
+```
+
+The primary key is `(ts, signal_id, source)`, so *one signal, one instant, one
+protocol, one reading*. That is not a limitation, it is a **definition**: a
+reading is an observation of a signal at a moment by a source, and there is
+exactly one such thing. The database will not let you have two opinions about the
+same instant from the same instrument and call them two readings — you would have
+to invent a `source` value, and `source` is constrained too.
+
+(If a re-send genuinely happens, the gateway's `INSERT ... ON CONFLICT DO UPDATE`
+handles it: the same reading arriving twice updates rather than duplicates. That
+is the difference between the live path and the seeder's `COPY`, which cannot
+upsert and will simply fail. Both halves of that sentence are load-bearing.)
+
+Now try the thing the schema forbids:
+
+<!-- check: skip -->
+```sql
+INSERT INTO reading (ts, signal_id, value, quality, source)
+VALUES (now(), 'AERATION:AHU-1:DO', NULL, 0, 'opcua');
+```
+
+```
+ERROR:  new row for relation "_hyper_7_85_chunk" violates check constraint
+        "reading_null_is_not_good"
+DETAIL:  Failing row contains (2026-09-27 03:04:11.482913+00,
+         AERATION:AHU-1:DO, null, 0, opcua).
+```
+
+**Read the error carefully — it names the chunk, not the table.** A constraint on
+a hypertable lives on every chunk it has, because a chunk *is* a table. So the
+name in the message is `_hyper_7_85_chunk` and the name you wrote is
+`reading_null_is_not_good`. Both are correct and neither is a bug; it is simply
+what a distributed table looks like from the inside, and it will confuse you once.
+
+## The two aggregates, and the difference between them
+
+This is where the representation pays for itself.
+
+```sql
 SELECT
-  count(*) * 1.0 / NULLIF(count(value), 0) AS fraction_of_usable_that_is_bad
-FROM "wwtp"."aeration"
-WHERE quality = 2;
+    count(*)                AS readings_that_happened,
+    count(value)            AS readings_you_can_use,
+    count(*) - count(value) AS readings_with_no_value,
+    avg(value)              AS mean_of_what_you_can_use
+FROM reading
+WHERE signal_id = 'AERATION:AHU-1:DO';
 ```
 
-`NULLIF(..., 0)` is there so an empty result is NULL rather than a division by
-zero, which would be a number that looks like data and means nothing.
+* `count(*)` counts rows. It counts the broken instrument.
+* `count(value)` counts rows **with a value**. It skips the `NULL`s.
+* `avg(value)` ignores `NULL`s — so it is a mean over the readings you can use,
+  which is the right thing, and it is right *by accident of SQL's null handling*
+  rather than by anything you wrote.
 
-### Exercises
+That last point deserves emphasis, because it is the sort of thing that works
+until you do something reasonable to the query. If you `coalesce` the bad readings
+to zero to "fill the gap", the mean now includes a fabricated value, and it drops.
+You will do this. It is a reasonable thing to want. Do it deliberately.
 
-1. Which signals in this plant have the most `quality = 2` readings? Those are the
-   instruments that need attention — and the query is a maintenance report, not a
-   process question. (`GROUP BY time(1d), signal` with `quality = 2` in the
-   `WHERE`, since there is no `CASE` to pivot on.)
-2. Compute the mean of `value` with and without a `WHERE quality = 0` filter.
-   They should agree, because `mean` ignores NULLs. **Verify that**, then explain
-   why they agree and when they would *not*.
-3. The `everything_at_once` fault scenario in `contracts/fault-scenarios.yaml`
-   describes a degraded instrument hiding a process fault. Using only
-   `quality`, can you tell the difference? (You cannot. That is the argument for
-   Phase 4's alarm engine, and this is the exercise that motivates it.)
+```sql
+-- A question you should be suspicious of
+SELECT
+    signal_id,
+    avg(coalesce(value, 0)) AS mean_including_fabricated_zeros
+FROM reading
+GROUP BY signal_id
+ORDER BY mean_including_fabricated_zeros
+LIMIT 5;
+```
+
+Run it. Then run the honest version and compare:
+
+<!-- check: skip -->
+```sql
+SELECT
+    signal_id,
+    count(*) - count(value) AS unusable,
+    avg(value)               AS honest_mean
+FROM reading
+WHERE ts >= now() - interval '2 days'
+GROUP BY signal_id
+HAVING count(*) - count(value) > 0
+ORDER BY unusable DESC;
+```
+
+That second query returns nothing in the seeded data, for the reason given above.
+Which is fine — it is a query you will write many times, and knowing that it is
+*correct and empty* is different from knowing it is broken.
+
+## Quality as a filter, and the decision hiding in it
+
+```sql
+-- "Only the readings I trust"
+SELECT ts, value
+FROM reading
+WHERE signal_id = 'AERATION:AHU-1:DO'
+  AND quality = 0
+  AND ts >= now() - interval '6 hours'
+ORDER BY ts;
+```
+
+Two things about this query that are worth more than the query:
+
+**The `quality = 0` is redundant for `avg`, and that redundancy is the point.**
+Drop it and `avg(value)` gives the *same number*, because `avg` skips NULLs. But
+drop the *rows* with `quality = 1` — the Uncertain ones, which do have values —
+and you get a different number. Two decisions that look identical in the query
+and are not the same decision.
+
+You want both, usually, and it is worth being able to say which you meant:
+
+```sql
+-- Uncertain readings excluded, broken ones were already excluded by the NULL
+SELECT avg(value) AS mean_of_good_and_uncertain FROM reading
+WHERE signal_id = 'AERATION:AHU-1:DO' AND quality <> 2;
+
+-- Bad readings treated as "no reading at all", which is what avg already does
+SELECT avg(value) AS mean_of_everything_with_a_value FROM reading
+WHERE signal_id = 'AERATION:AHU-1:DO';
+```
+
+**Never filter on `value IS NULL` to find bad instruments.** Filter on `quality`.
+They are related — the constraint guarantees a `NULL` value is never Good — but
+they are not the same question, and the moment you have Uncertain readings with
+values the two diverge.
+
+## Exercises
+
+1. Insert a `quality = 1` reading with a value, and one with `NULL`. The second
+   must fail. Now work out, from the constraint, what the database is guaranteeing
+   about the *pair* (`value`, `quality`) — and whether it is a complete
+   characterisation or only half of one.
+2. Write a query that reports, per signal, the fraction of readings that were
+   unusable, using `count(value)` and not `count(*)`. Why does the order of the
+   arithmetic matter for a fraction?
+3. The deadband publishes non-Good readings but filters Good ones that have not
+   moved. Suppose someone changes that so a *Bad* reading is dropped instead.
+   Using only the schema, work out what a chart of dissolved oxygen would then
+   look like during a blower trip, and what question you would no longer be able
+   to answer.
+4. `quality` is `SMALLINT` with a `CHECK (quality IN (0,1,2))`. Suppose a
+   maintenance mode is added later, with readings that are valid but should be
+   excluded from process statistics. What are the two ways to add it, what does
+   each cost, and which is the one that will still be correct in three years?
+5. `source` is also `CHECK`-constrained. Find a fourth value it might reasonably
+   need, and argue for whether it belongs in the constraint or beside it.

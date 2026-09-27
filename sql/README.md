@@ -1,17 +1,18 @@
 # The SQL course
 
-Five stages, beginner to expert, run against data this project generates. It is
-not an appendix. It is the reason the plant exists.
+Five stages, beginner to expert, run against a week of data this project
+generates. It is not an appendix. It is the reason the plant exists.
 
 Every lesson states **a question**, gives **a query**, and has its expected output
-in `_answers/`. Work them in order: the later stages assume the shapes the earlier
-ones introduced.
+inline. Work them in order: the later stages assume the shapes the earlier ones
+introduced.
 
 ## Before you start
 
 ```bash
-docker compose up -d influxdb couchbase        # see docs/GETTING-STARTED.md
-docker compose --profile demo run --rm seed    # a week of plant history
+docker compose up -d db                  # see docs/GETTING-STARTED.md
+docker compose run --rm init-db          # schema + the contract
+docker compose --profile demo run --rm seed   # a week of plant history
 ```
 
 Without seeded data every query returns no rows and every chart is flat, and the
@@ -20,116 +21,129 @@ mistake everyone makes is concluding their SQL is wrong. Seed first.
 Then check you can see anything at all:
 
 ```sql
-SELECT COUNT(*) FROM "wwtp"."aeration";
+SELECT count(*) FROM reading;
 ```
 
-If that returns 0, stop and fix the data before reading a word of the course.
+If that returns 0, stop and fix the data before reading a word of the course. If
+it returns about four million, you have what you need.
+
+To run a query, use `psql` if you have it — it is the better tool:
+
+```bash
+docker compose exec db psql -U wwtp -d wwtp
+```
+
+or use the bundled runner, which needs nothing installed but Python:
+
+```bash
+uv run python tools/sqlrun.py "SELECT count(*) FROM reading"
+```
 
 ## The stages
 
 | Stage | What you learn | Why it comes when it does |
 |---|---|---|
-| [00-foundations](00-foundations/) | What a time-series table actually *is*; the six tag columns and the two fields; why `value` can be NULL | Because every later stage assumes you know this, and because a time-series table is not a normal table with a timestamp column |
-| [01-beginner](01-beginner/) | `SELECT`, `WHERE`, aggregation, your first `time_bucket` | Because this is where "read one signal" becomes "answer a question about a signal" |
-| `02-intermediate/` | CTEs, window functions, joins across the two databases | Unwritten |
-| `03-advanced/` | Gap filling, continuous aggregates, retention, `INFORMATION_SCHEMA` | Unwritten |
-| `04-expert/` | Window frames, time-weighted averages, change detection, query planning | Unwritten |
+| [00-foundations](00-foundations/) | What a hypertable is; identity versus value and why they are different *tables*; why `value` can be NULL | Because every later stage assumes you know this, and because a time-series table is not a normal table with a timestamp column |
+| [01-beginner](01-beginner/) | `SELECT`, `WHERE`, aggregation, your first `time_bucket`, `CASE`, `HAVING` | Because this is where "read one signal" becomes "answer a question about a signal" |
+| [02-intermediate](02-intermediate/) | CTEs, window functions, joins, gaps, the quality scale as a filter | Because the questions get compositional, and a nested subquery stops being readable before it stops being possible |
+| `03-advanced/` | Continuous aggregates, retention, `EXPLAIN`, chunk behaviour | Unwritten |
+| `04-expert/` | Time-weighted averages, change detection, query planning, writing the dashboard query | Unwritten |
 
 ## How to work through a lesson
 
 1. Read the question. Write down what you think the answer will be.
 2. Run the query.
-3. Compare with `_answers/`. If they differ, find out **why** before moving on.
-4. Do the exercises at the bottom. They are not optional decoration; they are where
-   the lesson actually lands.
+3. Compare with the output shown. If they differ, find out **why** before moving
+   on.
+4. Do the exercises at the bottom. They are not optional decoration; they are
+   where the lesson actually lands.
 
 The difference between reading a query and writing one is the difference between
-recognising `mean(value)` and knowing that `AVG` over a table containing NULLs
+recognising `avg(value)` and knowing that `AVG` over a table containing NULLs
 ignores them, which changes your answer without telling you.
 
-## Three things that will waste your time otherwise
+## The one idea the whole course rests on
 
-Every one of these was measured against a live InfluxDB 3, and every one has an
-error message that points somewhere else.
-
-**`ORDER BY` accepts `time` and nothing else.**
-
-```sql
--- invalid: ORDER BY accepts time and nothing else
-SELECT signal, value FROM "wwtp"."aeration" ORDER BY signal;
--- error in InfluxQL statement: invalid ORDER BY, expected TIME column
-```
-
-Read [`_shared/DIALECT.md`](_shared/DIALECT.md) before lesson 01-01. It is the
-list of things this dialect does *not* have, every one of them established by
-running the query and reading the error — and three of them are in the SQL every
-metrics tutorial teaches.
-
-**`field` and `key` are reserved words.** That is why the tag is called `signal`
-and why `AS key` is a parse error. You will meet both.
-
-**Timestamp filters need RFC 3339, not epoch numbers.**
-
-```sql
-WHERE time >= '2026-09-26T00:00:00Z'   -- works
-WHERE time >= '1758844800000'           -- "'1758844800000' is not a valid timestamp"
-```
-
-Writes carry integer timestamps; filters want a date string. The two forms are not
-interchangeable and nothing says so.
-
-## One more, which is a design decision rather than a quirk
-
-**A broken instrument is stored as `value` NULL with `quality` = 2.** It is not
+**A broken instrument is stored as `value = NULL` with `quality = 2`.** It is not
 dropped, and it is not stored as zero or as a string.
 
-That is the single most important idea in the course, and it is why `value` is
-nullable. It means:
+That single representation is what makes three things distinguishable that are
+otherwise identical:
 
 * a failed sensor is **distinguishable from no data at all** — the row exists;
-* it is **distinguishable from a number that happens to be wrong** — `quality` says
-  so;
-* an aggregate that ignores NULLs (`mean`, `min`, `max`) is doing the *right*
-  thing, and one that does not (`count(value)` versus `count(*)`) will quietly
+* it is **distinguishable from a number that happens to be wrong** — `quality`
+  says so;
+* an aggregate that ignores NULLs (`avg`, `min`, `max`) is doing the *right*
+  thing, and one that does not (`count(value)` against `count(*)`) will quietly
   give you a different answer.
 
-InfluxDB 2.x would have let you store a string `"nan"` in a float column, or a
-float `NaN` that plots as a gap and reads as a process that stopped. InfluxDB 3
-refuses both, because a column's type is fixed on its first write. The refusal is
-the feature, and lesson 00-03 is about what that buys you.
+And it is enforced, not merely documented. The schema has:
+
+<!-- check: skip -->
+```sql
+CONSTRAINT reading_null_is_not_good CHECK (value IS NOT NULL OR quality <> 0)
+```
+
+You cannot record a Good reading that has no value — because zero is a real
+dissolved-oxygen concentration, a real flow rate, and a real alarm state. That
+constraint is the whole argument for a relational time-series database in one
+line, and [00-03](00-foundations/00-03_quality_is_data.md) is about what it buys
+you.
+
+## The other idea, which is a plant lesson rather than a SQL one
+
+**`source` is in the primary key, so both protocol faces can record the same
+signal at the same instant.** That is what makes
+
+> *do Modbus and OPC UA agree about dissolved oxygen?*
+
+a query rather than a hunch, and it matters more than it looks, because the
+failure it catches is **finite, in range, and wrong**.
+
+This project's signature bug is reading a 32-bit float whose words arrive
+low-word-first as though they arrived high-word-first. The result is about
+`2.3e-41`. It passes every range check in the system. It plots as a flat line at
+zero. No amount of validation on the value itself will ever catch it, because
+there is nothing wrong with the number *as a number*. The only defence is to
+compare the two independent observations of the same physical quantity — which
+means storing both, which means `source` has to be part of the identity of a
+row.
+
+[00-02](00-foundations/00-02_identity_and_values.md) develops this properly.
 
 ## Checking the course
 
-Every ````sql` block in this directory is executed against a real server:
+Every ````sql` block in this directory is executed against a real database:
 
 ```bash
-INFLUX_TOKEN_TEST=… uv run python tools/check_sql.py
+docker compose --profile demo run --rm seed     # if not already seeded
+uv run python tools/check_sql.py
 ```
 
-It runs each query **five times**, because "this query is broken" and "this
-database is having a bad minute" look identical from the outside. A consistent
-*parse* error is a real dialect violation and fails the run; anything intermittent
-is reported and not failed.
+It runs each query **three times** and fails on any error, on any answer that
+changes between runs, and on any query that returns zero rows.
 
-That distinction earned its keep immediately. The first version of this course
-used `INTERVAL '1 hour'`, `CASE WHEN`, `ORDER BY signal`, `IN (…)`, `HAVING` and a
-scalar subquery — **none of which this dialect has.** Every one of them would have
-looked like a database problem if the tool had reported only the first error it
-saw. All of it is written up in [`_shared/DIALECT.md`](_shared/DIALECT.md), and
-that file is the most useful thing in this directory.
+The repeat is not superstition. The property it verifies is the one that actually
+matters for a lesson:
 
-At the time of writing, 14 of the 23 queries run and 9 are intermittently failing
-in the InfluxDB 3 **Core** planner. That is a storage-engine stability problem, not
-a course problem — see the recommendation in `docs/LEARNING-LOG.md`.
+> **A query whose answer changes between runs is not a lesson.**
+
+A reader who runs a query twice and gets two different numbers has learned
+something about the query and nothing about the plant, and cannot tell which.
+Queries that depend on `now()` are exempt from the comparison — their row count
+legitimately grows as data arrives — and are reported as `volatile` instead.
+
+The empty-result check is on by default because in a seeded database it almost
+always means the lesson is querying a signal id that does not exist, which is
+exactly the sort of error a student would otherwise spend an hour on. A lesson
+*about* an empty result is legitimate; pass `--allow-empty` for those.
 
 ## If something in a lesson does not match your database
 
-The schema is generated from `contracts/tags.yaml`:
+The schema lives in [`storage/postgres/schema.sql`](../storage/postgres/schema.sql)
+and is applied by `docker compose run --rm init-db`, which also loads the 57
+signals and 22 assets from [`contracts/tags.yaml`](../contracts/tags.yaml). The
+signal ids in the lessons are real ids from that file.
 
-```bash
-uv run python sql/_shared/generate_schema.py
-```
-
-If the contract has moved on and `sql/_shared/schema.sql` has not, regenerate it.
 A course that queries tables which do not exist is worse than no course, because
 the student cannot tell whether they misunderstood the query or the data.

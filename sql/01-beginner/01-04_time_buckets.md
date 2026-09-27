@@ -1,145 +1,271 @@
-# 01-04 — `time_bucket`, and choosing the interval that does not hide the answer
+# 01-04 — Buckets: asking about time, not moments
 
 **Previous:** [01-03](01-03_aggregating.md) · **Next:** [02-intermediate](../02-intermediate/)
 
-The last beginner lesson, and the one that makes this a time-series course.
+Everything so far asked about *this plant*, which is a timeless question. The
+moment you ask *when*, you have to decide how to divide time up, and that decision
+is where most time-series SQL goes wrong.
 
-## The syntax
+## The question
 
-```sql
-GROUP BY time(1h)
-```
+> What did each hour of air flow to the aeration basin look like over the last day?
 
-`time(1h)` truncates each timestamp down to the start of its containing bucket.
-Every reading in 07:00:00–07:59:59 becomes `07:00:00`. Group by that and you have
-an hourly average.
+## The obvious attempt
 
 ```sql
-SELECT time, mean(value) AS dissolved_oxygen
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T00:00:00Z'
-GROUP BY time(1h), signal
-ORDER BY time;
+SELECT ts, avg(value) FROM reading
+WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'
+GROUP BY ts;
 ```
 
-Four things about that line, each of which is a parse error if you get it wrong:
+One group per reading, so `avg` of one value is that value. You have written a
+`SELECT` with extra steps.
 
-| Written | Result |
-|---|---|
-| `GROUP BY time(1h)` | works |
-| `GROUP BY time(INTERVAL '1 hour')` | **parse error** — this dialect has no `INTERVAL` |
-| `GROUP BY time(1h), signal` | works — and the tag is **required** |
-| `GROUP BY time(1h)` alone | parses, then **fails at planning** |
-| `GROUP BY h` (the alias) | **fails** — repeat the expression |
-| `HAVING count(value) >= 30` | **parse error** — no `HAVING` in this dialect |
-
-And `time_bucket()` does exist as a function, but it cannot be grouped by on this
-build. `GROUP BY time(...)` is the idiom.
-
-## Why the interval is part of the question
-
-"Average DO per hour" and "average DO per day" are both correct answers to
-different questions. The interval is not a performance knob — **it decides what is
-visible.**
-
-This is the demonstration. Same data, three intervals, three different stories:
+## The query that answers the question
 
 ```sql
-SELECT time, mean(value) AS dissolved_oxygen, count(value) AS n
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T03:00:00Z'
-  AND time <  '2026-09-26T05:00:00Z'
-GROUP BY time(1m), signal
-ORDER BY time;
+SELECT
+    date_trunc('hour', r.ts) AS bucket,
+    count(*)                 AS n,
+    avg(r.value)             AS mean_value,
+    min(r.value)             AS min_value,
+    max(r.value)             AS max_value
+FROM reading r
+WHERE r.signal_id = 'AERATION:AHU-1:AIR_FLOW'
+  AND r.ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+GROUP BY 1
+ORDER BY 1 DESC;
 ```
+
+```
+       bucket        |  n   |  mean_value  |   min_value   |   max_value
+---------------------+------+--------------+---------------+---------------
+ 2026-09-27 02:00:00 | 2745 | 3537.695940  | 3354.953489   | 3640.448551
+ 2026-09-27 01:00:00 | 2732 | 3494.311417  | 3382.782903   | 3586.078644
+ 2026-09-27 00:00:00 | 3275 | 3503.288625  | 3392.864655   | 3645.591905
+```
+
+`n` is in the thousands because air flow is a noisy signal with a wide deadband —
+the busy end of the spread from [01-01](01-01_ask_a_question.md). It is a good
+signal to learn on precisely because the buckets are full.
+
+`date_trunc('hour', ts)` is the whole trick. It rounds a timestamp **down** to the
+start of its hour, so every reading in 03:47 becomes 03:00:00, and they all land
+in one group.
+
+## `date_trunc` versus `time_bucket`, and why there are two
+
+`date_trunc` is standard Postgres and it has one limitation that matters here: it
+only understands calendar units.
+
+<!-- check: skip -->
+```sql
+SELECT date_trunc('hour',  ts) FROM …   -- fine
+SELECT date_trunc('15 minutes', ts) …   -- fine
+SELECT date_trunc('7 minutes',  ts) …   -- ERROR: unit "7 minutes" not recognized
+```
+
+That is a real problem for a plant, because **you do not get to choose your
+bucket size based on what the calendar does.** A 7-minute bucket is the obvious
+choice for a 10-minute sampling interval. `time_bucket` does it:
 
 ```sql
--- Same two hours, hourly.
-SELECT time, mean(value) AS dissolved_oxygen, count(value) AS n
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T03:00:00Z'
-  AND time <  '2026-09-26T05:00:00Z'
-GROUP BY time(1h), signal
-ORDER BY time;
+SELECT
+    time_bucket(interval '15 minutes', r.ts) AS bucket,
+    count(*)     AS n,
+    avg(r.value) AS mean_value
+FROM reading r
+WHERE r.signal_id = 'AERATION:AHU-1:AIR_FLOW'
+  AND r.ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
+GROUP BY 1
+ORDER BY 1 DESC;
 ```
+
+```
+        bucket         |  n  |  mean_value
+-----------------------+-----+------------
+ 2026-09-27 02:45:00   | 566 | 3557.404554
+ 2026-09-27 02:30:00   | 737 | 3545.670260
+ 2026-09-27 02:15:00   | 730 | 3532.064467
+```
+
+`time_bucket(interval, ts)` is a TimescaleDB function. It also has an optional
+third argument — an origin — which `date_trunc` has no equivalent of, and which is
+the difference between buckets aligned to midnight and buckets aligned to whenever
+the data happens to start. That matters more than it sounds; it is the subject of
+exercise 4.
+
+**Prefer `time_bucket` in this project.** It is the same shape for every interval,
+it handles non-calendar sizes, and it is what the continuous aggregates in
+[03-advanced](../03-advanced/) use, so a query you write here behaves the same way
+when you later point it at `reading_1m`.
+
+## The two traps
+
+**Trap one: bucketing by the wrong end of the interval.** `date_trunc` rounds
+*down*, which means 03:47 belongs to the bucket *labelled* 03:00 — the bucket
+covering 03:00 to 04:00. It is not the bucket "for 03:47", and if you are
+reporting hourly averages for a shift that runs 06:00 to 18:00, the bucket
+labelled 18:00 contains 18:00 to 19:00, which is half outside the shift.
+
+<!-- check: skip -->
+```sql
+-- Correct: half-open, so a boundary reading is counted exactly once
+WHERE ts >= '2026-09-26 06:00:00+00'
+  AND ts <  '2026-09-26 18:00:00+00'
+```
+
+**Trap two: empty buckets vanish.** This is the big one, and it is not a SQL
+problem at all — it is a property of `GROUP BY`.
+
+<!-- check: skip -->
+```sql
+-- "Which hours had the blower offline?"
+SELECT date_trunc('hour', ts) AS bucket, count(*)
+FROM reading
+WHERE signal_id = 'AERATION:AHU-1:BLOWER_RPM' AND value = 0
+GROUP BY 1
+ORDER BY 1;
+```
+
+```
+ bucket | count
+--------+-------
+(0 rows)
+```
+
+**Zero rows, and the blower was not fine.** Look at what it actually did during
+the seeded storm:
 
 ```sql
--- Same two hours, daily. One row.
-SELECT time, mean(value) AS dissolved_oxygen, count(value) AS n
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T03:00:00Z'
-  AND time <  '2026-09-26T05:00:00Z'
-GROUP BY time(1d), signal
-ORDER BY time;
+SELECT min(value), max(value) FROM reading
+WHERE signal_id = 'AERATION:AHU-1:BLOWER_RPM';
 ```
 
-**At one minute** you see the drain begin the instant the blower trips. **At one
-hour** you see two numbers and no event at all — a blower trip lasting forty
-minutes is entirely inside one bucket and is averaged away. **At one day** you see
-a single number, and if you had only that you would conclude nothing happened.
+```
+     min      |      max
+--------------+--------------
+ 7.6858409488 | 2398.9360770382
+```
 
-This is not a quirk of the storage engine. It is the central hazard of aggregating
-time series, and it has a name: choosing an interval wider than the event you are
-looking for. **A daily average cannot contain a fault that lasted forty minutes.**
-
-## The rule of thumb, and where it breaks
-
-> Choose an interval **shorter** than the shortest event you need to see.
-
-For this plant:
-
-| Question | Interval | Why |
-|---|---|---|
-| Is the plant healthy right now? | 10 s | Slower and a fault is already over |
-| Did a blower trip happen? | 1 min | The event is tens of minutes |
-| Is nitrification degrading? | 1 h | The trend is over weeks |
-| Is the seasonal pattern shifting? | 1 day | The trend is over months |
-
-It breaks when the data is *not* evenly sampled — and it never is, because of the
-deadband. A settled signal is stored rarely; a signal in distress is stored often.
-So **each bucket holds a different number of points**, and averaging the averages
-across buckets is wrong. The fix is in
-[02-intermediate](../02-intermediate/), and the symptom is a number that is
-slightly, invisibly wrong — worst kind.
-
-## `count` next to `mean`, always
-
-Every query above selects `count(value) AS n` alongside the mean. It is there so
-the reader can see how much data each bucket is built from. A bucket with `n = 2` and
-a bucket with `n = 3600` look identical in a chart of means and are not remotely
-the same measurement.
-
-You can go further and refuse to show a bucket at all:
+It bottomed out at 7.7 rev/min — a blower spinning down against a dying air
+header, and about as stopped as a blower gets. `value = 0` found none of it,
+because a process model does not produce exactly zero. **Never test a process
+value for equality with a constant.** A `DO` probe reads 0.003, not 0. A valve
+reads 0.1 %, not 0. The threshold has to be a threshold:
 
 ```sql
-SELECT time, mean(value) AS do_mg_l, count(value) AS n
-FROM "wwtp"."aeration"
-WHERE signal = 'do_mg_l'
-  AND time >= '2026-09-26T03:00:00Z'
-GROUP BY time(1m), signal
-ORDER BY time;
+-- 33 readings below 100 rev/min: the actual near-stop
+SELECT date_trunc('hour', ts) AS bucket, count(*), min(value)
+FROM reading
+WHERE signal_id = 'AERATION:AHU-1:BLOWER_RPM'
+  AND value < 100
+GROUP BY 1
+ORDER BY 1;
 ```
 
-…and then **filter on `n` in the application**, because this dialect has no
-`HAVING` either. The alternative is a subquery, and the scalar form of that is a
-parse error too (see `01-03`). So: select the count, and drop the thin buckets when
-you render.
+That is a separate, and much more common, way for a "find the anomalies" query to
+return nothing and be believed. It is a *comparison* bug rather than a
+`GROUP BY` bug, but the symptom and the disappointment are identical.
 
-That is a real limitation with a real cost — you cannot ask the database to hide
-its own gaps, so a dashboard has to decide what a `n` of 2 means. It is the same
-problem as the gap-filling in `03-advanced`, arriving earlier than you would like.
+And here is the same question asked about a signal where the answer really is
+gaps. `AERATION:AHU-1:DO` has *two* readings in one hour and *forty* in the next:
+
+```
+       bucket        |  n  |  mean_value  |  min_value  |  max_value
+---------------------+-----+--------------+-------------+-------------
+ 2026-09-27 02:00:00 |    1 | 2.046707404  | 2.046707404 | 2.046707404
+ 2026-09-27 03:00:00 |    2 | 2.016700025  | 2.006698748 | 2.026701302
+ 2026-09-27 08:00:00 |   40 | 2.401557219  | 2.027854850 | 2.670028198
+```
+
+Those are not missing hours. The signal was steady and the deadband did its job.
+Which is exactly why you cannot tell a gap from an outage by counting rows.
+
+That returns only the hours that *contain a reading equal to zero*. The hours where
+the blower was offline and **nothing was recorded** are not in the result, because
+there is no row to group. The query cannot distinguish "the blower was running" from
+"the gateway was down", and it will confidently show you a chart with no gaps in a
+period that was entirely gaps.
+
+**This is the single most important thing to understand about aggregating a
+time series, and it is not specific to this database.** Every time-series store has
+this problem. It is why `02-intermediate` has a lesson about generating the buckets
+that *should* exist and left-joining the data onto them.
+
+## `generate_series` makes the missing buckets visible
+
+```sql
+WITH buckets AS (
+    SELECT generate_series(
+        date_trunc('hour', (SELECT min(ts) FROM reading)),
+        date_trunc('hour', (SELECT max(ts) FROM reading)),
+        interval '1 hour'
+    ) AS bucket
+)
+SELECT
+    b.bucket,
+    count(r.signal_id) AS n,          -- 0, not NULL, for an empty hour
+    avg(r.value)       AS mean_value
+FROM buckets b
+LEFT JOIN reading r
+       ON r.signal_id = 'AERATION:AHU-1:AIR_FLOW'
+      AND date_trunc('hour', r.ts) = b.bucket
+GROUP BY b.bucket
+ORDER BY b.bucket;
+```
+
+`generate_series(timestamp, timestamp, interval)` produces one row per interval
+across the range. That is a table of buckets that *definitely exists*, whether or
+not any data does — and the `LEFT JOIN` keeps the empty ones, with `n = 0`.
+
+Note the join condition includes the signal filter. That is deliberate and it is the
+classic mistake: filtering in the `WHERE` clause of a `LEFT JOIN` turns it back into
+an inner join, and every empty bucket disappears again — silently, because the query
+still returns rows.
+
+<!-- check: skip -->
+```sql
+-- Wrong. Looks identical, returns no empty buckets.
+FROM buckets b
+LEFT JOIN reading r ON date_trunc('hour', r.ts) = b.bucket
+WHERE r.signal_id = 'AERATION:AHU-1:AIR_FLOW'
+```
+
+## The window, anchored to the data
+
+Every query in this lesson uses
+
+<!-- check: skip -->
+```sql
+WHERE ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+```
+
+and that is a habit worth forming deliberately. `now() - interval '1 day'` is the
+wall clock minus a day. The seeded data ends whenever you seeded it, which is in
+the past, so `now()` gives you **nothing**. The subquery form works against
+historical data and live data alike.
+
+The cost is that the anchor is computed twice if you use it twice. When that
+starts to bother you, that is what a CTE is for, and it is the first lesson of
+[02-intermediate](../02-intermediate/).
 
 ## Exercises
 
-1. Run all three intervals above over the seeded storm. Which interval first hides
-   the influent spike? Which first hides the effluent response?
-2. Add `count(value) AS n` to a daily query over a week and find the day with the
-   fewest readings. What was the plant doing?
-3. **The hard one.** A signal reads 2.0 for an hour (3600 readings), then 2.5 for
-   one minute (60 readings), then 2.0 again. What does `mean(value)` report for
-   the hour? What *should* it report? Write both numbers down — the gap between
-   them is the subject of `02-intermediate`.
+1. Write the hourly query with `date_trunc` and with `time_bucket`. Confirm they
+   agree for hourly buckets. Then write one with a 45-minute bucket using each, and
+   explain why only one of them is possible.
+2. Find a window of a few hours where `AERATION:AHU-1:DO` has **no** readings at
+   all — it has hours with `n = 1`, so empty hours certainly exist. Then produce a
+   query that shows the gap as a row of `n = 0`. What does the gap mean, given what
+   you know about the deadband — and what else could it mean?
+3. Using the `generate_series` version, find the longest gap between consecutive
+   readings for each of five signals. Which one would you investigate first, and
+   what would you check to tell a deadband artefact from a real outage?
+4. `time_bucket` takes an optional third argument, an origin. Write a 7-minute
+   bucket query twice: once aligned to midnight, once aligned to an origin you
+   choose. What changes, and when would you want the second form?
+5. The deadband means "a row exists when the value moved". Write a query that
+   estimates the *observed* rate of a signal by dividing readings by seconds
+   covered. Then explain why that number is not the instrument's sample rate, and
+   what it actually measures. `signal.sample_ms` has the real answer.

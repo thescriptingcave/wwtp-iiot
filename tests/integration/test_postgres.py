@@ -38,6 +38,15 @@ def _use_test_port() -> None:
     """
     os.environ["POSTGRES_PORT"] = os.environ.get("POSTGRES_TEST_PORT", "55432")
     os.environ.setdefault("POSTGRES_PASSWORD", "itpass")
+    # POSTGRES_TEST_DB has to become POSTGRES_DB, not merely coexist with it.
+    # An earlier version of this file accepted `POSTGRES_TEST_DB` and then asked
+    # `storage.postgres.schema.dsn()` for the connection string — and that reads
+    # `POSTGRES_DB`, which the test run had not set. So the suite connected to,
+    # and truncated, the developer's real seeded database while appearing to use
+    # a scratch one. The variable was honoured in the message and ignored in the
+    # connection, which is the worst way for it to be wrong.
+    if "POSTGRES_TEST_DB" in os.environ:
+        os.environ["POSTGRES_DB"] = os.environ["POSTGRES_TEST_DB"]
 
 
 def _dsn() -> str:
@@ -71,6 +80,27 @@ def db():
         )
     apply_schema()
     seed_metadata()
+
+    # Refuse to run against a database that has history in it. This suite
+    # truncates `reading`; the seeder is what puts a week of plant history in,
+    # and losing it to a test run is a genuinely bad afternoon. A docstring
+    # saying "point this at a scratch database" is a promise; this is a
+    # refusal. The threshold is 50 000 rows, which is roughly an hour of seeded
+    # plant — well below a week, well above anything the suite itself creates
+    # (its largest fixture is 3 510).
+    with connect() as probe, probe.cursor() as cur:
+        cur.execute("SELECT count(*) FROM reading")
+        existing = cur.fetchone()[0]
+    if existing > 50_000:
+        pytest.fail(
+            f"{os.environ['POSTGRES_DB']} holds {existing} readings. This suite "
+            "truncates `reading`, so it must not be pointed at seeded history.\n"
+            "  Either point POSTGRES_TEST_DB at a scratch database, or:\n"
+            "    docker exec wwtp-db createdb -U wwtp wwtp_test\n"
+            "    POSTGRES_TEST_DB=wwtp_test pytest tests/integration\n"
+            "  To keep the seeded week, take a copy first:"
+            " `docker compose exec db pg_dump -U wwtp wwtp > wwtp.sql`"
+        )
     return True
 
 
@@ -521,7 +551,7 @@ def test_an_event_is_typed_where_it_matters_and_free_where_it_does(db) -> None:
             )
             assert cur.fetchone()[0] == "overcurrent"
     with connect(autocommit=True) as connection, connection.cursor() as cur:
-        cur.execute("DELETE FROM event")
+        cur.execute("DELETE FROM event WHERE ts > now() - interval '1 minute'")
 
 
 def test_an_event_severity_outside_the_scale_is_refused(db) -> None:
