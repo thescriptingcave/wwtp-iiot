@@ -1876,6 +1876,116 @@ asserted "16 references" and got 4. The lesson itself does not use it, so this
 was a bug in the test rather than the teaching — but it is the sort of thing that
 becomes a lesson the moment somebody copies the snippet.
 
+### A fresh server reports a plant that is exactly on the edge of healthy
+
+Lesson 03 set out to check one sentence in `softplc/servers/opcua.py`:
+
+> **StatusCodes.** Every value carries its quality. A failing sensor reports
+> `Bad` rather than a plausible number, which is the thing that makes a
+> historian honest.
+
+Chasing "which value carries a failing sensor" turned up four things, and the
+first is worse than the sentence it came from.
+
+**A server that has measured nothing reports `Good` at the bottom of every
+healthy band.** `_add_signal` constructs each variable at `sig.normal_low`:
+
+```
+do_mg_l                1.5       1.5         3.0
+blower_rpm           600.0     600.0      1800.0
+flow_m3h              200.0     200.0      2200.0
+```
+
+All `Good`, all with a `SourceTimestamp` of *now*, because `asyncua` stamps it at
+construction. So a client connecting before the first publish sees dissolved
+oxygen on the floor of its band, four blowers at 600 rpm — which to any
+threshold means **running** — and influent at 200 m³/h. There is no way to tell
+this from a working plant.
+
+This is the project's own "plausible wrong number" class, from thread 22 where
+the permit dashboard read pH from the TSS signal. Except there the number came
+from a wrong column; here **it comes from the constructor**, and it is the
+server's default state rather than an edge case. The sharpened lesson, which I
+had not previously stated anywhere: **an invented number that sits *inside* the
+expected range is harder to catch than one that does not**, because every
+downstream check is calibrated to the expected range. The permit bug was caught
+eventually; this one would not be.
+
+**`Bad` cannot reach the wire.** `publish()` is
+`Good if quality == 0 else Uncertain` — one branch for two states. The full
+round trip:
+
+```
+plant model on the wire gateway recovers value
+Good        Good        Good              2.0
+Uncertain   Uncertain   Uncertain         2.0
+Bad         Uncertain   Uncertain         2.0
+```
+
+The gateway is the one part that does this correctly, using a raw batch `read`
+that preserves every `StatusCode`. The status is lost on the way *out*. The
+consequences run downhill: the gateway's `if quality == QUALITY_BAD: continue`
+branch is unreachable against this server, and the two arms of
+`quality_from_status` can never both fire, so that mapping is only covered by
+unit tests that build the status by hand.
+
+**Nothing produces a `Bad` in the first place.** I assumed the fault engine
+produced one and had to check. `softplc/process/plant.py:469` is the *only*
+construction of a `PlantSnapshot` and passes `quality={}` unconditionally. The
+sole writer of a non-zero quality in the entire simulation is
+`softplc/faults/engine.py:458`, and it writes `QUALITY_UNCERTAIN`. So all four
+sensor faults — drift, flatline, stuck-high, effluent TSS — degrade to
+`Uncertain`, and `QUALITY_BAD` is a constant with no producer. The docstring
+describes a capability the code does not have.
+
+**And the obvious read throws the reason away with the value.**
+`read_data_value()` defaults to `raise_on_bad_status=True`, so an `Uncertain`
+value arrives as `UaStatusCodeError` with the number still in the response. A
+client that catches and discards loses the value *and* the status — precisely
+what `gateway/clients/opcua_client.py` spends a paragraph warning against, and
+arrived at by obeying the API. `tools/opcua_browser.py` calls it with the
+default at two sites, so **the tool you would reach for to see a fault cannot
+show one.**
+
+### A test I wrote backwards, caught by reading it rather than running it
+
+`test_the_lesson_claims_the_browser_tool_would_raise_on_a_degraded_value`
+asserted `assert not bare` — that the browser does *not* call
+`read_data_value()` with the default. The lesson says it *does*, and the lesson
+is right. The test was the thing that was wrong, and it was wrong in the
+direction that would have hidden the bug: a green tick next to a claim that the
+tool is broken.
+
+The whole family of tests in `tests/test_opcua_course.py` asserts that a
+**defect is still present**, which is the inverse of every other test in this
+repository. That inversion is deliberate and it is fragile in a way worth naming:
+a test that fails when someone fixes a bug is a test that punishes the fix. It is
+only defensible because the failure message says what to do — *"the bug lesson 03
+teaches has been fixed and the lesson is now stale"* — so the person who fixed it
+is told the documentation needs updating rather than left with a red build and no
+explanation. Sixteen tests here now work that way, and each one names the lesson
+it protects.
+
+### The gate caught four more, and one of them was mine again
+
+Two snippets in lesson 03 failed on `NameError: name 'parent' is not defined` and
+three more on `node_id` and `QUALITY_UNCERTAIN` — because a snippet that reuses a
+variable from the previous block is not runnable by a reader who starts at that
+block. The gate enforces self-containment for free, and the fix in each case was
+to make the snippet stand alone rather than to establish a convention.
+
+The other two were source excerpts from `opcua.py`, `plant.py` and
+`faults/engine.py` that I had written as runnable code. They got
+`<!-- check: skip -->` with a reason on the line above, which is the convention
+`check_sql.py` already uses.
+
+I also wrote *"22 units, nineteen ids"* in lesson 02 when it is **eighteen** —
+22 − 4, and I had not done the subtraction. Both numbers are now asserted so the
+prose and the table cannot drift apart again. Three findings in three lessons
+from writing plausible text faster than I could observe it, and the gate caught
+all three. That is the argument for the gate, and it is also an argument against
+my own instincts.
+
 ---
 
 ## Thread triage

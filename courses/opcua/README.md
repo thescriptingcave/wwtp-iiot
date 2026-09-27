@@ -98,7 +98,7 @@ including a reference id that had been guessed and was wrong.
 |---|---|---|
 | 01 | [The address space is a tree, and you can walk it](01-the-address-space.md) | **written** |
 | 02 | [Units, types, and the one lie in the type system](02-units-and-types.md) | **written** |
-| 03 | Reading, and what a StatusCode is for | planned |
+| 03 | [Reading, and what a StatusCode is for](03-reading-and-quality.md) | **written** |
 | 04 | Subscriptions — `DataChangeNotification`, and why our deadband is not OPC UA's | planned |
 | 05 | Writing: access levels, and the range that is *not* enforced on the wire | planned |
 | 06 | Why OPC UA is asyncio and Modbus is not | planned |
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Five things are wrong or missing in this implementation, and each gets its own
+Eight things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -132,16 +132,40 @@ lesson rather than a footnote:
    returning `Double` for everything. So the storm flag — `{Boolean}` in the
    contract — is published as a floating-point number, and a pH and a cubic
    metre per hour are indistinguishable by type. → **lesson 02**
-3. **A failing sensor publishes `Uncertain`, not `Bad`.** `publish()` at line 402
-   maps quality to `Good`/`Uncertain` and never produces `Bad` — `grep -c
-   'StatusCodes.Bad' softplc/servers/opcua.py` returns **0** — while the
-   docstring at line 18 says a failing sensor reports `Bad`. The historian's
-   honesty argument depends on this distinction. → lesson 03
-4. **The engineering range is advisory.** OPC UA does not enforce it and
+3. **A failing sensor publishes `Uncertain`, not `Bad`** — and cannot do
+   otherwise. `publish()` at `softplc/servers/opcua.py:402` is
+   `Good if quality == 0 else Uncertain`: one branch for two states, so a
+   `Bad` is downgraded on the way out and the gateway's
+   `if quality == QUALITY_BAD: continue` branch is unreachable.
+   `grep -c 'StatusCodes.Bad' softplc/servers/opcua.py` returns **0**, while the
+   docstring says a failing sensor reports `Bad`. → **lesson 03**
+4. **Nothing produces a `Bad` in the first place.** `softplc/process/plant.py:469`
+   is the only construction of a `PlantSnapshot` and it passes `quality={}`
+   unconditionally; the sole writer of a non-zero quality in the whole
+   simulation is `softplc/faults/engine.py:458`, and it writes
+   `QUALITY_UNCERTAIN`. So `QUALITY_BAD` is a constant with no producer, and no
+   fault in the library — drift, flatline, stuck-high, TSS — degrades to `Bad`.
+   → **lesson 03**
+5. **A never-measured signal is indistinguishable from a healthy one.** Every
+   variable is constructed at `sig.normal_low` with a `Good` status, so a fresh
+   server reports DO at 1.5 (the bottom of 1.5–3.0), blowers at 600 rpm (the
+   bottom of 600–1800, which to a threshold means *running*) and influent at
+   200 m³/h — all `Good`, all with a current `SourceTimestamp`. This is the
+   project's own "plausible wrong number" class, except that it is the server's
+   *default state* rather than a bug in a query, and an invented number inside
+   the expected range is harder to catch than one outside it. → **lesson 03**
+6. **The obvious read raises on a degraded value.**
+   `read_data_value()` defaults to `raise_on_bad_status=True`, so an `Uncertain`
+   value arrives as a `UaStatusCodeError` with the number still sitting in the
+   response. A client that catches and discards throws away the value *and* the
+   reason — the exact outcome `gateway/clients/opcua_client.py` warns against.
+   `tools/opcua_browser.py` calls it with the default at two sites, so the tool
+   you would reach for to see a fault cannot show one. → **lesson 03**
+7. **The engineering range is advisory.** OPC UA does not enforce it and
    `asyncua` does not either, so a client can write 99 mg/L to a DO setpoint
    whose range is 0.5–6.0 and the server accepts it. Write *permission* is
    genuinely enforced; the range is a promise. → lesson 05
-5. **`RunState` is zero until the process model drives it.** A bare
+8. **`RunState` is zero until the process model drives it.** A bare
    `OpcUaServer` — a unit test, or the snippet gate — publishes 22 pieces of
    equipment all reading `0`, which is indistinguishable from 22 stopped motors.
    → lesson 01, where it is the closing example

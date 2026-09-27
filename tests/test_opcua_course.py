@@ -169,6 +169,80 @@ def test_the_lesson_claims_every_value_is_a_double() -> None:
     )
 
 
+def test_the_lesson_claims_every_signal_starts_at_its_normal_low() -> None:
+    """Lesson 03's worst finding: a fresh server reports healthy, Good values.
+
+    A client connecting before the first publish sees DO at 1.5 (the bottom of
+    1.5-3.0), blowers at 600 rpm (the bottom of 600-1800, so "running"), and
+    `Good` on all of it. This is the project's own "plausible wrong number" class
+    — an invented value that sits *inside* the expected range, which is harder to
+    catch than one that does not.
+
+    If the constructor ever stops defaulting to `normal_low`, this fails and
+    lesson 03 needs rewriting.
+    """
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    assert "ua.Variant(sig.normal_low, _variant_type(sig.eu))" in src, (
+        "variables are no longer constructed at normal_low, so lesson 03's "
+        "central claim is stale"
+    )
+
+
+def test_the_lesson_claims_publish_collapses_bad_into_uncertain() -> None:
+    """`Good if quality == 0 else Uncertain` — one branch for two states."""
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    body = src.split("status = (", 1)[1].split("await entry.node.write_value", 1)[0]
+    assert "StatusCodes.Good" in body and "StatusCodes.Uncertain" in body
+    assert "StatusCodes.Bad" not in body, (
+        "publish() now has a Bad branch; lesson 03's round-trip table is stale"
+    )
+
+
+def test_the_lesson_claims_the_plant_model_never_produces_a_bad_quality() -> None:
+    """`quality={}` in the only PlantSnapshot, and one Uncertain writer.
+
+    Traced rather than assumed: the contract defines three states, the scan loop
+    can hold any of them, the gateway acts on all of them, and the simulation
+    only ever writes `Uncertain`. So `QUALITY_BAD` is a constant with no
+    producer, and the docstring's "a failing sensor reports Bad" describes a
+    capability the code does not have.
+    """
+    plant = (ROOT / "softplc" / "process" / "plant.py").read_text(encoding="utf-8")
+    assert "quality={}" in plant, (
+        "the plant model now populates quality; lesson 03's claim that Bad has "
+        "no producer needs revisiting"
+    )
+    engine = (ROOT / "softplc" / "faults" / "engine.py").read_text(encoding="utf-8")
+    assert "snap.quality[target] = QUALITY_UNCERTAIN" in engine
+    assert "QUALITY_BAD" not in engine.replace(
+        "QUALITY_UNCERTAIN = 1", ""
+    ).replace("QUALITY_BAD = 2", ""), (
+        "the fault engine now writes QUALITY_BAD; lesson 03 is stale"
+    )
+
+
+def test_the_lesson_claims_the_browser_tool_would_raise_on_a_degraded_value() -> None:
+    """`tools/opcua_browser.py` calls `read_data_value()` with the default.
+
+    `raise_on_bad_status=True` is the default, so the project's own browser
+    raises `UaStatusCodeError` on the first `Uncertain` value — the tool you
+    would reach for to see a fault is the tool that cannot show one. Asserted
+    against the source because the fix is a one-word change to two call sites
+    and it should not be made quietly.
+    """
+    src = (ROOT / "tools" / "opcua_browser.py").read_text(encoding="utf-8")
+    bare = [ln.strip() for ln in src.splitlines()
+            if "read_data_value(" in ln and "raise_on_bad_status" not in ln]
+    assert bare, (
+        "opcua_browser.py no longer calls read_data_value() with the default, so "
+        "the bug lesson 03 teaches has been fixed and the lesson is now stale. "
+        "Good news for the tool; update the lesson in the same commit."
+    )
+    assert len(bare) == 2, (
+        f"expected the two call sites lesson 03 names, found {len(bare)}: {bare}"
+    )
+
+
 def test_the_lesson_claims_bad_quality_is_never_published() -> None:
     """Lesson 03's second claim: `Bad` is documented and never produced."""
     src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")

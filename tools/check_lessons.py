@@ -19,8 +19,15 @@ A lesson's Python block is executable when it uses the names the runner injects:
 | `client` | an `asyncua.Client`, already connected |
 | `root`   | the plant's root object node — start browsing here |
 | `space`  | the server-side `AddressSpace`, for the tests a lesson quotes |
+| `server` | the `OpcUaServer`, so a lesson can *drive* the plant |
 | `ua`     | `asyncua.ua`, for NodeIds and StatusCodes |
 | `asyncio`| so a snippet can sleep to let a subscription deliver |
+
+`server` is there because a lesson about reading needs something to read, and a
+lesson about subscriptions needs something to deliver: stage a value with
+`server.set_value(...)`, set a run state, `await server.publish()`. Lesson 03
+uses it to show a degraded quality, which is otherwise not reachable from a bare
+server that nothing is driving.
 
 The runner injects them rather than making every snippet re-implement a
 connection, because the connection is the boring part and the browsing is the
@@ -136,7 +143,7 @@ async def run_snippet(sn: Snippet) -> None:
         # about the runner rather than about the server.
         root = client.get_node(space.folder.nodeid)
         glb: dict[str, Any] = {
-            "client": client, "root": root, "space": space,
+            "client": client, "root": root, "space": space, "server": server,
             "ua": ua, "asyncio": asyncio,
         }
         # The snippet is wrapped in an async function so `await` works at its top
