@@ -18,6 +18,7 @@ not**.
 | Integration | 46 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 4 | no — they run the plant model, ~18 min |
 | SQL course | 64 queries in 17 lessons | yes |
+| Extracted queries (`sql/TablePlus/`) | 64 files, run against a live database | yes |
 | `mypy` | clean across 55 source files | no |
 | `ruff` | clean on the gated packages; 159 tracked findings elsewhere | no |
 
@@ -36,7 +37,8 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22 | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 41 | that the numbers this document states are the real ones |
+| `test_readme_claims.py` | 41 |
+| `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 
 **Every number in both tables is asserted by

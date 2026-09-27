@@ -154,6 +154,12 @@ dashboards:  ## regenerate the Grafana dashboards from the contract
 dashboards-check:  ## report drift between the contract and the dashboards
 	$(PY) -m ui.grafana.generate_dashboards --check
 
+tableplus:  ## extract the course's queries into sql/TablePlus/*.sql
+	$(PY) -m tools.extract_sql
+
+tableplus-check:  ## report drift between the lessons and sql/TablePlus
+	$(PY) -m tools.extract_sql --check
+
 page:  ## regenerate the web dashboard's read model from the contract
 	$(PY) -m ui.web.generate_page
 

@@ -736,6 +736,72 @@ dashboards.
   the stripper, because a document that has to be worded to satisfy a regex is a
   document shaped by its tests.
 
+## Phase 6h — "The SQL files should have a `.sql` extension"
+
+**Expected:** an argument about file extensions.
+
+**What happened:** the extension was right and the observation was pointing at a
+real gap three questions away, and building the right thing found four defects —
+one of them in the file I had written two minutes earlier.
+
+**Learned:**
+
+- **The lessons are `.md` and always will be.** 109 fenced blocks, **19,000 words
+  of prose teaching them**. `02-01_ctes.md` is a thousand words of explanation
+  with five queries in it, and the explanation *is* the course. The line that
+  settled it is in `check_sql.py`:
+
+      The line number is what makes a failure report useful.
+      "One lesson has a bad query" is not actionable; "01-04 line 61" is.
+
+  Loose `.sql` files could only report *a file*, and a course has many queries per
+  lesson.
+
+- **And 64 of 117 blocks run.** The other 53 are fragments, `<placeholder>`
+  values, or queries *meant* to come back empty. A folder of 53 files that fail
+  when opened is worse than no folder. So `sql/TablePlus/` holds the 64, and each
+  carries the line number so a failure in a SQL client maps back to a place in a
+  lesson.
+
+- **The generator produced 62 files while the runner reported 64, and nothing
+  noticed.** The two runnable queries in index pages (`sql/README.md`,
+  `01-beginner/README.md`) were skipped by a `README.md` guard. A generator that
+  quietly drops two is worse than one that is short, so the two counts are now
+  asserted equal.
+
+- **Naming was "nearest heading above", and the first version compared titles
+  alphabetically.** It emitted two different files both called
+  `01-the-question.sql` for two different queries. Only offsets mean "nearest".
+
+- **My own README became a 65th runnable query.** `sql/TablePlus/README.md` lives
+  inside the course and contains ```` ```sql ```` fences, so the generator extracted
+  its own documentation. Caught by
+  `test_the_tableplus_readme_does_not_become_a_query` on its first run, then
+  **again** when I added the corrected version with a fresh unmarked fence. The
+  generator was right twice and the document was wrong twice, which is the correct
+  ratio for a rule this easy to forget.
+
+- **The header had no blank line before the query, so "the body is the lesson's
+  query byte for byte" had nothing to split on** and reported an empty body for
+  every file. Valid SQL — a `--` comment ends at the newline — and useless for
+  the check that is supposed to prove the copy is faithful.
+
+- **One of the 64 is an `INSERT`, and I had recommended a read-only credential.**
+  `00-03_quality_is_data/02-writing-some.sql` writes three readings — one `Good`,
+  one `Uncertain`, one `Bad` — because `quality` is a per-reading column and the
+  only honest way to show what its values mean is to write some. My test called
+  `fetchall()` and reported it as a failure; the README had already told the reader
+  to use `wwtp_ui`. **A third of a SQL course is not `SELECT`**, and both the test
+  and the advice assumed it was. The README now says 63 of 64 are reads, and says
+  what to do about the one that is not.
+
+- **And the generated directory was being scanned by the thing that generates it.**
+  Adding `sql/TablePlus/README.md` made the course 22 files instead of 21, which
+  broke two count assertions. The fix is not to keep the counts in step — it is
+  for `check_sql.py` to exclude its own output. **A generator whose output is
+  scanned by its source is a cycle, and the answer is always to exclude the
+  output.**
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.

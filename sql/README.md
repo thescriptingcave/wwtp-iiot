@@ -147,3 +147,25 @@ signal ids in the lessons are real ids from that file.
 
 A course that queries tables which do not exist is worse than no course, because
 the student cannot tell whether they misunderstood the query or the data.
+
+
+---
+
+## The queries as `.sql` files
+
+[`TablePlus/`](TablePlus/README.md) holds every runnable query from these lessons
+as a standalone file, for opening in a SQL client:
+
+```bash
+make tableplus          # regenerate
+make tableplus-check    # report drift (also in CI)
+```
+
+**Generated from the lessons, which stay `.md` and always will be** — a lesson is
+prose that teaches something with a query inside it, and the explanation is the
+course. What was missing is that the queries were not individually addressable:
+you could not `psql -f` one, link to one, or diff one change.
+
+64 of the 117 fenced blocks are extracted. The other 53 are deliberately not
+runnable — fragments, `<placeholder>` values, or queries *meant* to come back
+empty — and a folder of 53 files that fail when opened would be worse than none.

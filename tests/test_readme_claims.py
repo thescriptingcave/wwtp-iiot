@@ -169,14 +169,21 @@ def test_the_course_has_seventeen_lessons() -> None:
     is `check_sql.py`'s number, asserted separately below against the tool's own
     output rather than re-derived here.
     """
+    # `sql/TablePlus/` is generated *from* the lessons, so it is not a lesson.
+    # Excluding it here for the same reason `check_sql.py` excludes it: the course
+    # must not scan its own output, and "keep the two counts equal" is a worse
+    # answer than "do not look".
     lessons = sorted(
-        p for p in Path("sql").rglob("*.md") if p.name != "README.md"
+        p for p in Path("sql").rglob("*.md")
+        if p.name != "README.md" and "TablePlus" not in p.parts
     )
     assert len(lessons) == 17, f"{len(lessons)} lessons in sql/, not 17"
     # 21 markdown files in total: the 17 lessons plus one README per stage. The
     # tool's "21 files" counts all of them, which is worth knowing before
     # quoting it.
-    assert len(list(Path("sql").rglob("*.md"))) == 21
+    assert len([
+        p for p in Path("sql").rglob("*.md") if "TablePlus" not in p.parts
+    ]) == 21
 
 
 @pytest.mark.integration

@@ -87,6 +87,20 @@ SQL_BLOCK = re.compile(r"```sql\n(.*?)```", re.S)
 #: ```
 SKIP_MARKER = "<!-- check: skip -->"
 
+#: The generated directory, excluded from the scan.
+#:
+#: `sql/TablePlus/` is *produced from* these lessons by `tools/extract_sql.py`, so
+#: scanning it makes the course scan its own output. Two things went wrong before
+#: this exclusion existed, and both were found by a test rather than by reading:
+#:
+#: * `sql/TablePlus/README.md` became the course's 22nd file, so the count in the
+#:   README and in `docs/TESTING.md` was wrong — and the README needed a
+#:   `check: skip` marker on its own example fence so it would not be extracted
+#:   as a **65th runnable query**, which is the more embarrassing version.
+#: * A generator whose output is scanned by the thing it generates from is a cycle,
+#:   and the fix is always to exclude the output, never to keep the two in step.
+GENERATED_DIRS = {"TablePlus"}
+
 #: A query containing any of these is wall-clock dependent, so its row count may
 #: legitimately change between runs as new data arrives — or, for `EXPLAIN`, its
 #: output text does, because it contains the execution time.
@@ -226,7 +240,11 @@ def main(argv: list[str] | None = None) -> int:
     files: list[Path] = []
     for target in args.paths:
         p = Path(target)
-        files.extend(sorted(p.rglob("*.md")) if p.is_dir() else [p])
+        found = sorted(p.rglob("*.md")) if p.is_dir() else [p]
+        files.extend(
+            f for f in found
+            if not (set(f.relative_to(p).parts[:-1]) & GENERATED_DIRS)
+        )
 
     total = failures = empty = skipped = 0
     with conn, conn.cursor() as cur:

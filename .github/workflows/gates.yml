@@ -292,6 +292,12 @@ jobs:
         run: uv run python -m scada.build_flows --check
       - name: dashboards
         run: uv run python -m ui.grafana.generate_dashboards --check
+      - name: the course's extracted queries
+        # `sql/TablePlus/*.sql` is generated from the lessons, so a query edited
+        # in a lesson and not re-extracted is drift — and drift in *teaching
+        # material* is worse than drift in a service, because the stale copy is
+        # the one a reader is more likely to run.
+        run: uv run python -m tools.extract_sql --check
       - name: the web page's read model
         # The seventh consumer of `contracts/tags.yaml`, and the one most likely
         # to name a signal that does not exist: a hand-written page holds signal
