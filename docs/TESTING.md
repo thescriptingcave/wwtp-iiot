@@ -17,6 +17,9 @@ not**.
 | Unit | 378 | no |
 | Integration | 17 | yes, and refuses a seeded one |
 | SQL course | 57 queries | yes |
+| Alarm detectors | 58 | no — pure functions over hand-built windows |
+| Alarm engine | 17 | no — a list for a sink, an injected clock |
+| Alarm rules | 12 fast + 4 slow | the slow ones run the plant model |
 | Contract ↔ schema | 11 | no — asserts against the DDL text |
 | `mypy` | clean across 30 source files | no |
 | `ruff` | clean on every file the migration touched | no |
@@ -156,10 +159,18 @@ age out is a test that gets deleted rather than fixed. **This is a real gap**: t
 shown outputs in `sql/` were generated from real runs and are correct as of this
 commit, and nothing will tell you when they stop being.
 
-**The alarm engine does not exist yet** (Phase 4), so the fault signatures in
-`contracts/fault-scenarios.yaml` — eleven faults with the signature an operator
-should see, plus `NOT_detectable_by` — are declared and validated but never
-exercised end to end.
+**The alarm engine exists but six of its fifteen rules fire on a healthy plant,
+and three faults are caught only incidentally.** Both are measured and both are in
+[`ALARMS.md`](ALARMS.md); the false-positive count is a ratchet in
+`test_a_healthy_plant_raises_almost_nothing`, so a regression is a failing test and
+a fix is a deliberate edit. Four rules have never fired, so their thresholds are
+also unverified.
+
+**The coverage matrix is a simulation, not a plant.** It answers "given a plant
+that behaves this way, does this rule fire?" — which is the question about the
+*rules*. It says nothing about real fouling, real instrument failure, or whether
+any of this would help anybody, and `docs/ALARMS.md` says so in the place somebody
+would otherwise skip past it.
 
 **The dashboard is untested.** `ui/web` has no test suite. It is four services
 and a Next.js app, and it is the least verified part of the project.

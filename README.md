@@ -111,8 +111,26 @@ Full walkthrough, including troubleshooting, in
 | [`docs/TESTING.md`](docs/TESTING.md) | What is verified, how, and what is deliberately not |
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | From nothing to a running plant |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The threat model, and the gaps stated plainly |
+| [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
+
+## The alarm engine
+
+```bash
+make coverage     # the fault × rule matrix, about eight minutes
+```
+
+The fault library was built to feed an alarm engine, and for three phases it fed
+nothing. It now does, and — more usefully — **it audits itself**: every rule names
+the faults it claims to catch, every fault names how it is and is not detectable,
+and the seeder can answer "did this rule fire?" because it replays the plant
+model through each of the eleven faults.
+
+The tool's first full run found that `aeration_do_sagging` fired on **ten of
+eleven** faults, and then that **six rules fire on a healthy plant**. Both are in
+[`docs/ALARMS.md`](docs/ALARMS.md) with the measurements and the fix for one of
+them. A rule set with no audit is a set of thresholds somebody liked the look of.
 
 ## The SQL track
 
@@ -151,7 +169,10 @@ then written down as though it were a principle.
 - [x] **Phase 2** — Modbus TCP server, OPC UA server, browser tool, runnable soft PLC
 - [x] **Phase 3** — gateway (deadband, spool, both protocol readers), Postgres +
   TimescaleDB storage, metadata seeder, SQL course through `02-intermediate`
-- [ ] **Phase 4** — alarm engine with detection by what the fault does *not* show
+- [x] **Phase 4** — alarm engine: ten detectors, fifteen rules, and a coverage
+  audit against the fault library. **8 of 11 faults are covered by a rule that
+  claims them**, 3 blind spots, and **6 rules fire on a healthy plant** — the
+  ratchet and the tuning are the next piece of work. [`docs/ALARMS.md`](docs/ALARMS.md)
 - [ ] **Phase 5** — Grafana dashboards, the custom Next.js page, Node-RED SCADA flows
 
 Phase 3 is complete and exercised against a live database: 378 unit tests, 17

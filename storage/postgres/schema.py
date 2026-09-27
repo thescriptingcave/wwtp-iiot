@@ -299,6 +299,24 @@ def main(argv: list[str] | None = None) -> int:
         minute_days=int(os.environ.get("RETENTION_MINUTE_DAYS", "90")),
     )
     log.info("retention policies attached")
+
+    # Roles last, and separately from the DDL. They are cluster state rather than
+    # schema state, they are not restored by a schema-only dump, and a migration
+    # that creates a table and forgets to grant on it produces a runtime
+    # permission error rather than a schema error. See `storage/postgres/roles.py`
+    # and `docs/SECURITY.md` for why they exist at all.
+    from storage.postgres.roles import apply as apply_roles
+    from storage.postgres.roles import check as check_roles
+
+    apply_roles()
+    for role in check_roles():
+        if not role.ok:
+            log.error(
+                "role %s is not as declared: missing=%s unexpected=%s",
+                role.name, role.missing, role.unexpected,
+            )
+        else:
+            log.info("role %s ok", role.name)
     return 0
 
 

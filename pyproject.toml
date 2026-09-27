@@ -129,6 +129,8 @@ ignore = [
 "tests/test_postgres_schema.py" = ["PLC0415"]
 "tests/test_postgres_writer.py" = ["PLC0415"]
 "tests/test_scanloop.py" = ["PLC0415"]
+"tests/test_alarm_detectors.py" = ["PLC0415"]
+"tests/test_alarm_rules.py" = ["PLC0415"]
 "sql/*" = ["ALL"]
 # `main()` in both of these is a CLI: argparse, a connection, a loop, and an
 # error path for each of four ways the database can say no. Splitting it up would
@@ -136,6 +138,24 @@ ignore = [
 # in one screen is worth more than one with fewer lines.
 "tools/sqlrun.py" = ["PLC0415", "PLR0912", "PLR0915"]
 "tools/check_sql.py" = ["PLC0415", "PLR0912", "PLR0915"]
+# RUF002: the detection-vocabulary tables in alarms/rules.py and base.py are
+# aligned ASCII, and an en dash in an aligned column breaks the alignment. The
+# hyphens are the readable choice, not an accident.
+"alarms/rules.py" = ["RUF002", "PLC0415"]
+"alarms/base.py" = ["RUF002"]
+# The alarm package imports psycopg and the storage module lazily, so that the
+# detectors — which are the part the course and the tests care about — can be
+# imported and exercised without the storage extras installed. Same reasoning as
+# `storage/postgres/writer.py`.
+"alarms/main.py" = ["PLC0415"]
+"alarms/scenarios.py" = ["PLC0415"]
+"alarms/store.py" = ["PLC0415"]
+"storage/postgres/roles.py" = ["PLC0415"]
+"storage/postgres/login_role.py" = ["PLC0415"]
+# `_evaluate_one` is a state machine with one branch per state; splitting it up
+# would put each branch further from the transitions it feeds. The lazy import is
+# so the module stays importable without the storage extras.
+"alarms/engine.py" = ["PLR0911", "PLC0415"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -153,7 +173,7 @@ asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
 markers = [
     "contract: tests that validate contracts/tags.yaml against consumers",
-    "sql: the course's SQL, checked against a live InfluxDB",
+    "sql: the course's SQL, checked against a live Postgres",
     "integration: tests requiring running services",
     "chaos: tests that deliberately break things",
     "slow: tests taking more than a few seconds",

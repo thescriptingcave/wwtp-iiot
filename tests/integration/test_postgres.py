@@ -5,158 +5,20 @@
 
 This file is the one that would have caught the bugs the schema's constraints
 were designed from. It is deliberately *not* a mirror of
-``tests/test_postgres_writer.py``: that file proves the policy, this one proves
+`tests/test_postgres_writer.py`: that file proves the policy, this one proves
 the SQL, and the two only overlap where an error message is the evidence.
 
-Every test that writes truncates first. The database is expected to be a
-scratch one; the seeder is the thing that puts real history in, and pointing
-this suite at a seeded database will destroy it. That is stated in
-``docs/GETTING-STARTED.md`` rather than defended against here, because a test
-suite that quietly refuses to run is worse than one that is clearly documented
-as destructive.
+Every test that writes truncates first. The database is expected to be a scratch
+one; the seeder is the thing that puts real history in, and pointing this suite
+at a seeded database will destroy it. `conftest.py` *refuses* to rather than
+trusting the docstring, because it once destroyed one.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
-
-#: Row count above which this suite considers the database to be holding
-#: somebody's data rather than its own scratch space.
-#:
-#: 50 000 is roughly an hour of seeded plant, well below the week the seeder
-#: produces, and well above the largest fixture this file creates (3 510 rows, in
-#: the deliberately-uneven aggregate test). The gap on both sides is deliberate:
-#: a threshold that was merely "large" would eventually be crossed by the tests
-#: themselves, and one that was merely "small" would refuse a legitimately
-#: nearly-empty database.
-_DESTRUCTIVE_ABOVE_READINGS = 50_000
-
-
-def _db_name() -> str:
-    """The database name, with the same default `storage.postgres.schema.dsn()`
-    uses. Reading it from the environment directly raised a `KeyError` when
-    `POSTGRES_DB` was unset — which is the *default* case, and the error arrived
-    from inside the refusal message, seventeen times.
-    """
-    return os.environ.get("POSTGRES_DB", "wwtp")
-
-
-def _use_test_port() -> None:
-    """Point the whole process at the throwaway database, once.
-
-    There is deliberately no second DSN in this file. An earlier version built
-    one from ``POSTGRES_TEST_PORT`` while ``storage.postgres.schema.dsn()`` read
-    ``POSTGRES_PORT``, so the two disagreed and the fixture connected to 5432 —
-    which on a developer machine is somebody's real Postgres — while the tests
-    under it connected to the scratch instance. It failed as an authentication
-    error, which is a wonderfully misleading message for a port mistake.
-
-    One DSN, assembled in one place, read by everybody.
-    """
-    os.environ["POSTGRES_PORT"] = os.environ.get("POSTGRES_TEST_PORT", "55432")
-    os.environ.setdefault("POSTGRES_PASSWORD", "itpass")
-    # POSTGRES_TEST_DB has to become POSTGRES_DB, not merely coexist with it.
-    # An earlier version of this file accepted `POSTGRES_TEST_DB` and then asked
-    # `storage.postgres.schema.dsn()` for the connection string — and that reads
-    # `POSTGRES_DB`, which the test run had not set. So the suite connected to,
-    # and truncated, the developer's real seeded database while appearing to use
-    # a scratch one. The variable was honoured in the message and ignored in the
-    # connection, which is the worst way for it to be wrong.
-    if "POSTGRES_TEST_DB" in os.environ:
-        os.environ["POSTGRES_DB"] = os.environ["POSTGRES_TEST_DB"]
-
-
-def _dsn() -> str:
-    from storage.postgres.schema import dsn
-
-    return dsn()
-
-
-@pytest.fixture(scope="session")
-def db():
-    """A schema applied and a contract loaded, or a skip.
-
-    ``POSTGRES_TEST_PORT`` defaults to 55432 rather than 5432 so that running
-    the suite by accident hits nothing: 5432 is where the compose stack lives and
-    55432 is where a throwaway instance is expected.
-    """
-    pytest.importorskip("psycopg")
-    _use_test_port()
-    from storage.postgres.schema import apply_schema, connect, seed_metadata
-
-    try:
-        with connect() as probe:
-            probe.execute("SELECT 1")
-    except Exception as exc:
-        pytest.skip(
-            f"no Postgres at {os.environ.get('POSTGRES_HOST', '127.0.0.1')}:"
-            f"{os.environ.get('POSTGRES_PORT', '5432')}: {exc}\n"
-            "  docker compose up -d db && docker compose run --rm init-db\n"
-            "  then set POSTGRES_PASSWORD (it defaults to 'itpass' for a local "
-            "scratch instance)"
-        )
-    apply_schema()
-    seed_metadata()
-
-    # Refuse to run against a database that has history in it. This suite
-    # truncates `reading`; the seeder is what puts a week of plant history in,
-    # and losing it to a test run is a genuinely bad afternoon. A docstring
-    # saying "point this at a scratch database" is a promise; this is a
-    # refusal. The threshold is 50 000 rows, which is roughly an hour of seeded
-    # plant — well below a week, well above anything the suite itself creates
-    # (its largest fixture is 3 510).
-    with connect() as probe, probe.cursor() as cur:
-        cur.execute("SELECT count(*) FROM reading")
-        existing = cur.fetchone()[0]
-    if existing > _DESTRUCTIVE_ABOVE_READINGS:
-        # A skip, not a failure. The distinction matters: a failure says "this
-        # suite is broken", and it would say it seventeen times because the
-        # fixture is session-scoped. A skip says "not here, and here is why",
-        # which is the truth.
-        pytest.skip(
-            f"refusing to run: {_db_name()} holds {existing} "
-            f"readings. This suite truncates `reading`, so it must not be "
-            "pointed at seeded history.\n"
-            "    docker exec wwtp-db createdb -U wwtp wwtp_test\n"
-            "    POSTGRES_TEST_DB=wwtp_test pytest tests/integration\n"
-            "  To keep the seeded week, take a copy first:\n"
-            "    docker compose exec db pg_dump -U wwtp wwtp > wwtp.sql"
-        )
-    return True
-
-
-@pytest.fixture
-def conn(db):
-    """A clean connection. Readings are truncated; metadata is not.
-
-    Truncating `reading` rather than dropping and recreating keeps the hypertable,
-    its chunks and its indexes — which is the point, since chunk behaviour is
-    half of what is being tested.
-
-    Autocommit, because the aggregate tests need ``CALL
-    refresh_continuous_aggregate``, which Postgres refuses to run inside a
-    transaction block. That is not a preference: it is the only way to refresh a
-    continuous aggregate, so any harness that wants to test one has to be
-    autocommit, and finding that out by hitting the error is one round trip
-    wasted.
-    """
-    from storage.postgres.schema import connect
-
-    connection = connect(autocommit=True)
-    with connection.cursor() as cur:
-        cur.execute("TRUNCATE reading")
-    connection.commit()
-    yield connection
-    connection.close()
-
-
-def _scalar(cur, query: str, *params):
-    cur.execute(query, params)
-    return cur.fetchone()[0]
-
 
 # ─── the constraints, each one shown to actually bite ────────────────────────
 #
@@ -165,7 +27,7 @@ def _scalar(cur, query: str, *params):
 # nothing, and these four are the reason the migration happened.
 
 
-def test_a_good_reading_with_no_value_is_refused(conn) -> None:
+def test_a_good_reading_with_no_value_is_refused(conn, scalar) -> None:
     """Zero is a real dissolved-oxygen concentration, a real flow rate, and a
     real alarm state. A row that has no value and claims to be Good is the one
     ambiguity that would be undetectable downstream."""
@@ -179,7 +41,7 @@ def test_a_good_reading_with_no_value_is_refused(conn) -> None:
     assert "reading_null_is_not_good" in str(err.value)
 
 
-def test_a_bad_reading_with_no_value_is_accepted(conn) -> None:
+def test_a_bad_reading_with_no_value_is_accepted(conn, scalar) -> None:
     """The representation is the point, not an accident.
 
     The previous storage engine arrived here by refusing every alternative —
@@ -197,7 +59,7 @@ def test_a_bad_reading_with_no_value_is_accepted(conn) -> None:
     assert quality == 2
 
 
-def test_a_reading_for_an_unknown_signal_is_refused(conn) -> None:
+def test_a_reading_for_an_unknown_signal_is_refused(conn, scalar) -> None:
     """The single biggest correctness gain from leaving the tag-column model.
 
     In the previous engine a reading could name a signal that had never existed,
@@ -216,7 +78,7 @@ def test_a_reading_for_an_unknown_signal_is_refused(conn) -> None:
     assert "signal_id" in str(err.value)
 
 
-def test_an_unknown_quality_is_refused(conn) -> None:
+def test_an_unknown_quality_is_refused(conn, scalar) -> None:
     """Good/Uncertain/Bad was a convention only the writer respected.
 
     InfluxQL has no constraints at all, so a fourth code — or a typo, or a
@@ -234,7 +96,7 @@ def test_an_unknown_quality_is_refused(conn) -> None:
     assert "reading_quality_known" in str(err.value)
 
 
-def test_a_signal_may_only_name_a_known_source(conn) -> None:
+def test_a_signal_may_only_name_a_known_source(conn, scalar) -> None:
     with pytest.raises(Exception, match="reading_source_known"), \
             conn.cursor() as cur:
         cur.execute(
@@ -246,7 +108,9 @@ def test_a_signal_may_only_name_a_known_source(conn) -> None:
 # ─── the two protocol faces coexist ─────────────────────────────────────────
 
 
-def test_both_protocols_can_record_the_same_signal_at_the_same_instant(conn) -> None:
+def test_both_protocols_can_record_one_signal_at_one_instant(
+    conn, scalar,
+) -> None:
     """The cross-check that makes the word-order bug findable in the field.
 
     The gateway reads Modbus then OPC UA, and one overwrites the other per poll,
@@ -290,23 +154,23 @@ def test_both_protocols_can_record_the_same_signal_at_the_same_instant(conn) -> 
     assert lo <= 2.3e-41 <= hi
 
 
-def test_a_reexisting_instant_is_updated_not_duplicated(conn) -> None:
-    _use_test_port()
+def test_a_reexisting_instant_is_updated_not_duplicated(conn, scalar) -> None:
     """The gateway re-sends from its spool, so this has to be an upsert."""
+    from storage.postgres.schema import dsn
     from storage.postgres.writer import Reading, make_execute
 
     ts = 1_700_000_000.0
-    execute = make_execute(_dsn())
+    execute = make_execute(dsn())
     sid = "AERATION:AHU-1:DO"
 
     execute([Reading(ts=ts, signal_id=sid, value=1.0, source="opcua").as_row()])
     execute([Reading(ts=ts, signal_id=sid, value=2.0, source="opcua").as_row()])
     try:
         with conn.cursor() as cur:
-            assert _scalar(
+            assert scalar(
                 cur, "SELECT count(*) FROM reading WHERE signal_id = %s", sid
             ) == 1
-            assert _scalar(
+            assert scalar(
                 cur, "SELECT value FROM reading WHERE signal_id = %s", sid
             ) == 2.0
     finally:
@@ -340,7 +204,7 @@ def _seed_rows(conn, *, minutes: int = 90) -> None:
     return base
 
 
-def test_the_hypertable_really_is_chunked(conn) -> None:
+def test_the_hypertable_really_is_chunked(conn, scalar) -> None:
     """Otherwise "hypertable" is a claim rather than a fact."""
     with conn.cursor() as cur:
         cur.execute(
@@ -350,7 +214,9 @@ def test_the_hypertable_really_is_chunked(conn) -> None:
         assert cur.fetchone()[0] == 1
 
 
-def test_both_tier_buckets_come_from_raw_so_the_mean_is_a_true_mean(conn) -> None:
+def test_both_tier_buckets_come_from_raw_so_the_mean_is_a_true_mean(
+    conn, scalar,
+) -> None:
     """The bug the previous rollup worker documented at length, designed out.
 
     Averaging the 1-minute averages into an hourly mean is wrong as soon as two
@@ -402,7 +268,7 @@ def test_both_tier_buckets_come_from_raw_so_the_mean_is_a_true_mean(conn) -> Non
     assert avg_of_avgs != pytest.approx(raw_mean, rel=1e-6)
 
 
-def test_count_value_is_not_count_star(conn) -> None:
+def test_count_value_is_not_count_star(conn, scalar) -> None:
     """A reading that happened is not a reading you can use.
 
     `count(*)` counts the non-Good rows too, so a "fraction of readings that
@@ -428,7 +294,7 @@ def test_count_value_is_not_count_star(conn) -> None:
     assert happened - usable == 1, (happened, usable)
 
 
-def test_the_newest_window_is_not_available_through_the_aggregate(conn) -> None:
+def test_the_newest_window_is_not_available_through_the_aggregate(conn, scalar) -> None:
     """`materialized_only = true`, and the trade is deliberate.
 
     A rollup that answers for the last incomplete window teaches a reader to
@@ -447,8 +313,7 @@ def test_the_newest_window_is_not_available_through_the_aggregate(conn) -> None:
 # ─── COPY, the bulk path ───────────────────────────────────────────────────
 
 
-def test_copy_and_insert_agree(conn) -> None:
-    _use_test_port()
+def test_copy_and_insert_agree(conn, scalar) -> None:
     """The two transports must produce the same rows.
 
     They do not have to: `COPY` cannot upsert, which is why the live path uses
@@ -457,6 +322,7 @@ def test_copy_and_insert_agree(conn) -> None:
     migration — a float timestamp accepted by one and refused by the other — is
     worth a standing test.
     """
+    from storage.postgres.schema import dsn
     from storage.postgres.writer import Reading, make_copy_execute, make_execute
 
     ts = 1_700_000_100.0
@@ -464,8 +330,8 @@ def test_copy_and_insert_agree(conn) -> None:
     rows = [Reading(ts=ts + i, signal_id=sid, value=float(i), source="seed")
             .as_row() for i in range(3)]
 
-    ins = make_execute(_dsn())
-    cop = make_copy_execute(_dsn())
+    ins = make_execute(dsn())
+    cop = make_copy_execute(dsn())
     try:
         ins([r for r in rows if r[0] == ts])
         cop([r for r in rows if r[0] != ts])
@@ -485,7 +351,6 @@ def test_copy_and_insert_agree(conn) -> None:
 
 
 def test_copy_refuses_a_duplicate_rather_than_silently_overwriting(db) -> None:
-    _use_test_port()
     """The consequence of choosing COPY for the seeder, stated as a test.
 
     A re-run into a window already written fails loudly. For the seeder that is
@@ -494,9 +359,10 @@ def test_copy_refuses_a_duplicate_rather_than_silently_overwriting(db) -> None:
     COPY. Both halves of that sentence are load-bearing.
     """
     import psycopg
+    from storage.postgres.schema import dsn
     from storage.postgres.writer import Reading, make_copy_execute
 
-    execute = make_copy_execute(_dsn())
+    execute = make_copy_execute(dsn())
     row = Reading(ts=1_700_000_200.0, signal_id="EFFLUENT:FLOW:FLOW",
                   value=1.0, source="seed").as_row()
     try:
@@ -510,16 +376,15 @@ def test_copy_refuses_a_duplicate_rather_than_silently_overwriting(db) -> None:
 # ─── metadata ───────────────────────────────────────────────────────────────
 
 
-def test_the_contract_is_loaded_and_joins_to_the_readings(db) -> None:
-    _use_test_port()
+def test_the_contract_is_loaded_and_joins_to_the_readings(db, scalar) -> None:
     from softplc.contract import contract as get_contract
     from storage.postgres.schema import connect
 
     c = get_contract()
     with connect() as connection, connection.cursor() as cur:
-        assert _scalar(cur, "SELECT count(*) FROM signal") == len(c.signals)
-        assert _scalar(cur, "SELECT count(*) FROM equipment") == len(c.equipment)
-        assert _scalar(
+        assert scalar(cur, "SELECT count(*) FROM signal") == len(c.signals)
+        assert scalar(cur, "SELECT count(*) FROM equipment") == len(c.equipment)
+        assert scalar(
             cur, "SELECT count(*) FROM signal WHERE equipment_id IS NULL"
         ) == 24
 
@@ -535,8 +400,7 @@ def test_the_contract_is_loaded_and_joins_to_the_readings(db) -> None:
         assert cur.fetchall(), "the metadata and the readings cannot be joined"
 
 
-def test_seeding_metadata_twice_changes_nothing(db) -> None:
-    _use_test_port()
+def test_seeding_metadata_twice_changes_nothing(db, scalar) -> None:
     """An appending seeder becomes a second, disagreeing copy of the contract.
 
     Which is the copy nobody remembers to update. `ON CONFLICT DO UPDATE`
@@ -550,15 +414,14 @@ def test_seeding_metadata_twice_changes_nothing(db) -> None:
     with connect() as connection:
         seed_metadata(c, conn=connection)
         with connection.cursor() as cur:
-            assert _scalar(cur, "SELECT count(*) FROM signal") == len(c.signals)
-            assert _scalar(cur, "SELECT count(*) FROM equipment") == len(c.equipment)
+            assert scalar(cur, "SELECT count(*) FROM signal") == len(c.signals)
+            assert scalar(cur, "SELECT count(*) FROM equipment") == len(c.equipment)
 
 
 # ─── events: the one genuinely document-shaped thing ───────────────────────
 
 
 def test_an_event_is_typed_where_it_matters_and_free_where_it_does(db) -> None:
-    _use_test_port()
     from storage.postgres.schema import connect, record_event
 
     with connect(autocommit=True) as connection:
@@ -575,11 +438,10 @@ def test_an_event_is_typed_where_it_matters_and_free_where_it_does(db) -> None:
             )
             assert cur.fetchone()[0] == "overcurrent"
     with connect(autocommit=True) as connection, connection.cursor() as cur:
-        cur.execute("DELETE FROM event WHERE ts > now() - interval '1 minute'")
+        cur.execute("DELETE FROM event")
 
 
 def test_an_event_severity_outside_the_scale_is_refused(db) -> None:
-    _use_test_port()
     import psycopg
     from storage.postgres.schema import connect
 

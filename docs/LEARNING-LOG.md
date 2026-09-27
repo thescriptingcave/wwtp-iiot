@@ -650,6 +650,33 @@ had nothing to do with data modelling, and that is the dangerous shape: a rule
 that is right for the wrong reason survives every challenge that tests its
 conclusions rather than its premises.
 
+### Four grants that were not obvious, and a stale image that hid all of them
+
+`wwtp_writer` was granted `INSERT` on `reading` and nothing else. That is the
+obvious minimum, it is what a person writes from a description, and it produces:
+
+    ERROR:  permission denied for table reading
+
+with no hint about what is missing. Three more privileges were needed and all
+three were found by **running the stack**:
+
+* `SELECT` — `ON CONFLICT DO UPDATE` reads the conflicting row to decide whether
+  to update it.
+* `UPDATE` — and then writes it. The one that looks like a mistake on a
+  historian, and the gateway's re-send path genuinely needs it.
+* `USAGE` on `event_id_seq` — `event.id` is `BIGSERIAL`.
+
+And then a fourth problem, which is the one I would write down: **the container
+image was stale.** I applied the grants to the database, re-ran `init-db`, and
+the failure persisted, because `init-db` was running the *image's* copy of
+`roles.py` from before the edit. I checked the grants by hand, saw them missing,
+and spent several minutes on a privileges problem that was a build problem.
+
+That is the **third** time a stale image has cost me time this session. The
+lesson is not "remember to rebuild" — it is that **`docker compose run` does not
+rebuild, and a container is a snapshot of the code as it was**, which is exactly
+the kind of fact that feels like it should be impossible to get wrong and is not.
+
 ### Three bugs in my own new code, all the same shape
 
 Every one was found by running the thing rather than by reading it.
@@ -780,6 +807,174 @@ Two things came out of the fix that are worth having regardless:
   rather than failing a comparison — which is how the first fix broke
   `test_end_to_end.py` and why the division is now pinned by its own test.
 
+
+## Phase 4 — the alarm engine, and the tool that told me it was wrong
+
+**What was built.** Ten detectors, fifteen rules, a state machine, and a coverage
+audit that runs the fault library through the plant model and reports a matrix of
+fault against rule. `docs/ALARMS.md` is the write-up.
+
+**What I expected.** Writing fifteen thresholds, and then — the part I had been
+looking forward to — discovering that several of them caught the same fault.
+
+**What happened.** The thresholds were not the problem. The *tool* was, and it
+found four things in itself before it found anything in the rules.
+
+### The report called six untested faults "blind spots"
+
+I asked for three of the eleven faults. The report said *"8 of 11 blind spots"* —
+because the other eight had no alarm transitions simply by never having been
+simulated.
+
+This is the worst kind of bug a report can have, because it is not wrong, it is
+**confidently reporting a measurement that was never taken**, and the natural
+response to "your rule set misses these eight faults" is to delete a rule. The
+report now has an `evaluated` field and prints `untested` in the same column as
+`YES` and `no`.
+
+### Then it called six incidentally-caught faults "not blind spots"
+
+I over-corrected. The first version said a fault was not a blind spot if *any*
+rule fired on it, which felt like evidence. It is not:
+
+    sludge_blanket_thickening   "found" by six rules that were not looking for it
+
+Retune those six and the fault is invisible again. A coincidence standing in
+front of a blind spot is still a blind spot, and the report now says so, with the
+incidental catches listed separately as what they are.
+
+### The transition log was discarding the evidence
+
+The bounded transition list dropped from the front. The transitions it lost were
+the `raised` records at the *start* of the run — so a coverage report over a long
+run silently lost every fault detection and reported those faults as blind spots.
+
+The bound is only safe if what it discards is the least valuable thing, and "a
+repetition of an alarm already known to be active" is that by a wide margin. It
+now evicts reaffirmations first.
+
+### And the engine was emitting 9 992 identical events
+
+The first full run: 9 994 of 10 000 transitions were reaffirmations of *three*
+alarms, one every five seconds, for nine hours. Re-emission was gated on the value
+having moved, and on a noisy signal it always has.
+
+A rate limit alone would have been the wrong fix — an alarm whose value is
+static would then never update, and the first message an operator sees is the one
+with the least information in it. Both conditions now apply.
+
+### Then the rules, which is the part I would have got wrong on my own
+
+`aeration_do_sagging` fired on **ten of eleven faults**. Not miscalibrated by a
+factor — measuring the wrong thing. A least-squares slope over a 30-minute window
+of dissolved oxygen is dominated by sampling noise and by the plant's diurnal
+cycle, both of which clear a 0.15 mg/L per hour threshold on a perfectly healthy
+basin.
+
+I did not fix it by picking a bigger number. I measured:
+
+    healthy plant, 1 618 three-hour windows:  steepest fall -0.427, p5 -0.401
+    blower trip,    same measurement:         p1 -0.797
+
+and set the threshold at 0.6, above every healthy sample and below 99 % of the
+fault's. Re-measured: it now fires on **one of eleven**, the one it exists for.
+The fix is a `min_span_s` rather than a number, because the diurnal cycle cannot
+fake a two-hour fall and noise cannot either.
+
+**And the general lesson, which is the one I am keeping:**
+
+> A rate needs a window long enough that the thing you are measuring is slower
+> than the thing you are trying to exclude.
+
+### And then: six rules fire on a healthy plant
+
+Which is the most embarrassing thing in this phase, and the most useful. The
+thresholds were written from engineering judgement and from the contract's normal
+bands, and **neither of those is a measurement of what a healthy plant actually
+does.** A rule built on a `range_max` inherits that range's optimism, and two of
+the six fire because the plant routinely reaches or exceeds a value the contract
+calls a maximum.
+
+An alarm system whose rules fire on a healthy plant is worse than no alarm system,
+because every alarm it raises is a false one. This is documented as a ratchet in
+`test_a_healthy_plant_raises_almost_nothing` rather than quietly tuned away, and
+it is the top item in `docs/ALARMS.md`.
+
+### And the contract is wrong about `single_point_threshold`
+
+Three times, the coverage report flagged a rule using a method the contract says
+cannot find that fault — and the rule fired.
+
+The rules are right. The contract's `NOT_detectable_by` reads as *"this method
+cannot find this fault"* and means *"this method alone is not sufficient"*. A
+threshold on digester pH finds souring only because souring is slow and has a
+limit. Set a high ammonia load and pH is the wrong signal entirely.
+
+**The fix is to change the contract's wording, and I have not made it.** A contract
+is the source of truth for the plant, and quietly editing it to agree with the code
+is the failure mode this project keeps running into. It is recorded as a
+disagreement rather than resolved, which is the honest state.
+
+### Four grants that were not obvious, and a stale image that hid all of them
+
+`wwtp_writer` was granted `INSERT` on `reading` and nothing else. That is the
+obvious minimum, it is what a person writes from a description, and it produces:
+
+    ERROR:  permission denied for table reading
+
+with no hint about what is missing. Three more privileges were needed and all
+three were found by **running the stack**:
+
+* `SELECT` — `ON CONFLICT DO UPDATE` reads the conflicting row to decide whether
+  to update it.
+* `UPDATE` — and then writes it. The one that looks like a mistake on a
+  historian, and the gateway's re-send path genuinely needs it.
+* `USAGE` on `event_id_seq` — `event.id` is `BIGSERIAL`.
+
+And then a fourth problem, which is the one I would write down: **the container
+image was stale.** I applied the grants to the database, re-ran `init-db`, and
+the failure persisted, because `init-db` was running the *image's* copy of
+`roles.py` from before the edit. I checked the grants by hand, saw them missing,
+and spent several minutes on a privileges problem that was a build problem.
+
+That is the **third** time a stale image has cost me time this session. The
+lesson is not "remember to rebuild" — it is that **`docker compose run` does not
+rebuild, and a container is a snapshot of the code as it was**, which is exactly
+the kind of fact that feels like it should be impossible to get wrong and is not.
+
+### Three bugs in my own new code, all the same shape
+
+**`dwell_for` had its subtraction inverted** — `condition_since - raised_at`
+instead of `raised_at - condition_since`. Found by a test asserting the dwell
+equals the dwell that was asked for.
+
+**`has_table_privilege` was written as `if cur.execute(...) or cur.fetchone()[0]`**
+and therefore always true, so the credential check reported that the gateway held
+every privilege on every table. Caught because the first output was obviously
+wrong, which is the only reason it was caught at all.
+
+**`SET LOCAL ROLE` is a no-op in autocommit**, so six tests in the role suite
+passed *against the owner* — meaning they were checking that the owner cannot do
+things the owner can obviously do. A test that passes for the wrong reason is
+worse than one that fails, because it is a green tick.
+
+**The gateway's health check took three forms and was wrong twice.** First a shell
+`&& ... || ...` chain, which was unreadable enough that I had to work out its
+behaviour three times and which redirected stderr to `/dev/null` — so a real
+connection failure reported itself as *"scoped"*. Then a folded YAML scalar (`>-`),
+which collapsed the newlines and put `try:` mid-line. Now a literal block (`|-`)
+with the logic in Python, and it can say *which* of several things went wrong.
+
+A health check is the one piece of diagnostic tooling nobody is ever allowed to
+be clever, and I was clever three times.
+
+The common shape: **all three were assertions about a thing, where the assertion
+and the thing were wired to each other incorrectly, and nothing failed loudly.**
+That is the same lesson as the unthrottled scan loop and the wrong comment in
+`softplc/main.py`, arrived at for the fourth and fifth time. It is now a
+pattern I look for on sight: *a test that can only fail if the thing it names has
+the same name.*
+
 ---
 
 ## Open threads
@@ -858,16 +1053,44 @@ Two things came out of the fix that are worth having regardless:
    for, and I do not currently know the answer. `sql/02-04` states the problem
    rather than papering over it.
 
-9. **Database credentials are not scoped, and that is a regression.** The old
-   gateway authenticated to Couchbase with a bucket-scoped user, verified to be
-   unable to administer the cluster. The new stack has one `POSTGRES_PASSWORD`
-   shared by four services, and it owns the database: the gateway can `DROP
-   TABLE`. The three roles that would fix it are written out in
-   `docs/SECURITY.md` and deliberately not implemented, for the same reason the
-   OPC UA range gap is not: a silently-closed gap in a teaching project is worse
-   than a documented one.
+9. **Database credentials — resolved.** The old gateway authenticated to Couchbase
+   with a bucket-scoped user, verified to be unable to administer the cluster.
+   The Postgres migration replaced that with one shared password owning the
+   database, and I recorded it as a deliberate regression on the grounds that a
+   documented gap beats a silent fix.
 
-10. **The SQL course's shown outputs are not tested.** `tools/check_sql.py`
+   That reasoning was right for the two *protocol* gaps — OPC UA's
+   `EUInformation` is advisory by specification and Modbus has no authentication
+   at all, so those are properties of the technology — and wrong for this one,
+   which is a grant that had not been made yet. **A documented omission is a
+   teaching point; a documented regression is debt somebody agreed to pay.** It is
+   paid: `wwtp_writer` and `wwtp_reader` are group roles, the gateway is a
+   `LOGIN` role in `wwtp_writer` and nothing else, and it cannot DELETE a
+   reading, TRUNCATE, DROP a table or UPDATE the contract. Each proved by
+   attempting it and reading the refusal.
+
+   The password has to be composed as a quoted literal, because **DDL cannot be
+   parameterised** — `CREATE ROLE ... PASSWORD %s` is a syntax error, and the
+   first version failed with exactly that.
+
+10. **Six alarm rules fire on a healthy plant**, and three faults are caught only
+    incidentally by rules that do not claim them. Four rules have never fired, so
+    their thresholds are unverified too. All measured, all in
+    `docs/ALARMS.md`, with a ratchet in the test suite so a regression is a
+    failing test. **The top item in the project.** The method that fixed the
+    seventh is the method for the rest: measure the healthy distribution, put the
+    threshold above it.
+
+11. **The contract's `NOT_detectable_by` entries are stated as absolutes and
+    three of them are wrong.** A `single_point_threshold` rule detects
+    `digester_souring` and `storm_inflow`, which the contract says it cannot.
+
+    The fix is to reword the contract to "not sufficient alone" — and that edit
+    has deliberately **not** been made. Editing a source of truth to agree with
+    the code is exactly the failure mode this log keeps recording, so it is
+    recorded as a disagreement and left for a decision.
+
+12. **The SQL course's shown outputs are not tested.** `tools/check_sql.py`
     verifies that every query runs and returns rows. Whether the output printed in
     a lesson is still what the query produces is unchecked, because the answers
     change as the seeder's random seed changes. Every shown output in `sql/` was
@@ -877,43 +1100,56 @@ Two things came out of the fix that are worth having regardless:
     the right fix is pinning the seeder's seed and checking the outputs — which is
     a piece of work, not a patch.
 
-11. **`web` has no source.** `ui/web/Dockerfile` is correct and
+13. **`web` has no source.** `ui/web/Dockerfile` is correct and
     `ui/web/package.json` does not exist, because Phase 5 has not been written.
     The service is behind a `ui` profile so the rest of the stack starts. Every
-    document's service count is now accurate; anything that implies a dashboard
-    is available is not, and `ui/grafana/dashboards/` is an empty directory for
-    the same reason.
+    document's service count is now accurate; anything that implies a dashboard is
+    available is not, and `ui/grafana/dashboards/` is an empty directory for the
+    same reason.
 
-12. **The soft PLC's Modbus link is single-threaded against its own scan loop.**
+14. **The soft PLC's Modbus link is single-threaded against its own scan loop.**
     Even correctly paced at 50 Hz, one scan per 20 ms and a blocking Modbus
     server thread share a container. It is comfortable now, but it is the same
-    shape as the bug above and it would surface first on a smaller machine. The
-    fix is a separate concern — a scan budget check, or a lower default rate —
-    and is not done.
+    shape as the bug in thread 5 and it would surface first on a smaller machine.
+    The fix is a separate concern — a scan budget check, or a lower default rate
+    — and is not done.
 
 ## What I would do next, in order
 
-1. **Scope the database roles** (thread 9). Fifteen lines of SQL and a compose
-   change. It is the only place in this project where I have made something
-   *worse* on purpose and left it, and "on purpose, with the fix written down" is
-   a much better state than not noticing.
+1. **Tune the six false-positive alarm rules** (thread 13). Measure each healthy
+   distribution the way `aeration_do_sagging` was measured — 1 618 windows, two
+   minutes — and set the threshold above it. An alarm system that pages on a
+   healthy plant is worse than no alarm system, and this one currently pages on
+   six. This is the single highest-value thing in the project.
+2. **Reword the contract's `NOT_detectable_by`** (thread 14), as a deliberate
+   change with the disagreement recorded alongside it. Not a code change and not
+   a silent one.
+3. **Verify the four rules that have never fired.** `lift_pump_flow_lost` and
+   `secondary_scrape_torque_high` claim two faults that are currently blind, and
+   two `cross_validation` rules cannot fire in simulation at all. A rule that is
+   written, claimed and unverified looks like coverage and provides none.
+4. **Pin the seeder's seed and check the course's shown outputs** (thread 11).
+5. **`sql/03-advanced`**: continuous aggregates, retention, `EXPLAIN`, chunk
+   behaviour. The material is available and the stage is no longer blocked by a
+   dialect.
+6. **A CI workflow.** There is no `.github/workflows` and no pre-commit. `make
+   check` now exists and runs the four gates in the order that fails fastest, so
+   the YAML is thin — but it is still missing, which means the gates are run by
+   hand, which means they are run when I remember.
+7. **`ui/web` has no tests at all.** It is the least verified part of the project
+   and the part a portfolio reviewer will click first.
 
-2. **Phase 4 — the alarm engine.** The fault library was built to feed it and
-   currently feeds nothing. The `NOT_detectable_by` field in
-   `contracts/fault-scenarios.yaml` is the interesting part and the whole reason
-   that file exists.
+### Done in this phase, and no longer on the list
 
-3. **Pin the seeder's seed and check the course's shown outputs** (thread 10).
-
-4. **`sql/03-advanced`**: continuous aggregates, retention, `EXPLAIN`, chunk
-   behaviour. The material is now available and the stage is no longer blocked by
-   a dialect.
-
-5. **A CI workflow.** There is no `.github/workflows`, no `Makefile` and no
-   pre-commit. Pytest, mypy, ruff and `check_sql.py` against a service container
-   is three lines of YAML and it is the highest-value missing piece in the
-   repository, because right now the gates are run by hand, which means they are
-   run when I remember.
-
-6. **`ui/web` has no tests at all.** It is the least verified part of the project
-   and it is the part a portfolio reviewer will click first.
+* **The database roles** (threads 9 and 10). `wwtp_writer` and `wwtp_reader` are
+  group roles applied by `storage/postgres/roles.py`; the gateway authenticates as
+  a `LOGIN` role that is a member of `wwtp_writer` and nothing else. It cannot
+  DELETE a reading, TRUNCATE, DROP a table, or UPDATE the contract, and each of
+  those is proved by attempting it and reading the server's refusal. The password
+  has to be composed as a quoted literal because **DDL cannot be parameterised** —
+  `CREATE ROLE ... PASSWORD %s` is a syntax error. That is in
+  `storage/postgres/login_role.py`.
+* **The alarm engine itself** (was item 2 for three phases). Ten detectors, fifteen
+  rules, a state machine, and a coverage audit that reports 8 of 11 faults
+  covered by a rule that claims them.
+* **`make check`**, which the CI item above is now a thin wrapper around.

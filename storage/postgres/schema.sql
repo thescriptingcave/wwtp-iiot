@@ -239,3 +239,29 @@ ALTER MATERIALIZED VIEW reading_1h
 -- Retention is the reason the tiers exist. Keeping every 1 Hz reading for two
 -- years is expensive *and* less useful, because a query over 63 million points is
 -- a query nobody runs.
+
+-- ─── roles ───────────────────────────────────────────────────────────────────
+--
+-- Not in the DDL, deliberately, and the reasoning is the interesting part.
+--
+-- `init-db` runs this file as the database *owner*, and it is the only thing that
+-- ever should. A role's grants to *other* roles are cluster state, not schema
+-- state: they survive a dump of this file, they are not restored by a
+-- `pg_dump --schema-only`, and a migration that creates a table and forgets to
+-- grant on it produces a runtime permission error rather than a schema error.
+-- So they are applied separately, by `storage/postgres/roles.py`, and the
+-- check below is what makes the separation visible.
+--
+-- Why they exist at all is in `docs/SECURITY.md`. The short version: the
+-- previous stack had a bucket-scoped application user that provably could not
+-- administer the cluster, and the migration replaced it with one shared
+-- password that owns the database. That is a regression, and the three roles
+-- here are the fix:
+--
+--   wwtp_owner   owns the schema. init-db only. Never given to a long-running
+--                process, because it can DROP TABLE and a historian that can
+--                forget is worse than one that stops.
+--   wwtp_writer  INSERT on reading, INSERT on event, SELECT on signal and
+--                equipment. The gateway. Notably *no DELETE* — a compromised
+--                gateway should be able to lie by omission but not by erasure.
+--   wwtp_reader  SELECT only. Grafana and the dashboard.

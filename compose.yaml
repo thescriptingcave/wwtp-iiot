@@ -167,7 +167,20 @@ services:
     <<: *python-service
     restart: "no"
     container_name: wwtp-init-db
-    command: ["python", "-m", "storage.postgres.schema"]
+    # Two phases. The schema first, as the owner; then the least-privileged
+    # *login* role, which is the only credential the long-running gateway ever
+    # sees.
+    #
+    # Creating the login role here rather than in the image is deliberate: a role
+    # needs a password, and a password in a migration is a password in a git
+    # history. It comes from the environment and exists only at run time.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        python -m storage.postgres.schema
+        python -m storage.postgres.login_role --name "$${GATEWAY_DB_ROLE}"
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
@@ -176,6 +189,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-wwtp}
       RETENTION_RAW_DAYS: ${RETENTION_RAW_DAYS:-7}
       RETENTION_MINUTE_DAYS: ${RETENTION_MINUTE_DAYS:-90}
+      # The gateway's login role: LOGIN, member of wwtp_writer, and nothing
+      # else. It can insert readings and it cannot delete them.
+      GATEWAY_DB_ROLE: ${GATEWAY_DB_ROLE:-wwtp_gateway}
+      # Passed through possibly-empty, and the fallback is decided in
+      # `storage/postgres/login_role.py` because Compose cannot nest
+      # `${A:-${B}}` — it turns the whole thing into a literal string.
+      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
@@ -202,9 +222,17 @@ services:
       # The presence of POSTGRES_HOST is what switches the writer on. A gateway
       # with no database still reads the plant and still spools everything, which
       # is not a degraded mode but the one guarantee it exists to provide.
+      #
+      # These are NOT the owner's credentials. The gateway authenticates as a
+      # login role that is a member of `wwtp_writer` and of nothing else, so it
+      # can insert a reading and cannot delete one, drop a table, or change the
+      # contract. See `storage/postgres/roles.py` and `docs/SECURITY.md` — the
+      # previous stack had an equivalent scoped credential and losing it during
+      # the InfluxDB-to-Postgres migration was a regression.
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-wwtp}
+      POSTGRES_USER: ${GATEWAY_DB_ROLE:-wwtp_gateway}
+      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-wwtp}
     volumes:
@@ -223,17 +251,49 @@ services:
       # to 5432 proves Postgres is listening; it does not prove the schema is
       # applied, that the contract is loaded, or that this container's
       # credentials work. All three were true failures during this migration.
+      # Two things, both of which have been a real failure:
+      #
+      #   1. it can read the contract with *its own* credentials, which proves the
+      #      schema is applied, the contract is loaded, and the password is right;
+      #   2. it *cannot* TRUNCATE the readings, which proves the role is scoped.
+      #
+      # The second is the unusual one and it is here on purpose. A health check
+      # that only proves connectivity passes happily on a gateway handed the
+      # owner's credentials, which is exactly the failure this arrangement exists
+      # to prevent.
+      #
+      # A literal block (`|-`), not a folded one (`>-`). Folding collapses the
+      # newlines into spaces, which turns a `try:` on its own line into nonsense
+      # and an exception the health check cannot report. The first two versions of
+      # this were a folded scalar and a shell `&& ... || ...` chain, and between
+      # them they produced three different wrong behaviours: a syntax error, an
+      # unreadable condition, and a stderr redirect that made a real connection
+      # failure report itself as "scoped". A health check has to be able to say
+      # *which* of several things went wrong.
       test:
         - CMD-SHELL
-        - >-
-          python -c "import os,socket,sys;
-          s=socket.create_connection(('db',5432),3); s.close();
-          import psycopg;
-          c=psycopg.connect(host=os.environ['POSTGRES_HOST'],
-          user=os.environ['POSTGRES_USER'],
-          password=os.environ['POSTGRES_PASSWORD'],
-          dbname=os.environ['POSTGRES_DB']);
-          c.execute('SELECT count(*) FROM signal'); c.close()"
+        - |-
+          python - <<'EOF'
+          import os, sys, psycopg
+          c = psycopg.connect(
+              host=os.environ["POSTGRES_HOST"],
+              user=os.environ["POSTGRES_USER"],
+              password=os.environ["POSTGRES_PASSWORD"],
+              dbname=os.environ["POSTGRES_DB"],
+          )
+          cur = c.cursor()
+          cur.execute("SELECT count(*) FROM signal")
+          print("contract rows:", cur.fetchone()[0])
+          try:
+              cur.execute("TRUNCATE reading")
+          except Exception:
+              c.rollback()
+              print("scoped: reads the contract, cannot erase history")
+              sys.exit(0)
+          c.rollback()
+          print("NOT SCOPED: the gateway holds owner credentials")
+          sys.exit(1)
+          EOF
       interval: 15s
       timeout: 5s
       retries: 5
