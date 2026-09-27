@@ -224,8 +224,57 @@ uv run python tools/check_sql.py sql/
 docker compose --profile observability up -d
 ```
 
-Grafana on <http://localhost:3000>. It reads the hypertable through TimescaleDB's
-Postgres datasource.
+Grafana on <http://localhost:${GRAFANA_PORT:-3000}>. It reads the hypertable
+through Grafana's **built-in** PostgreSQL datasource — no plugin, because a
+hypertable is a table with extra storage attached and the datasource cannot tell
+the difference.
+
+Two dashboards appear, in a folder called `WWTP`, both **generated from
+`contracts/tags.yaml`** by `python -m ui.grafana.generate_dashboards` rather than
+clicked into existence:
+
+| dashboard | what it is for |
+|---|---|
+| **WWTP — overview** | trends per area, plus a table of how long each signal last reported |
+| **WWTP — discharge permit** | the parameters a permit is written against |
+
+`allowUiUpdates: false`, so an edit in the UI is not silently reverted by the next
+regeneration — and an edit *is* reverted, loudly, by `make dashboards-check`.
+
+### If you cannot log in
+
+`GRAFANA_ADMIN_PASSWORD` only applies when Grafana **creates** its admin user.
+After that the password lives in Grafana's own database and the environment
+variable is ignored, so changing it in `.env` has no effect on an existing
+volume — and `docker compose up` will cheerfully start a Grafana you cannot log
+into. The symptom is a `401` on every API call, which looks like a wrong password
+rather than a stale one.
+
+Reset it from inside the container:
+
+```bash
+docker compose exec grafana grafana cli admin reset-admin-password admin
+```
+
+Or start from nothing, which is the honest way to check that provisioning works,
+because **every bit of Grafana's state here is provisioned from files in git**:
+
+```bash
+docker compose stop grafana
+docker volume rm "$(docker volume ls -q | grep grafana)"
+docker compose --profile observability up -d grafana
+```
+
+> Worth knowing when reading its logs: Grafana prints `starting to provision
+> dashboards` and `finished to provision dashboards` at boot **whether or not it
+> inserts anything**, and the per-file insert lines are `level=debug`, which is
+> off by default. So a log with no "inserted dashboard from file" in it is
+> *expected*, and I spent a while treating it as a fault. To check provisioning
+> actually happened, ask Grafana:
+
+```bash
+docker compose exec grafana curl -s -u admin:admin http://localhost:3000/api/search?type=dash-db
+```
 
 ### The custom dashboard
 

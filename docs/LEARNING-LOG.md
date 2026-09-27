@@ -578,6 +578,64 @@ cannot fail is worse than no check, because it is trusted.** The real test has t
 come from a different container, over the network, and that is where the answer
 finally became `FATAL: password authentication failed`.
 
+## Phase 6f — "What did you create for Grafana, and is it running?"
+
+**Expected:** a two-paragraph answer.
+
+**What happened:** the answer was "yes, and it works", reached after twenty
+minutes of chasing a **401 that was not a datasource fault**, and one wrong
+guess about Grafana's provisioning log that cost most of them.
+
+**Learned:**
+
+- **`GRAFANA_ADMIN_PASSWORD` only applies when Grafana creates its admin user.**
+  Afterwards the password lives in Grafana's own database and the environment
+  variable is **ignored**. So changing it in `.env` and running
+  `docker compose up` produces a Grafana you cannot log into, and every symptom
+  points the wrong way: `401` on every API call, which reads as "wrong password"
+  rather than "stale password". `GETTING-STARTED.md` said to set the variable and
+  said nothing else, which is the whole gap.
+
+  The recovery is `grafana cli admin reset-admin-password`, and the better check
+  is to wipe the volume — **every bit of Grafana's state here is provisioned from
+  files in git**, so a fresh volume is the honest test of the "a fresh clone has a
+  working datasource" claim.
+
+- **Grafana's provisioning log is quiet, and I read its silence as a fault.** At
+  boot it prints
+
+      starting to provision dashboards
+      finished to provision dashboards
+
+  **whether or not it inserts anything**, and the per-file insert lines are
+  `level=debug`, off by default. There was also no `provisioning.datasource` line
+  in nine hours of log. Both look like failures and neither is one; I was about
+  to conclude the dashboards were not provisioned when they were, twice.
+
+  The lesson is specific and I have written it down: **to check whether
+  provisioning happened, ask Grafana.** `GETTING-STARTED.md` now has the
+  `api/search` command next to the log output it is easy to misread.
+
+- **`${POSTGRES_HOST}` in a datasource provisioning file *is* interpolated.** I was
+  fairly sure it was not — Grafana's documented form is `$__env{VAR}` — and was
+  about to "fix" a datasource whose `url` came back as the literal
+  `${POSTGRES_HOST}`. It came back as `db:5432`. **Nearly-fixed is still a
+  regression**, and the cost of finding out was one API call I should have made
+  first.
+
+- **And I made the project's own headline mistake, in the project's own
+  dashboard.** Checking the datasource with a hand-written query:
+
+      db query error: pq: column "value" does not exist
+
+  `reading_1h` has `mean`, not `value`. That is **thread 22** — a valid query
+  against a valid table, failing loudly, and the generated dashboards do not have
+  it because the generator and its tests know the column names. Written from
+  memory, in thirty seconds, by the person who wrote the post-mortem.
+
+  The redeeming detail is that it failed **loudly**. The quiet version of this bug
+  is a green compliance panel, and the loud version cost me one query.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.
