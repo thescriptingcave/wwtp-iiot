@@ -669,6 +669,73 @@ guess about Grafana's provisioning log that cost most of them.
   The redeeming detail is that it failed **loudly**. The quiet version of this bug
   is a green compliance panel, and the loud version cost me one query.
 
+## Phase 6g — The reader was looking at a different application
+
+**Expected:** nothing. I had just verified both dashboards and the datasource
+through Grafana's own API.
+
+**What happened:** the reader logged into `localhost:3000`, which is **another
+project of theirs**, and reported that Grafana had created no datasource and no
+dashboards.
+
+**Learned:**
+
+- **Port 3000 is a `next-server` v16.3.5 belonging to
+  `HAPI-FHIR-JPA-Server-Starter`.** It returned **HTTP 200**, it had a **login
+  page**, and it had no datasource and no dashboards. Which is *exactly* what
+  "Grafana is broken" looks like when you are looking at the wrong application.
+
+  The mechanism is dull and worth recording anyway: `.env.example` ships
+  `GRAFANA_PORT=3000`, that default is *correct*, and I had set
+  `GRAFANA_PORT=3002` in this machine's `.env` after finding 3000 taken. So the
+  documentation said 3000, the container listened on 3002, and a reader who
+  trusted the document went to an unrelated dev server. **A default that is
+  usually right is wrong exactly when the machine is busy, and that is the only
+  time anyone needs the document.**
+
+- **The fix is to stop printing ports, not to print the right one.** Markdown
+  cannot interpolate a shell variable into a URL, so the guide now says *find it*:
+
+      docker compose port grafana 3000
+
+  and every runnable `curl` in the two follow-along documents became
+  self-substituting — `"http://127.0.0.1:${WEB_PORT:-3001}/api/health"`. Same
+  trick the Grafana prose already used, still pasteable (no trailing comment, the
+  rule from two commits ago), and **always right**.
+
+- **And `make dashboards` was a no-op, correctly.** `git status --short
+  ui/grafana/` came back empty, meaning the regenerated files are byte-identical to
+  the committed ones. That is the drift gate working: the dashboards in git already
+  matched `contracts/tags.yaml`. Had a threshold been changed in the contract, the
+  files would differ there and Grafana would pick them up inside its 30-second
+  rescan.
+
+  Worth stating because the reader reasonably expected running the generator to
+  make something appear in the UI. **The generator writes files; Grafana reads
+  them at boot and every 30 seconds after.** Neither step is "log in and it is
+  there", and conflating them is what made this look like a failure.
+
+- **A test, and it needed narrowing twice.**
+
+  `test_the_guide_never_hardcodes_a_port_a_reader_must_visit` first flagged the
+  paragraph that *explains* the mistake, because it contains the URL I got wrong.
+  Forcing the correction to be deleted is a trade this project has now refused
+  five times, so the rule became: **instruction-shaped lines only** — `On <http…>`
+  or a line starting with `curl`/`open`/`wget`. Prose that mentions a URL is not
+  an instruction.
+
+  Then it flagged `curl -s http://127.0.0.1:3001/api/health`, which was a *correct*
+  catch — a copy-pasteable command with a number that moves — and led to the
+  self-substituting form above.
+
+  It also flagged its own correction note a third time, via a *quote-pairing* bug:
+  `_claims_only` strips `"…"` with a regex, and one unbalanced quote earlier in
+  the file shifts every subsequent pairing, so a later quoted number survives the
+  strip. **A regex over prose is a parser with no error handling**, and this is
+  the third time that has cost time. The fix was to reword the sentence rather than
+  the stripper, because a document that has to be worded to satisfy a regex is a
+  document shaped by its tests.
+
 ## Phase 0–1a — Contract and scan loop
 
 **Expected:** a YAML contract and a PLC-shaped loop. Two days.

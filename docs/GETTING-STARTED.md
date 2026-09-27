@@ -224,10 +224,32 @@ uv run python tools/check_sql.py sql/
 docker compose --profile observability up -d
 ```
 
-Grafana on <http://localhost:${GRAFANA_PORT:-3000}>. It reads the hypertable
-through Grafana's **built-in** PostgreSQL datasource — no plugin, because a
-hypertable is a table with extra storage attached and the datasource cannot tell
-the difference.
+Grafana is on **`GRAFANA_PORT`**, which defaults to 3000. **Do not assume 3000** —
+find it:
+
+```bash
+docker compose port grafana 3000
+```
+
+```bash
+docker compose --profile observability up -d
+```
+
+That prints the host port it actually got. This is worth doing rather than
+trusting the default, because a busy machine very often already has 3000 taken —
+and **the thing that grabs it will look like it worked.** This project was
+verified by hand for a phase against `http://localhost:3000`, which turned out to
+be an unrelated Next.js dev server belonging to another repository. It returned
+HTTP 200, it had a login page, and it had no datasource and no dashboards — which
+is exactly what "Grafana is broken" looks like when you are looking at the wrong
+application.
+
+The same applies to the dashboard below, on `WEB_PORT` (3001 by default), and to
+Node-RED on `SCADA_PORT` (18880 by default).
+
+Grafana reads the hypertable through its **built-in** PostgreSQL datasource — no
+plugin, because a hypertable is a table with extra storage attached and the
+datasource cannot tell the difference.
 
 Two dashboards appear, in a folder called `WWTP`, both **generated from
 `contracts/tags.yaml`** by `python -m ui.grafana.generate_dashboards` rather than
@@ -273,8 +295,10 @@ docker compose --profile observability up -d grafana
 > actually happened, ask Grafana:
 
 ```bash
-docker compose exec grafana curl -s -u admin:admin http://localhost:3000/api/search?type=dash-db
+docker compose exec grafana curl -s -u admin:replace-me http://localhost:3000/api/search?type=dash-db
 ```
+
+(the password is whatever you put in `GRAFANA_ADMIN_PASSWORD`)
 
 ### The custom dashboard
 
@@ -296,7 +320,7 @@ The health check is `SELECT 1`, so **healthy means the page can reach the
 database** — not merely that a port is open:
 
 ```bash
-curl -s http://127.0.0.1:3001/api/health
+curl -s "http://127.0.0.1:${WEB_PORT:-3001}/api/health"
 # {"ok":true,"database":"reachable","ms":1}
 ```
 

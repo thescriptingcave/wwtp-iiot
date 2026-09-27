@@ -474,7 +474,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 40,
+    "tests/test_readme_claims.py": 41,
     "tests/test_alarm_engine.py": 17,
 }
 
@@ -909,3 +909,78 @@ def test_the_fence_helper_would_notice_a_command_it_cannot_see() -> None:
         and not ln.split(": ", 1)[-1].strip().startswith("#")
     ]
     assert len(commands) > 50, f"only {len(commands)} command lines seen"
+
+
+def test_the_guide_never_hardcodes_a_port_a_reader_must_visit() -> None:
+    """A hardcoded `localhost:3000` sent a reader into a different application.
+
+    Verified by hand for a phase against `http://localhost:3000`, which on this
+    machine is an unrelated Next.js dev server from another repository. It
+    returned **HTTP 200**, it had a **login page**, and it had no datasource and
+    no dashboards — which is indistinguishable from "Grafana is broken" unless you
+    already know what Grafana should look like.
+
+    The port is `GRAFANA_PORT` and defaults to 3000, so the default is *correct*
+    and still wrong often enough to matter, because a busy machine has 3000 taken
+    and whatever grabs it will be a plausible-looking web application.
+
+    So the guide must name the variable and tell the reader how to find the real
+    port (`docker compose port grafana 3000`), rather than printing a number that
+    is only right on an idle machine.
+    """
+    guide = Path("docs/GETTING-STARTED.md").read_text(encoding="utf-8")
+
+    assert "docker compose port grafana 3000" in guide, (
+        "the guide must tell the reader how to find the real port, not print one"
+    )
+    assert "Do not assume 3000" in guide
+
+    # Both follow-along documents, not just the guide: `docs/VERIFYING.md` is the
+    # one a reader runs *while checking a live system*, so a wrong port there is
+    # worse — it produces a failing check that looks like a product fault.
+    documents = ["docs/GETTING-STARTED.md", "docs/VERIFYING.md"]
+
+    # The rule is about **instructions to visit**, not every mention of a port.
+    # The paragraph above has to be able to say "I was wrong, here is the URL I
+    # used" — and a test that forbids that would force the correction to be
+    # deleted, which is the trade this project has refused four times now.
+    #
+    # So only *instruction-shaped* lines count: "On <http…>", or a line that
+    # starts with `curl` / `open`. Prose that mentions a URL is not an
+    # instruction, and the second version of this test failed on exactly that.
+    instruction = re.compile(r"^\s*(?:curl\b|open\b|wget\b)|On\s*<https?://")
+    offenders: list[str] = []
+    seen: list[tuple[str, int, str]] = []
+    for name in documents:
+        path = Path(name)
+        if path.exists():
+            seen.extend(
+                (name, n, ln)
+                for n, ln in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            )
+    for name, lineno, line in seen:
+        if not instruction.search(line):
+            continue
+        if "${" in line or "docker compose exec" in line:
+            continue  # a variable, or inside the container where 3000 is right
+        if "docker compose port" in line:
+            continue  # the command that *finds* the port
+        if re.search(r"`\w*PORT`", line):
+            # The default value plus the variable that governs it, on the same
+            # line — "On <http://127.0.0.1:3001> (`WEB_PORT`)". That is the shape
+            # a reader can act on, because markdown cannot interpolate a shell
+            # variable and the alternative is not printing a URL at all.
+            #
+            # So the defect this test exists for is narrower than "a hardcoded
+            # port": it is **a hardcoded port with nothing saying which variable
+            # moves it**, which is exactly what sent a reader to another
+            # application's login page.
+            continue
+        for match in re.finditer(r"(?:localhost|127\.0\.0\.1):(\d+)", line):
+            if match.group(1) in ("5432", "4840"):
+                continue  # container-internal protocol ports
+            offenders.append(f"{name}:{lineno}: {line.strip()[:70]}")
+    assert not offenders, (
+        "these lines tell a reader to visit a hardcoded host port:\n  "
+        + "\n  ".join(offenders)
+    )

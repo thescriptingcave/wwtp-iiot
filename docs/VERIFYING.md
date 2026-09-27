@@ -621,12 +621,12 @@ page can reach the database — not merely that a port is open.
 
 ```bash
 # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/
+curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:${WEB_PORT:-3001}/
 # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/permit
+curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:${WEB_PORT:-3001}/permit
 # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/alarms
-curl -s http://127.0.0.1:3001/api/health
+curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:${WEB_PORT:-3001}/alarms
+curl -s "http://127.0.0.1:${WEB_PORT:-3001}/api/health"
 ```
 
 **Expect:** three 200s and
@@ -746,7 +746,7 @@ were.
 
 **Expect:** 31 passed. This file counts what `README.md`, `docs/TESTING.md` and
 `docs/CI.md` state and compares against reality. It has already caught five false
-claims and three documents quoting a stale "57 queries".
+claims, and three documents that quoted a stale course-query count.
 
 Two of its tests are worth reading, because they are the kind of test most
 projects do not have:
