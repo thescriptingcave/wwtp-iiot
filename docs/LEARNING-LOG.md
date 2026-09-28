@@ -2234,6 +2234,114 @@ teaching rather than to work around the runner. Worth noticing that a tooling
 constraint and a teaching requirement turned out to be the same requirement —
 which is a decent argument for building the gate before writing the lessons.
 
+### The security document ranks the wrong asset, and its top fix is already here
+
+Lesson 07 was going to be about certificates. The two lines the server prints on
+every single start —
+
+```
+No encrypting policy available, password may get transferred in plaintext
+Endpoints other than open requested but private key and certificate are not set.
+```
+
+— turned out to be the least interesting part, because `docs/SECURITY.md` already
+says it plainly: OPC UA encryption "**Not enforced** — Anonymous, `None` security
+policy", authentication "**Not enforced**". A client confirms it:
+`security_policy : SecurityPolicyNone`, `user_certificate : None`.
+
+(I also had to correct myself: I had remembered a `LOGIN_PASSWORDS` table as being
+OPC UA users. It is `storage/postgres/login_role.py` — Postgres roles, a different
+protocol. The OPC UA browser is explicitly anonymous, and says so in a docstring.)
+
+**So what the lesson found instead is a structural problem, and it is the first
+finding in seven lessons that runs opposite to the pattern.** Everything in 02–06
+was *documentation* overstating code that was right or harmlessly broken. Here the
+prose is careful, the threat model is explicit about its scope ("There is no real
+plant. Nothing here controls anything that matters"), and the *code* leaves an
+entire asset class outside the model.
+
+`SECURITY.md` ranks what matters in a real plant:
+
+> 1. **Integrity of the control path.** Someone able to write a setpoint can
+>    change what the plant does. This is the asset worth defending.
+
+**Nobody can.** Lesson 05 established it: the write path is unwired, the scan loop
+overwrites everything, the DO controller reads its own field. The number-one asset
+is the one asset not exposed, because nothing is connected to it.
+
+What *is* exposed, from an anonymous connection with no username, password or
+certificate:
+
+```
+plant: PLANT-A: Northgate Water Reclamation Facility
+  DesignFlow_m3h                     = 1800.0
+  Permit_eff_nh4_mg_l_30d_mean       = 10.0
+  Permit_eff_tss_mg_l                = 30.0
+  Permit_eff_ph_min                  = 6.0
+  Permit_eff_ph_max                  = 9.0
+  Permit_dis_bacti_geomean           = 200.0
+areas enumerable        : 8
+measured signals walked : 57
+```
+
+The complete compliance envelope — every number needed to discharge into this
+plant's permit without tripping it. **Confidentiality of that envelope is nowhere
+in a threat model whose top-ranked risk is control-path integrity.**
+
+And the list of "what this would need before facing a real network" opens with:
+
+> 1. **Write handlers on OPC UA** that reject out-of-range values… Closes gap 1.
+
+A write handler that rejects out-of-range values is `OpcUaServer.write_value()`.
+It exists, it is correct, it has tests, and **it has no caller.** The top security
+improvement on the list is already written, already unreachable, and the document
+does not know it. Completing it would not achieve the stated outcome either, since
+closing gap 1 only stops out-of-range writes reaching a control loop that is not
+listening.
+
+**The bind address, in no document at all.** `git grep -n '0\.0\.0\.0' -- '*.md'`
+returns nothing outside this course. The server binds `0.0.0.0:4840` and
+`compose.yaml:79` publishes `"${OPCUA_PORT:-4840}:4840"`, which is every host
+interface; loopback-only is a two-token difference. So "anyone who can reach the
+port" is unresolvable by reading the project — on a laptop, the local network; on
+a server in a rack, the internet, depending on a firewall nobody here has
+written.
+
+And `compose.yaml:71` sets up the expectation it then does not meet: *"publishing
+to the host is a separate, deliberate decision made per port below"* — and the
+port below publishes to all interfaces, which is a default rather than a decision.
+A reader has to know the Docker publishing syntax to notice.
+
+**The genuinely two-sided lesson**, which is the part worth taking to a real
+plant: the protocol's greatest feature is also its greatest reconnaissance
+surface. A Modbus attacker gets 4 314 integers and has to guess. An OPC UA
+attacker gets the map, the labels and the permit limits, and never guesses. That
+is not an argument against OPC UA — it is an argument that **an OPC UA server is
+only as safe as its authentication, and authentication is the one thing that
+cannot be retrofitted**, because a client that expects `None` will talk to a
+`Sign` endpoint and a client that requires `Sign` will not talk to this server at
+all. Tightening later breaks every client that connected while it was loose. That
+argument is not in `SECURITY.md`, and it is the real reason to do it at the start
+rather than at the end.
+
+### A test about a fact's absence, which failed on itself
+
+`test_the_lesson_claims_the_bind_address_is_in_no_markdown_file` scanned every
+markdown file for `0.0.0.0` and asserted none contained it. It failed — on
+**lesson 07, which quotes the endpoint in order to complain that nobody documents
+it.**
+
+That is a correct failure and the wrong scope. The claim worth protecting is
+narrower: the project's *own* documentation never mentions the bind address. So
+the test now excludes `courses/`, and the lesson says so in prose — that the only
+markdown naming it is the document complaining about it, "which is the usual fate
+of a fact that only appears in the document complaining about it."
+
+It is the third time in this course a claim about what is *not* there has been the
+hardest kind to get right, after the dead `write_value()` caller and the missing
+`create_subscription`. Three for three, and the failure mode is always a test that
+passes when it should fail or a lesson that documents a gap by filling it.
+
 ---
 
 ## Thread triage

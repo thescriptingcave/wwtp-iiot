@@ -102,7 +102,7 @@ including a reference id that had been guessed and was wrong.
 | 04 | [Subscriptions, and the feature this project does not use](04-subscriptions.md) | **written** |
 | 05 | [Writing, and the difference between enforced and not](05-writing.md) | **written** |
 | 06 | [Why OPC UA is asyncio and Modbus is not](06-async.md) | **written** |
-| 07 | Security: certificates, endpoints, and why nobody exposes 4840 | planned |
+| 07 | [Security, and the warning on every start](07-security.md) | **written** |
 | 08 | The address space as generated code, and what that costs | planned |
 | 09 | Build a client: discover, read, subscribe | planned |
 
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Eleven things are wrong or missing in this implementation, and each gets its own
+Twelve things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -205,6 +205,17 @@ lesson rather than a footnote:
    pending!"*), which is a client timeout that reads as a network fault.
    → **lesson 06**, which also measures why the thread exists at all — an
    unawaited blocking call gives **5 ticks where an awaited one gives 32**.
+12. **The security document ranks the wrong asset, and its top fix is already in
+   the codebase.** The server configures *no* security — no
+   `set_security_policy`, no `allow_anonymous`, no certificate — so a client
+   negotiates `SecurityPolicyNone` and an anonymous walk reads the site name,
+   the design flow, **all five permit limits**, 8 areas and all 57 signals with
+   their units and bands. Meanwhile `SECURITY.md`'s number-one ranked asset is
+   "integrity of the control path", which **nobody can attack** because lesson 05
+   showed the path is inert; and its number-one remediation — "write handlers
+   that reject out-of-range values" — is `OpcUaServer.write_value()`, which
+   exists, is tested, and has no caller. Confidentiality of the compliance
+   envelope appears nowhere in the ranked list. → **lesson 07**
 
 ## Related
 

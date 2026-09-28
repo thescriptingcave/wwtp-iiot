@@ -420,6 +420,71 @@ def test_the_lesson_claims_the_modbus_thread_cannot_be_stopped() -> None:
     assert "self._running = False" in src
 
 
+def test_the_lesson_claims_the_server_configures_no_security() -> None:
+    """No `set_security_policy`, no `allow_anonymous`, no certificate.
+
+    The strongest form of lesson 07's first claim is an absence, so it is
+    asserted as one: the strings must not appear anywhere in the server module.
+    If somebody adds a policy, this fails and the lesson's `SecurityPolicyNone`
+    output is stale.
+    """
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    for forbidden in ("set_security_policy", "allow_anonymous", "user_manager",
+                      "ApplicationInstance", "load_certificate"):
+        assert forbidden not in src, (
+            f"softplc/servers/opcua.py now mentions {forbidden!r}; the server has "
+            f"security configuration and lesson 07's central claim is stale"
+        )
+    # The endpoint must still be the all-interfaces one the lesson quotes.
+    assert 'endpoint: str = "opc.tcp://0.0.0.0:4840/wwtp/server/"' in src
+
+
+def test_the_lesson_claims_the_bind_address_is_in_no_project_doc() -> None:
+    """`git grep -n '0\\.0\\.0\\.0' -- '*.md'` names only documents *about* it.
+
+    Scoped to exclude `courses/` and `docs/LEARNING-LOG.md`, and the exclusions
+    are the point rather than a convenience. This test failed twice on itself:
+    first on lesson 07, which quotes the endpoint in order to complain that
+    nobody documents it, and then on the learning-log entry about that lesson.
+    A gap gets named by the documents complaining about it, and a test that
+    forbids the very document making the complaint is a test that forbids the
+    fix.
+
+    What is worth protecting is narrower: **the reference documentation** —
+    `SECURITY.md`, `ARCHITECTURE.md`, `GETTING-STARTED.md`, `README.md` — never
+    mentions the bind address, so `SECURITY.md`'s "anyone who can reach the port"
+    cannot be resolved by reading the project. That is the gap. A third document
+    joining the two above is tolerable; a fourth reference document is not, and
+    the assertion message names which.
+    """
+    exemptions = ("courses", "LEARNING-LOG.md")
+    offenders = [
+        p.name for p in (ROOT).rglob("*.md")
+        if ".venv" not in p.parts
+        and not any(x in p.parts or x in p.name for x in exemptions)
+        and "0.0.0.0" in p.read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert not offenders, (
+        f"the bind address is now mentioned in {offenders}. If one of those is a "
+        f"document *about* the gap, exempt it by name as courses/ and "
+        f"LEARNING-LOG.md are; if it is reference documentation, lesson 07's claim "
+        f"is stale and SECURITY.md needs the fact."
+    )
+
+
+def test_the_lesson_claims_compose_publishes_on_all_interfaces() -> None:
+    """`"${OPCUA_PORT:-4840}:4840"` binds every host interface, not loopback."""
+    text = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    assert '"${OPCUA_PORT:-4840}:4840"' in text, (
+        "compose.yaml's OPC UA port mapping changed; lesson 07's claim that the "
+        "port is published on all host interfaces needs rechecking"
+    )
+    assert "127.0.0.1:${OPCUA_PORT" not in text, (
+        "compose.yaml now binds OPC UA to loopback, which is the first of the "
+        "three fixes lesson 07 recommends — say so in the lesson"
+    )
+
+
 def test_the_lesson_claims_bad_quality_is_never_published() -> None:
     """Lesson 03's second claim: `Bad` is documented and never produced."""
     src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
