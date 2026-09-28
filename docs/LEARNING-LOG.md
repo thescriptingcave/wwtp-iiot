@@ -2342,6 +2342,93 @@ hardest kind to get right, after the dead `write_value()` caller and the missing
 `create_subscription`. Three for three, and the failure mode is always a test that
 passes when it should fail or a lesson that documents a gap by filling it.
 
+### The largest generated artifact is the one nobody can review
+
+Lesson 08 was written to argue against a decision I made, and it is the strongest
+of the seven. Measured first:
+
+```
+  depth 0:   14
+  depth 1:   27
+  depth 2:  132
+  depth 3:  513
+  depth 4:    0
+  total   :  686  from 57 signals and 22 pieces of equipment
+  that is 12.0 addressable nodes per signal
+```
+
+Depth 3 is 513, which is 57 × 9 exactly. 500 lines of Python produce 686
+addressable nodes, and the hand-written alternative is 686 lines of
+`add_variable` calls plus 57 drift opportunities. **Generation was the right
+call** — the Modbus map, the Node-RED tags, the Grafana panels and the SQL course
+all read the same YAML, and that is worth more than everything below.
+
+The cost is one number and one structure.
+
+**The number:** the `drift` CI job checks five generated artifacts — the tag
+list, the flows, the dashboards, the extracted queries, the web read model. Each
+is written to disk and diffed. The address space, at 686 nodes the largest
+generated thing in the repository, **is not among them, because it has no file.**
+It is built at startup, served and discarded. So the one generated output big
+enough to be worth reviewing is the one nobody can review, and its 24 tests assert
+*shape* at runtime, which is not the same as a person having agreed with it.
+
+**The structure:** 57 signals, **1 property set, 1 DataType**.
+
+```
+  signals walked: 57
+  distinct property sets : 1 -> [57]
+  distinct DataTypes     : 1 -> {'Double': 57}
+```
+
+A hand-written tree would have had 57 independent chances to be wrong. This has
+exactly one, and it is not a chance — it is a decision that cannot be half-made.
+Generation is *better* when the decision is right and **worse** when it is wrong,
+because the blast radius is the whole plant and because a systematic fault looks
+identical to a systematic success: 57 identical, well-formed, wrong signals, and
+nothing in the output distinguishes "correct by design" from "wrong by design".
+
+So I enumerated the decisions in `build_address_space` and `_add_signal`. About
+fourteen, none of which a reader would call decisions because they sit in
+plumbing-looking code. **Three are unambiguously wrong and a fourth is wrong
+whenever nothing drives the plant** — the `normal_low` initial value, the bare
+`Int32` `EngineeringUnits`, `_variant_type` returning `Double` whatever the unit,
+and `RunState` initialised to 0. All four were found in this course, by walking
+the running server. None was found by reading the generator, and three are in
+code I wrote.
+
+**The generalisation, and it is the one I would keep:** every single defect in
+eight lessons was found by *running* something rather than by reading something.
+Lesson 02's reference ids, lesson 03's fabricated `normal_low`, lesson 04's
+notification counts, lesson 05's accepted 99.0, lesson 06's five ticks, lesson
+07's anonymous walk. The documentation defects were found by reading; the code
+defects were found by observing. That is not a coincidence about this project, it
+is what happens when the reviewable surface and the defective surface are
+different surfaces.
+
+**The fix is neither hand-writing nor stopping.** This project has already solved
+the exact problem four other times: serialise the address space to a file, add a
+sixth `--check` step to the existing drift job, and let the serialised form be the
+review surface. A pull request changing `_add_signal` would then show 57 rows
+saying `DataType: BaseDataVariableType → AnalogItemType` — a reviewable diff —
+instead of a Python function. It would have caught decisions 6, 8, 9, 11 and 12
+immediately, because they all surface as a *value in a table* rather than a line
+in a loop. It would also fix lesson 01's `RunState = 0`, which is only visible as
+a value. A day's work, specified by a lesson rather than found by an outage.
+
+### I forgot a constraint I had written down forty minutes earlier
+
+Lesson 08's first snippet started its own server on 48400 and failed with
+`address already in use` — the exact gotcha I had added to
+`tools/check_lessons.py`'s docstring in lesson 06, in the same session, in the
+same file. The fix was better than the workaround: the gate injects `server`, so
+the snippet asks the address space that already exists instead of building a
+second one.
+
+A constraint I had just written down and did not look up. It is a small thing and
+it is the same shape as everything else in this log: I produced a correct artifact
+and then consumed it from memory rather than from the artifact.
+
 ---
 
 ## Thread triage

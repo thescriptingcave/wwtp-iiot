@@ -485,6 +485,79 @@ def test_the_lesson_claims_compose_publishes_on_all_interfaces() -> None:
     )
 
 
+def test_the_lesson_claims_the_address_space_has_no_drift_gate() -> None:
+    """Lesson 08's central structural finding, asserted against CI.
+
+    Five generated artifacts are written to disk and diffed in the `drift` job.
+    The address space — 686 nodes, the largest generated artifact — is not among
+    them, because it has no file. If somebody adds a serialiser and a sixth step,
+    the lesson's recommendation has been implemented and needs rewording.
+    """
+    wf = (ROOT / ".github" / "workflows" / "gates.yml").read_text(encoding="utf-8")
+    for gated in ("scada.generate_tags --check", "scada.build_flows --check",
+                  "ui.grafana.generate_dashboards --check",
+                  "tools.extract_sql --check"):
+        assert gated in wf, f"the drift job no longer checks {gated}"
+    for candidate in ("address_space", "address-space", "opcua_space"):
+        assert candidate not in wf, (
+            f"the drift job now references {candidate!r}; the address space has a "
+            f"serialised artifact and lesson 08's recommendation is done"
+        )
+    server = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    assert "--check" not in server, (
+        "the server module grew a --check mode, which is the serialiser lesson 08 "
+        "asks for"
+    )
+
+
+def test_the_lesson_claims_one_decision_covers_all_57_signals() -> None:
+    """1 property set and 1 DataType across 57 signals — the systematic-fault risk.
+
+    The count is asserted live because it is the number the whole argument rests
+    on: if generation ever became per-signal, the blast radius argument in lesson
+    08 would no longer apply and the lesson would need a different shape.
+    """
+    code = """
+import asyncio
+from collections import Counter
+from softplc.servers.opcua import OpcUaServer
+
+async def main():
+    s = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48403/x/")
+    await s.start(); await s.wait_ready()
+    propsets, datatypes, n = Counter(), Counter(), 0
+    for area in await s.space.folder.get_children():
+        for holder in await area.get_children():
+            for var in await holder.get_children():
+                names = {(await p.read_browse_name()).Name
+                         for p in await var.get_children()}
+                if "SignalId" not in names:
+                    continue
+                n += 1
+                propsets[tuple(sorted(names))] += 1
+                datatypes[(await var.read_data_type_as_variant_type()).name] += 1
+    print(n, len(propsets), len(datatypes), list(propsets.values()))
+    await s.stop()
+asyncio.run(main())
+"""
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, check=False, cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    fields = r.stdout.strip().split()[-4:]
+    n, psets, dtypes, counts = int(fields[0]), int(fields[1]), int(fields[2]), fields[3]
+    assert n == 57, f"lesson 08 says 57 signals, walked {n}"
+    assert psets == 1, (
+        f"lesson 08 says every signal has the same property set; there are now "
+        f"{psets}. That is an improvement — say so in the lesson."
+    )
+    assert dtypes == 1, (
+        f"lesson 08 says one DataType across the plant; there are now {dtypes}."
+    )
+    assert counts.strip("[],") == "57", (
+        f"lesson 08 quotes [57] for the property-set counts; the server says {counts}"
+    )
+
+
 def test_the_lesson_claims_bad_quality_is_never_published() -> None:
     """Lesson 03's second claim: `Bad` is documented and never produced."""
     src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")

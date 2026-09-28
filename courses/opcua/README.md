@@ -103,7 +103,7 @@ including a reference id that had been guessed and was wrong.
 | 05 | [Writing, and the difference between enforced and not](05-writing.md) | **written** |
 | 06 | [Why OPC UA is asyncio and Modbus is not](06-async.md) | **written** |
 | 07 | [Security, and the warning on every start](07-security.md) | **written** |
-| 08 | The address space as generated code, and what that costs | planned |
+| 08 | [The address space as generated code, and what that cost](08-generated.md) | **written** |
 | 09 | Build a client: discover, read, subscribe | planned |
 
 **"Planned" means it does not exist.** It is in the table so the shape of the
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Twelve things are wrong or missing in this implementation, and each gets its own
+Thirteen things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -216,6 +216,17 @@ lesson rather than a footnote:
    that reject out-of-range values" — is `OpcUaServer.write_value()`, which
    exists, is tested, and has no caller. Confidentiality of the compliance
    envelope appears nowhere in the ranked list. → **lesson 07**
+13. **The largest generated artifact in the project is the one nobody can
+   review.** The address space is 686 nodes — 12 per signal, 4 levels deep — built
+   by 500 lines from `contracts/tags.yaml`, and it has **no file and no drift
+   gate**, while the tag list, the flows, the dashboards and the extracted
+   queries all have one. Generation also concentrates error: 57 signals share
+   **1 property set and 1 DataType**, so one wrong decision corrupts the whole
+   plant and looks identical to one right decision. Fourteen decisions are buried
+   in that generator and three are unambiguously wrong. The fix is neither
+   hand-writing nor abandoning generation — it is publishing the serialised space
+   as a fifth drift-gated artifact, which would have caught all four defects as
+   *values in a table* instead of lines in a loop. → **lesson 08**
 
 ## Related
 
