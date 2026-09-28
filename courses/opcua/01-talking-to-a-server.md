@@ -175,12 +175,12 @@ from asyncua import Client
 from softplc.servers.opcua import OpcUaServer
 
 # A server nobody is driving, so we control exactly what changes and when.
-# Port 48402, because the lesson runner already holds 48400.
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48402/wwtp/server/")
+# `port` is a free port the lesson runner supplies; its own server holds 48400.
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
 
-client = Client("opc.tcp://127.0.0.1:48402/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 node = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 
@@ -329,11 +329,11 @@ from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
 # a server we can push a degraded value into
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
 
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 node = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 

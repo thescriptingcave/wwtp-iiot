@@ -183,10 +183,10 @@ from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
 # a server we can push a degraded value into
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 do = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 
@@ -220,10 +220,10 @@ all:
 from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 
 tags = {name: client.get_node(server.space.variables[sid].node.nodeid)

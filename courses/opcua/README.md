@@ -125,7 +125,7 @@ by doing it.
 | 04 | [Data types, units and ranges](04-units-and-ranges.md) | why a `Double` is not a measurement, and the range nobody enforces |
 | 05 | [Subscriptions in depth](05-subscriptions-in-depth.md) | intervals vs filters, and what a deadband really discards |
 | 06 | [Status codes and quality](06-status-and-quality.md) | `Uncertain` is not a softer `Bad`, and why you keep the value |
-| 07 | [Writing values](07-writing.md) | planned |
+| 07 | [Writing values](07-writing.md) | the four ways a write goes wrong, and the one you cannot detect |
 | 08 | [Finding things at scale](08-discovery.md) | planned |
 | 09 | [Building a client that survives](09-a-client-that-survives.md) | planned |
 

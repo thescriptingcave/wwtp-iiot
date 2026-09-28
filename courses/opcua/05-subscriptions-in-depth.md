@@ -38,10 +38,10 @@ class Counter:
     def datachange_notification(self, node, value, data):
         self.count += 1
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 node = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 
@@ -106,10 +106,10 @@ server's response is in the create result, and it is not optional to look at:
 from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 
 result = await client.uaclient.create_subscription(
@@ -161,10 +161,10 @@ class Recorder:
     def datachange_notification(self, node, value, data):
         self.values.append(value)
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 node = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 

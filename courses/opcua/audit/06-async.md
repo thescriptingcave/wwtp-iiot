@@ -154,9 +154,10 @@ ready.wait()
 
 box = {}
 async def build():
-    # Port 48401, not 48400: the gate's own server already holds 48400, and a
-    # second bind there fails with "address already in use".
-    s = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/x/")
+    # `port` is a free port the runner supplies, because the runner's own server
+    # holds 48400 and a second bind there fails with "address already in use" —
+    # and a hardcoded port here collided with another lesson before.
+    s = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/x/")
     await s.start()
     await s.wait_ready()
     box["s"] = s

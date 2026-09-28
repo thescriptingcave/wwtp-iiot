@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import re
+import socket
 import sys
 import textwrap
 import traceback
@@ -82,9 +83,13 @@ FENCE = re.compile(r"^```python[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILI
 #: The opt-out marker, on its own line anywhere before the block.
 SKIP_MARKER = "<!-- check: skip -->"
 
-#: An ephemeral port, so running the gate never collides with the plant on 4840
-#: and never needs the port to be free.
+#: The port the runner's own server binds. Snippets get a *different* free port
+#: each, from `free_port()` — see there for why a constant is not enough.
 PORT = 48400
+
+#: The lowest port a snippet's own server may use. Kept above the ports real
+#: services in this project occupy, so a lesson can never take one of them.
+FIRST_SNIPPET_PORT = 48500
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,29 @@ def courses() -> list[Path]:
     )
 
 
+def free_port() -> int:
+    """A port nothing is listening on, for a snippet that starts its own server.
+
+    Lessons legitimately need to start a *second* server — lesson 06 starts a
+    plant to show that a client write is overwritten, and audit/06 starts one to
+    demonstrate loop affinity. Two lessons that both hardcoded 48401 collided,
+    and the failure is `address already in use` attributed to whichever snippet
+    ran second, which reads like a bug in the lesson rather than a clash in the
+    authoring.
+
+    A constant was the original mistake. Asking the OS for a free port is two
+    lines and cannot collide, and the race window between asking and binding is
+    not one that a lesson's own snippet is going to lose.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        chosen = probe.getsockname()[1]
+    if chosen < FIRST_SNIPPET_PORT:
+        # Keep clear of the project's real ports even if the OS hands one back.
+        return FIRST_SNIPPET_PORT
+    return chosen
+
+
 async def run_snippet(sn: Snippet) -> None:
     """Run one snippet against a freshly started server and client.
 
@@ -155,7 +183,7 @@ async def run_snippet(sn: Snippet) -> None:
         root = client.get_node(space.folder.nodeid)
         glb: dict[str, Any] = {
             "client": client, "root": root, "space": space, "server": server,
-            "ua": ua, "asyncio": asyncio,
+            "ua": ua, "asyncio": asyncio, "port": free_port(),
         }
         # The snippet is wrapped in an async function so `await` works at its top
         # level, which is what makes a lesson read like a session rather than

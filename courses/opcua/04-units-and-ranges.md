@@ -26,10 +26,10 @@ Here is a value, and the type the server publishes for it:
 from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 root = client.get_node(server.space.folder.nodeid)
 do = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
@@ -73,10 +73,10 @@ the same properties wherever they live:
 from asyncua import Client
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 root = client.get_node(server.space.folder.nodeid)
 do = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
@@ -126,10 +126,10 @@ Here is the check every client should make, written out:
 from asyncua import Client
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 root = client.get_node(server.space.folder.nodeid)
 sp = client.get_node(server.space.variables["AERATION:AHU-1:SETPOINT_DO"].node.nodeid)
@@ -181,10 +181,10 @@ it does not assume the properties exist.
 from asyncua import Client
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 root = client.get_node(server.space.folder.nodeid)
 

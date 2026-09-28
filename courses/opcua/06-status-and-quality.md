@@ -57,10 +57,10 @@ with it:
 from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 node = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 
@@ -99,10 +99,10 @@ One batch read, and the value and its status stored together:
 from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 root = client.get_node(server.space.folder.nodeid)
 
@@ -196,10 +196,10 @@ non-zero quality to `Uncertain`:
 from asyncua import Client, ua
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 node = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 
@@ -233,10 +233,10 @@ may not write:
 from asyncua import Client
 from softplc.servers.opcua import OpcUaServer
 
-server = OpcUaServer(endpoint="opc.tcp://127.0.0.1:48401/wwtp/server/")
+server = OpcUaServer(endpoint=f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await server.start()
 await server.wait_ready()
-client = Client("opc.tcp://127.0.0.1:48401/wwtp/server/")
+client = Client(f"opc.tcp://127.0.0.1:{port}/wwtp/server/")
 await client.connect()
 measurement = client.get_node(server.space.variables["AERATION:AHU-1:DO"].node.nodeid)
 try:
