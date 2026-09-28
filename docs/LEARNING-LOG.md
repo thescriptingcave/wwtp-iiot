@@ -2163,6 +2163,77 @@ point is the one this repository keeps relearning: **a claim about what is not
 there is exactly as easy to get wrong as a claim about what is**, and slightly
 harder to notice, because the failure mode is a passing test.
 
+### Loop affinity fails silently, which is why the comments are scars
+
+Lesson 06 is the first of the six where the *code* is mostly right, so the
+findings are about the prose. But the measurement that justifies the whole
+architecture is the most useful thing in the course so far, and it took nine
+lines:
+
+```
+  time.sleep(0.3), not awaited          305.0 ms, ticked   5 times
+  await asyncio.sleep(0.3)              301.2 ms, ticked  32 times
+  await asyncio.to_thread(blocking)     304.9 ms, ticked  33 times
+```
+
+Same 300 ms. **Five ticks, or thirty-two.** The timing column is identical in all
+three rows, which is the part worth keeping: the damage is invisible in how long
+the blocking call took and visible only in *what else failed to happen meanwhile*.
+That is why this class of bug gets misdiagnosed as a network problem — there is
+no slow call to find.
+
+**The loop-affinity failure raises nothing at all.** `softplc/main.py:77` says the
+OPC UA server holds state bound to its creating loop, so talking to it from a
+second loop "produces a connection timeout that looks like a networking fault."
+I had assumed that meant an exception somewhere. It does not:
+
+```
+  publish() on the owning loop   -> 0, no error
+  publish() on the wrong loop    -> no exception, no log, no bad return
+Task was destroyed but it is pending!
+task: <Task pending name='Task-4' coro=<InternalServer._set_current_time_loop() ...
+```
+
+`publish()` succeeds, returns a count, and the server's internal tasks are
+orphaned and garbage-collected mid-flight. The comment is a scar from a real
+incident, and the scar is the only evidence — there was never an exception to
+point at.
+
+**A heading that its own body contradicts.** `ARCHITECTURE.md:108` reads *"One
+event loop, two protocols, one thread."* The process has **two loops and three
+threads**: the main thread on `asyncio.run(_run(args))`, `softplc-loop` running
+its own `run_forever()`, and `modbus-tcp` on a daemon thread. The body text
+describes the second loop and the second thread, two paragraphs below the
+heading. A heading cannot be fixed by reading further down, which is what makes it
+the wrong place for the one false word.
+
+By this point it is a pattern rather than a slip: **in the protocol work the prose
+describes an intended design, the code describes the built one, and they differ.**
+Lessons 02, 03, 04, 05 and 06 all found the same shape. What makes it worth naming
+is that the *body* comments are consistently excellent — `modbus_server.py:180`
+("A daemon is the honest mechanism"), `stop()` ("this only clears the running
+flag"), `set_equipment_state` ("staging is not a convenience here, it is the only
+correct way to cross that boundary") — so the failure is confined to
+summary-level claims. Someone writing an honest comment about a mechanism they had
+to debug, and an optimistic one about the architecture around it.
+
+### Two constraints of the gate, found by tripping over both
+
+Lesson 06's cross-loop snippet failed twice before it ran, and both failures are
+now documented in `tools/check_lessons.py`:
+
+* **`address already in use`.** The runner starts a server on 48400 for every
+  snippet, so a snippet that starts a *second* server has to pick another port.
+* **`asyncio.run() cannot be called from a running event loop`.** A snippet is
+  already inside the runner's loop and `asyncio.run` creates a new one.
+
+The second one improved the lesson rather than merely unblocking it: the
+demonstration needed two loops anyway, and the runner's own loop is a perfectly
+good "wrong loop". So the fix was to make the snippet do the thing it was
+teaching rather than to work around the runner. Worth noticing that a tooling
+constraint and a teaching requirement turned out to be the same requirement —
+which is a decent argument for building the gate before writing the lessons.
+
 ---
 
 ## Thread triage

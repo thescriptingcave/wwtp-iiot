@@ -101,7 +101,7 @@ including a reference id that had been guessed and was wrong.
 | 03 | [Reading, and what a StatusCode is for](03-reading-and-quality.md) | **written** |
 | 04 | [Subscriptions, and the feature this project does not use](04-subscriptions.md) | **written** |
 | 05 | [Writing, and the difference between enforced and not](05-writing.md) | **written** |
-| 06 | Why OPC UA is asyncio and Modbus is not | planned |
+| 06 | [Why OPC UA is asyncio and Modbus is not](06-async.md) | **written** |
 | 07 | Security: certificates, endpoints, and why nobody exposes 4840 | planned |
 | 08 | The address space as generated code, and what that costs | planned |
 | 09 | Build a client: discover, read, subscribe | planned |
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Ten things are wrong or missing in this implementation, and each gets its own
+Eleven things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -194,6 +194,17 @@ lesson rather than a footnote:
    also shows the cost side: a filter is negotiated *per subscription*, so two
    clients on one node hold different values — measured at 2.39 and 2.0 at the
    same instant, both `Good`, with no staleness marker on either.
+11. **The concurrency documentation contradicts itself, and the failure mode is
+   silence.** `ARCHITECTURE.md:108` heads a section *"One event loop, two
+   protocols, one thread"*; the process has two loops and three threads
+   (`softplc-loop`, `modbus-tcp`, and the main thread running `asyncio.run`).
+   The body text is accurate and good — the heading is the one false word, and a
+   heading cannot be fixed by reading further down. More importantly, breaking
+   loop affinity **raises nothing**: `publish()` from the wrong loop returns
+   cleanly and orphans the server's tasks (*"Task was destroyed but it is
+   pending!"*), which is a client timeout that reads as a network fault.
+   → **lesson 06**, which also measures why the thread exists at all — an
+   unawaited blocking call gives **5 ticks where an awaited one gives 32**.
 
 ## Related
 

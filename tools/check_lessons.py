@@ -43,6 +43,17 @@ same convention `check_sql.py` uses:
 
 `--list` prints what was found and what was skipped, which is the first thing to
 run when a block is not being picked up and you cannot see why.
+
+### Two things a snippet cannot assume
+
+**Port 48400 is taken.** The runner starts a server on it for every snippet, so a
+snippet that starts a *second* server — lesson 06 does, to show loop affinity —
+must pick another port or it dies with `address already in use`.
+
+**`asyncio.run()` cannot be called.** A snippet is already running inside the
+runner's loop, and `asyncio.run` creates a new one, which does not nest. For
+anything needing a second loop, make one on a background thread — which is what
+that lesson wants anyway, since a second loop *is* the demonstration.
 """
 
 from __future__ import annotations

@@ -377,6 +377,49 @@ def test_the_lesson_claims_no_control_loop_reads_a_written_node() -> None:
     )
 
 
+def test_the_lesson_claims_three_threads_and_two_loops() -> None:
+    """Lesson 06's contradiction: the heading says one of each.
+
+    `ARCHITECTURE.md:108` reads "One event loop, two protocols, one thread" while
+    the body two paragraphs below describes the second loop and the second
+    thread. The thread names below are the assertion — if either is renamed, the
+    table in the lesson needs rewriting.
+    """
+    main = (ROOT / "softplc" / "main.py").read_text(encoding="utf-8")
+    assert 'name="softplc-loop"' in main, "the PLC's loop thread was renamed"
+    assert 'asyncio.run(_run(args))' in main, (
+        "the main thread no longer runs asyncio.run; lesson 06's table is stale"
+    )
+    modbus = (ROOT / "softplc" / "servers" / "modbus_server.py").read_text(
+        encoding="utf-8")
+    assert 'name="modbus-tcp"' in modbus, "the Modbus listener thread was renamed"
+    assert "StartTcpServer" in modbus, (
+        "the Modbus server no longer uses pymodbus's blocking API, which is the "
+        "entire reason for the thread boundary in lesson 06"
+    )
+    arch = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    assert "## One event loop, two protocols, one thread" in arch, (
+        "the misleading heading has been fixed, so lesson 06's finding is stale "
+        "and the lesson should say so"
+    )
+
+
+def test_the_lesson_claims_the_modbus_thread_cannot_be_stopped() -> None:
+    """`stop()` renames a variable. The docstring says so, and must keep saying so.
+
+    A test asserting the port closes would be the natural thing to add here, and
+    it would fail forever. The comment at `modbus_server.py:180` is the reason
+    nobody writes one, so the comment is what this test protects.
+    """
+    src = (ROOT / "softplc" / "servers" / "modbus_server.py").read_text(
+        encoding="utf-8")
+    assert "cannot actually be stopped" in src, (
+        "the Modbus stop() docstring changed; if pymodbus now offers a shutdown "
+        "hook, lesson 06's claim that the thread is unstoppable is stale"
+    )
+    assert "self._running = False" in src
+
+
 def test_the_lesson_claims_bad_quality_is_never_published() -> None:
     """Lesson 03's second claim: `Bad` is documented and never produced."""
     src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
