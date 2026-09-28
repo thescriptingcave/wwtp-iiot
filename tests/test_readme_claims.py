@@ -264,7 +264,7 @@ def _count_tests(path: str) -> int:
         ("tests/test_scada_contract.py", 37),
         ("tests/test_grafana_dashboards.py", 15),
         ("tests/test_web_page.py", 22),
-        ("tests/test_opcua_course.py", 21),
+        ("tests/test_opcua_course.py", 24),
     ],
 )
 def test_the_per_area_test_counts(path: str, claimed: int) -> None:
@@ -526,7 +526,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
     "tests/test_readme_claims.py": 45,
-    "tests/test_opcua_course.py": 21,
+    "tests/test_opcua_course.py": 24,
     "tests/test_alarm_engine.py": 17,
 }
 

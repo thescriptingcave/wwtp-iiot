@@ -100,7 +100,7 @@ including a reference id that had been guessed and was wrong.
 | 02 | [Units, types, and the one lie in the type system](02-units-and-types.md) | **written** |
 | 03 | [Reading, and what a StatusCode is for](03-reading-and-quality.md) | **written** |
 | 04 | [Subscriptions, and the feature this project does not use](04-subscriptions.md) | **written** |
-| 05 | Writing: access levels, and the range that is *not* enforced on the wire | planned |
+| 05 | [Writing, and the difference between enforced and not](05-writing.md) | **written** |
 | 06 | Why OPC UA is asyncio and Modbus is not | planned |
 | 07 | Security: certificates, endpoints, and why nobody exposes 4840 | planned |
 | 08 | The address space as generated code, and what that costs | planned |
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Nine things are wrong or missing in this implementation, and each gets its own
+Ten things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -161,15 +161,28 @@ lesson rather than a footnote:
    reason — the exact outcome `gateway/clients/opcua_client.py` warns against.
    `tools/opcua_browser.py` calls it with the default at two sites, so the tool
    you would reach for to see a fault cannot show one. → **lesson 03**
-7. **The engineering range is advisory.** OPC UA does not enforce it and
-   `asyncua` does not either, so a client can write 99 mg/L to a DO setpoint
-   whose range is 0.5–6.0 and the server accepts it. Write *permission* is
-   genuinely enforced; the range is a promise. → **lesson 05**
-8. **`RunState` is zero until the process model drives it.** A bare
+7. **The engineering range is advisory, and the check for it is dead code.** A
+   client can write 99.0 mg/L to a DO setpoint whose contract range is
+   0.5–6.0 — 16× the maximum — and the write is accepted, because
+   `EUInformation` is advisory and `asyncua` does not enforce it. The one place
+   that *does* check, `OpcUaServer.write_value()`, **has no caller**: a wire
+   write is handled by `asyncua` setting the node directly, so the range check
+   never runs. The docstring calls it "a courtesy for in-process callers" when
+   there are none. → **lesson 05**
+8. **Every client write is inert anyway.** The process model is the only source
+   of truth and republishes every cycle, and `softplc/main.py:131` aliases the
+   OPC UA address space as `self._space`, so any write is silently overwritten
+   within one scan. The DO controller reads its own dataclass field
+   (`units.py:918`), so no write ever reached a control loop in the first place.
+   The write surface is 2 of 57 signals, is decorative, and the project's only
+   real write path is the Node-RED flow's **Modbus** write. It fails in the safe
+   direction — an absurd setpoint is ignored rather than applied — but
+   accidentally, and nothing says so. → **lesson 05**
+9. **`RunState` is zero until the process model drives it.** A bare
    `OpcUaServer` — a unit test, or the snippet gate — publishes 22 pieces of
    equipment all reading `0`, which is indistinguishable from 22 stopped motors.
    → **lesson 01**, where it is the closing example
-9. **Nothing in the product subscribes, and three comments say otherwise.** The
+10. **Nothing in the product subscribes, and three comments say otherwise.** The
    docstring sells subscriptions as the reason to prefer OPC UA over Modbus;
    `git grep -c create_subscription` finds exactly one hit in the whole
    repository, in `tools/opcua_browser.py`. The gateway polls a batch read once a

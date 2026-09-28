@@ -2081,6 +2081,88 @@ subscription, and that the server-side filter is still exact equality. Both
 assert that the *defect* persists, so fixing it fails the build with a message
 saying the lesson is now stale.
 
+### A security control that nothing can reach, and a write surface that does nothing
+
+Lesson 05 was written to measure one number in `docs/SECURITY.md` — that a
+client can write 99 mg/L to a DO setpoint whose range is 0.5–6.0. Confirmed:
+
+```
+before: 2.0
+wrote 2.5, in range  -> 2.5
+wrote 99.0, out of range -> 99.0
+```
+
+99.0 accepted, 16× the contract's maximum. And the guarantee on the other side
+of the same docstring is real: writing a measurement gives
+`BadUserAccessDenied`, enforced by the protocol, not by this project. Worth
+saying plainly, because the rest of this entry is a list of things that are not
+guaranteed, and it would be easy to leave the impression that OPC UA is
+unreliable. It is not, here.
+
+**Then the finding I did not expect.** The range *is* checked, in
+`OpcUaServer.write_value()` at `opcua.py:481`, which raises `ua.UaError` with
+the range in the message. And:
+
+```
+$ git grep -n write_value -- '*.py' | grep -v '^tests/'
+softplc/servers/opcua.py:407:            await entry.node.write_value(
+softplc/servers/opcua.py:447:            await node["state"].write_value(
+softplc/servers/opcua.py:452:    async def write_value(self, signal_id: str, value: float) -> None:
+```
+
+Two calls, both the server writing *out*. Line 452 is the definition. **The
+function has no caller.** A wire write is handled by `asyncua` setting the node's
+value directly and never routes through it. The docstring calls the range check
+"a courtesy for in-process callers"; there are no in-process callers either, so
+it is dead code that reads like a security control — which is worse than not
+having it, because the next person to read the file will believe writes are
+checked.
+
+**And the writes are inert regardless.** I had assumed that fixing the range
+check would make writes meaningful, and checked before writing the lesson.
+`softplc/main.py:131` assigns `self._space = await self.opcua.start()` — so
+`self._space` *is* the OPC UA address space, and the filter at line 236 compares
+the node against the model and overwrites on any difference. The model produces
+2.0 for `SETPOINT_DO` forever, so every client write is silently reverted within
+one scan cycle.
+
+Worse: the DO controller computes `driving_force = c_star - self.setpoint_do_mg_l`
+at `units.py:918`, reading **its own dataclass field**. No code path runs from a
+client write to a control decision. So a client can write 99 mg/L, read it back,
+see `Good`, and be entirely mistaken — the write surface is decorative. Two
+writable signals out of 57, neither connected to anything, and the project's only
+real write path is the Node-RED flow's **Modbus** write.
+
+What keeps this from being alarming is the direction it fails: an absurd setpoint
+is ignored, not applied. A control system that *accepted* 99 mg/L would be a far
+worse bug. But that is luck, not design, and nothing in the repository says so.
+
+**The consequence for `SECURITY.md` is the real output of this lesson.** The gap
+is documented as "the engineering range is not enforced on the wire." That is
+true and it is much narrower than the truth. The actual finding is that **no
+write reaches anything at all** — so a reader triaging by the security document
+would fix the range check, find the write still does nothing, and have no way to
+know that was always the case. A security document that understates a gap is worse
+than one with no gap, because it is the document somebody trusts when deciding
+what to fix first.
+
+### A test about absence, and the two ways it can lie
+
+`test_the_lesson_claims_the_range_checking_write_path_has_no_caller` walks the
+AST for calls to `write_value` and asserts there are none. It is a test about
+*absence*, which is a different kind of thing and I got it wrong twice:
+
+* It flagged `node["state"].write_value(...)` as a caller, because that is an
+  `ast.Subscript` and my filter only recognised `ast.Attribute`. A false
+  positive on the very finding it exists to protect.
+* My own lint pass then removed the `noqa` markers as "unused" and moved an
+  `import ast` into a function body, which broke it the other way.
+
+Both were caught because the test was run rather than reasoned about. The general
+point is the one this repository keeps relearning: **a claim about what is not
+there is exactly as easy to get wrong as a claim about what is**, and slightly
+harder to notice, because the failure mode is a passing test.
+
 ---
 
 ## Thread triage

@@ -16,6 +16,7 @@ fail rather than quietly become a lie. That is the same rule
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -294,6 +295,85 @@ def test_the_lesson_claims_the_server_side_filter_is_exact_equality() -> None:
     assert "_dirty: set[str]" in server, (
         "OpcUaServer no longer tracks a dirty set, so the claim that it has no "
         "internal subscription needs revisiting"
+    )
+
+
+def test_the_lesson_claims_the_range_checking_write_path_has_no_caller() -> None:
+    """Lesson 05's sharpest finding: a security control nothing can reach.
+
+    `OpcUaServer.write_value()` checks `sig.in_range(value)` and raises
+    `ua.UaError` — and has no caller anywhere outside the tests. A wire write is
+    handled by `asyncua` setting the node's value directly, so the range check
+    never runs. The docstring calls it "a courtesy for in-process callers"; there
+    are no in-process callers either.
+
+    This is a test about *absence*, which is unusual and worth being strict
+    about: it passes when the call count is exactly zero, and fails both when
+    someone adds a caller (good — the lesson is stale) and when the method is
+    deleted (also a lesson change).
+    """
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    callers: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        if name == "write_value":
+            # `entry.node.write_value(...)` and `node["state"].write_value(...)`
+            # are the server writing *out*. Anything else — `self.write_value(...)`,
+            # `server.write_value(...)` — is a caller of the in-process API.
+            base = getattr(func, "value", None)
+            if isinstance(base, ast.Attribute) and base.attr in ("node", "state"):
+                continue
+            if isinstance(base, ast.Subscript) and \
+                    getattr(base.value, "id", None) == "node":
+                continue
+            callers.append(ast.unparse(node)[:60])
+    assert not callers, (
+        "OpcUaServer.write_value() now has callers, so the range check is "
+        f"reachable and lesson 05's claim is stale: {callers}"
+    )
+    assert "sig.in_range(value)" in src, (
+        "the range check itself has moved"
+    )
+
+
+def test_the_lesson_claims_the_write_surface_is_two_signals() -> None:
+    """`SECURITY.md` calls the write surface deliberately small; check it stays so."""
+    writable = [s for s in contract().signals.values() if s.writable]
+    assert len(writable) == 2, (
+        f"lesson 05 says 2 of 57 are writable; now {len(writable)}: "
+        f"{[s.id for s in writable]}"
+    )
+    assert {s.id for s in writable} == {
+        "AERATION:AHU-1:SETPOINT_DO", "SITE:WEATHER:STORM"}
+    sp = contract().signal("AERATION:AHU-1:SETPOINT_DO")
+    assert (sp.range_min, sp.range_max) == (0.5, 6.0), (
+        "the setpoint's range changed; lesson 05's '99.0 is 16x the maximum' "
+        "needs recomputing"
+    )
+
+
+def test_the_lesson_claims_no_control_loop_reads_a_written_node() -> None:
+    """The DO controller reads its own dataclass field, so no write has effect.
+
+    `driving_force = c_star - self.setpoint_do_mg_l` at
+    `softplc/process/units.py:918` — the model's own state, not the address
+    space. That is why lesson 05 can say every client write is inert rather than
+    merely unchecked.
+    """
+    units = (ROOT / "softplc" / "process" / "units.py").read_text(encoding="utf-8")
+    assert "driving_force = c_star - self.setpoint_do_mg_l" in units, (
+        "the DO controller no longer reads its own setpoint field; if it now "
+        "reads the address space, lesson 05's inertness claim is wrong"
+    )
+    assert "setpoint_do_mg_l: float = 2.0" in units
+    main = (ROOT / "softplc" / "main.py").read_text(encoding="utf-8")
+    assert "self._space = await self.opcua.start()" in main, (
+        "main.py no longer aliases the OPC UA address space as _space, so the "
+        "overwrite-on-next-scan argument in lesson 05 needs rechecking"
     )
 
 
