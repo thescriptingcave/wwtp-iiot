@@ -18,7 +18,7 @@ not**.
 | Integration | 46 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 4 | no — they run the plant model, ~18 min |
 | SQL course | 64 queries in 17 lessons | yes |
-| OPC UA course | 35 snippets in 9 lessons, each against a **live server** | no — the gate starts its own |
+| OPC UA course | 43 snippets in 10 lessons, each against a **live server** | no — the gate starts its own |
 | Extracted queries (`sql/TablePlus/`) | 64 files, run against a live database | yes |
 | `mypy` | clean across 57 source files | no |
 | `ruff` | clean on the gated packages; 158 tracked findings elsewhere | no |

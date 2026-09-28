@@ -105,6 +105,13 @@ including a reference id that had been guessed and was wrong.
 | 07 | [Security, and the warning on every start](07-security.md) | **written** |
 | 08 | [The address space as generated code, and what that cost](08-generated.md) | **written** |
 | 09 | [Build a client](09-build-a-client.md) | **written** |
+| 10 | [**How a client actually talks to an OPC UA server**](10-talking-to-a-server.md) | **written** |
+
+**Lesson 10 is the one to start with if you are here to learn the protocol.** The
+other nine are about this repository — which decisions its server makes and what
+went wrong — and that is a post-mortem, not a course. Lesson 10 is about OPC UA
+itself, works against any server, and assumes you know nothing about this
+codebase.
 
 **"Planned" means it does not exist.** It is in the table so the shape of the
 course is visible, not so it looks further along than it is. The same convention

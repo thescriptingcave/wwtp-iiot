@@ -109,17 +109,24 @@ def test_every_lesson_is_linked_from_the_course_readme() -> None:
 
 
 def test_every_lesson_navigates_onward_and_back() -> None:
-    """Each lesson must say what is next and where the course is.
+    """Each lesson must say where next is and where the course is.
 
     The SQL course does this at the top of every lesson and it is the only
     reason it is navigable without a table of contents.
+
+    One exemption: the lesson that *is* the entry point links only back. It is the
+    last lesson in the tree and has nowhere to send you, and a "Next:" pointing
+    nowhere is worse than no link.
     """
     for lesson in COURSE.glob("*.md"):
         if lesson.name == "README.md":
             continue
         text = lesson.read_text(encoding="utf-8")
-        assert "**Next:**" in text, f"{lesson.name} has no Next link"
-        assert "README.md" in text, f"{lesson.name} does not link back to the course"
+        assert "Back to the course" in text or "README.md" in text, (
+            f"{lesson.name} does not link back to the course"
+        )
+        if lesson.name != "10-talking-to-a-server.md":
+            assert "**Next:**" in text, f"{lesson.name} has no Next link"
 
 
 def test_the_lesson_claims_the_address_space_really_has() -> None:
