@@ -154,7 +154,7 @@ def test_every_consumer_the_readme_names_actually_reads_the_contract() -> None:
 # ── the SQL course ───────────────────────────────────────────────────────────
 
 
-def test_the_course_has_seventeen_lessons() -> None:
+def test_the_course_has_twenty_one_lessons() -> None:
     """The count the README should quote, counted the way a person would.
 
     Two versions of this test got it wrong before it got it right, and both
@@ -166,7 +166,7 @@ def test_the_course_has_seventeen_lessons() -> None:
       hold several statements and `check_sql.py` also classifies 53 of them as
       illustrative and skips them.
 
-    So: 17 lessons is the number a reader can check by looking, and 64 queries
+    So: 21 lessons is the number a reader can check by looking, and 80 queries
     is `check_sql.py`'s number, asserted separately below against the tool's own
     output rather than re-derived here.
     """
@@ -178,18 +178,17 @@ def test_the_course_has_seventeen_lessons() -> None:
         p for p in Path("sql").rglob("*.md")
         if p.name != "README.md" and "TablePlus" not in p.parts
     )
-    assert len(lessons) == 17, f"{len(lessons)} lessons in sql/, not 17"
-    # 21 markdown files in total: the 17 lessons plus one README per stage. The
-    # tool's "21 files" counts all of them, which is worth knowing before
-    # quoting it.
+    assert len(lessons) == 21, f"{len(lessons)} lessons in sql/, not 21"
+    # 26 markdown files in total: the 21 lessons plus one README per stage. The
+    # tool's file count includes them, which is worth knowing before quoting it.
     assert len([
         p for p in Path("sql").rglob("*.md") if "TablePlus" not in p.parts
-    ]) == 21
+    ]) == 26
 
 
 @pytest.mark.integration
 def test_the_query_count_matches_what_the_runner_reports() -> None:
-    """The README's "64 queries" is `check_sql.py`'s number, checked against it.
+    """The README's "80 queries" is `check_sql.py`'s number, checked against it.
 
     Not re-derived. `check_sql.py` owns the definition of a query — how many
     statements a block contains, and which are illustrative — and a second
@@ -206,9 +205,9 @@ def test_the_query_count_matches_what_the_runner_reports() -> None:
     assert m, f"could not read the runner's summary:\n{out.stdout[-300:]}"
     queries, files = int(m.group(1)), int(m.group(2))
 
-    assert queries == 64, f"the course has {queries} queries, the README says 64"
-    assert files == 21, f"check_sql.py sees {files} files, the README says 21"
-    assert re.search(r"64 queries (in|across) 21 files", _readme()), (
+    assert queries == 80, f"the course has {queries} queries, the README says 80"
+    assert files == 26, f"check_sql.py sees {files} files, the README says 26"
+    assert re.search(r"80 queries (in|across) 26 files", _readme()), (
         "the README's course line is stale"
     )
 
@@ -533,7 +532,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 49,
+    "tests/test_readme_claims.py": 50,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
@@ -1046,3 +1045,37 @@ def test_the_guide_never_hardcodes_a_port_a_reader_must_visit() -> None:
         "these lines tell a reader to visit a hardcoded host port:\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_04_expert_claims_a_defect_the_generator_still_has() -> None:
+    """Lesson 04-04 names a specific defect in `_raw_query`. Keep it honest.
+
+    The lesson says the shipped trend query uses `avg(value)` inside a
+    `time_bucket` and filters `value IS NOT NULL` in the `WHERE` clause, and
+    measures both as defects. If the generator is ever fixed, the lesson is
+    describing a bug that no longer exists — which is the same failure as a
+    README claiming a lesson is unwritten when it is not.
+
+    Deliberately one-directional: it fails while the defect is present and the
+    lesson has not caught up, which is the direction that matters.
+    """
+    generator = Path(
+        "ui/grafana/generate_dashboards.py"
+    ).read_text(encoding="utf-8")
+    lesson = Path("sql/04-expert/04-04_the_dashboard_query.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "avg(value) AS value" in generator, (
+        "the trend query no longer averages; lesson 04-04 is built around why it "
+        "was wrong, and needs rewriting to say what replaced it"
+    )
+    assert "AND value IS NOT NULL" in generator, (
+        "the NULL filter moved out of the WHERE clause; lesson 04-04's third "
+        "decision no longer describes the shipped query"
+    )
+    for claim in ("_raw_query", "ui/grafana/generate_dashboards.py"):
+        assert claim in lesson, (
+            f"lesson 04-04 no longer names {claim!r}, so a reader cannot find the "
+            "code it is criticising"
+        )

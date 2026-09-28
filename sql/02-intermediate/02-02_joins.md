@@ -47,7 +47,7 @@ SELECT
 FROM signal s
 LEFT JOIN reading r
        ON r.signal_id = s.id
-      AND r.ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+      AND r.ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
       AND r.ts <  (SELECT max(ts) FROM reading)
 GROUP BY s.id, s.unit
 HAVING count(r.signal_id) = 0
@@ -55,15 +55,38 @@ ORDER BY s.id;
 ```
 
 ```
-            signal_id            |  unit  | readings_today | last_seen
--------------------------------+--------+----------------+------------
- AERATION:AHU-1:MLSS              | mg/L   |              0 |     NULL
- AERATION:AHU-1:SETPOINT_DO       | mg/L   |              0 |     NULL
- AERATION:AHU-1:SRT               | d      |              0 |     NULL
- EFFLUENT:FLOW:CONDUCTIVITY       | uS/cm  |              0 |     NULL
- INFLUENT:FLOW:CONDUCTIVITY       | uS/cm  |              0 |     NULL
- PRIMARY:PRI-CL-1:BLANKET         | m      |              0 |     NULL
+             signal_id           |  unit  | readings_today | last_seen
+---------------------------------+--------+----------------+------------
+ AERATION:AHU-1:MLSS               | mg/L   |              0 |     NULL
+ AERATION:AHU-1:SETPOINT_DO        | mg/L   |              0 |     NULL
+ AERATION:AHU-1:SRT                | d      |              0 |     NULL
+ EFFLUENT:FLOW:CONDUCTIVITY        | uS/cm  |              0 |     NULL
+ INFLUENT:FLOW:CONDUCTIVITY        | uS/cm  |              0 |     NULL
+ PRIMARY:PRI-CL-1:BLANKET          | m      |              0 |     NULL
+ PRIMARY:PRI-CL-1:TEMP              | Cel    |              0 |     NULL
+ SECONDARY:SEC-CL-1:BLANKET        | m      |              0 |     NULL
+ SITE:WEATHER:BARO                 | hPa    |              0 |     NULL
+ SITE:WEATHER:RAIN                 | mm/h   |              0 |     NULL
+ SITE:WEATHER:STORM                | {Boolean} |            0 |     NULL
+ SLUDGE:DIG-1:CH4                  | %      |              0 |     NULL
+ SLUDGE:DIG-1:GAS_FLOW             | m3/h   |              0 |     NULL
+ SLUDGE:DIG-1:GAS_PRESSURE         | mbar   |              0 |     NULL
+ SLUDGE:DIG-1:TEMP                 | Cel    |              0 |     NULL
+ SLUDGE:DIG-1:VFA_ALK_RATIO         | 1      |              0 |     NULL
+ SLUDGE:GAS-BLR:BOILER_DUTY         | kW     |              0 |     NULL
+ SLUDGE:THK-1:TS                   | %      |              0 |     NULL
 ```
+
+**The window is six hours, not a day, and that is not a stylistic choice.** Widen
+it to `interval '1 day'` and this query returns **no rows at all** — every one of
+the 57 signals has produced something in the last day, so there is no signal for
+the `LEFT JOIN` to preserve. The rows above are the signals that went quiet in the
+last six hours: the weather station, the digester, and the conductivity probes,
+which in this simulator only report when their value actually moves.
+
+That is worth sitting with. **A query that finds nothing is not a query that found
+no problems.** The same SQL, against a different window, is either a useful
+instrument or an empty one, and nothing in the result distinguishes the two.
 
 ### The rule that is worth memorising
 

@@ -12,16 +12,24 @@
 -- (POSTGRES_PORT in .env, and it is often not 5432 — check with
 --  `docker compose port db 5432`)
 
+BEGIN;
+
+-- Write both protocol faces at the same instant. Run this first, or the SELECT
+-- below has nothing to pivot.
+INSERT INTO reading (ts, signal_id, value, quality, source) VALUES
+    ('2026-09-26 12:00:00+00', 'AERATION:AHU-1:DO', 2.10, 0, 'opcua'),
+    ('2026-09-26 12:00:00+00', 'AERATION:AHU-1:DO', 2.14, 0, 'modbus');
+
 SELECT
     ts,
-    max(value) FILTER (WHERE source = 'opcua') AS opcua,
+    max(value) FILTER (WHERE source = 'opcua')  AS opcua,
     max(value) FILTER (WHERE source = 'modbus') AS modbus,
     max(value) FILTER (WHERE source = 'modbus')
       - max(value) FILTER (WHERE source = 'opcua') AS difference
 FROM reading
 WHERE signal_id = 'AERATION:AHU-1:DO'
-  AND ts >= '2026-09-26 12:00:00+00'
-  AND ts <  '2026-09-26 12:05:00+00'
+  AND ts = '2026-09-26 12:00:00+00'
 GROUP BY ts
-ORDER BY ts
-LIMIT 5;
+ORDER BY ts;
+
+ROLLBACK;

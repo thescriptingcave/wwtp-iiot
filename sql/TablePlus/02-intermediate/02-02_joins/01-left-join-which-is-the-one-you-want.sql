@@ -20,7 +20,7 @@ SELECT
 FROM signal s
 LEFT JOIN reading r
        ON r.signal_id = s.id
-      AND r.ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+      AND r.ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
       AND r.ts <  (SELECT max(ts) FROM reading)
 GROUP BY s.id, s.unit
 HAVING count(r.signal_id) = 0

@@ -3,8 +3,8 @@
 `sql/TablePlus/` is generated from the lessons. Three things are worth asserting
 and none of them is "the files exist":
 
-* **the count matches the runner.** `check_sql.py` reports 64 runnable queries;
-  the generator must produce 64 files. The first version skipped every
+* **the count matches the runner.** `check_sql.py` reports 80 runnable queries;
+  the generator must produce 80 files. The first version skipped every
   `README.md` and produced **62**, because two runnable queries live in index
   pages. A generator that quietly drops two is worse than one that is short, and
   the discrepancy is invisible unless the two numbers are compared.
@@ -48,7 +48,7 @@ def test_the_generator_is_in_step_with_the_lessons() -> None:
 
 
 def test_one_file_per_runnable_query_and_no_more() -> None:
-    """64 files, because 64 queries run — and the two counts must agree.
+    """80 files, because 80 queries run — and the two counts must agree.
 
     `check_sql.py` counts across every markdown file in the course, including the
     index pages. The generator's first version skipped `README.md` and produced
@@ -62,9 +62,9 @@ def test_one_file_per_runnable_query_and_no_more() -> None:
         f"sql/TablePlus. Every runnable query needs a file, including the two in "
         f"index pages."
     )
-    assert actual == 64, (
-        f"the course now has {actual} runnable queries, not 64 — the README and "
-        f"any test that states 64 need updating"
+    assert actual == 80, (
+        f"the course now has {actual} runnable queries, not 80 — the README and "
+        f"any test that states 80 need updating"
     )
 
 

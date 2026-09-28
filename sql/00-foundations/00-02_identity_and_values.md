@@ -92,19 +92,33 @@ March.
 ## The query: both protocol faces, at one instant
 
 ```sql
+BEGIN;
+
+-- Write both protocol faces at the same instant. Run this first, or the SELECT
+-- below has nothing to pivot.
+INSERT INTO reading (ts, signal_id, value, quality, source) VALUES
+    ('2026-09-26 12:00:00+00', 'AERATION:AHU-1:DO', 2.10, 0, 'opcua'),
+    ('2026-09-26 12:00:00+00', 'AERATION:AHU-1:DO', 2.14, 0, 'modbus');
+
 SELECT
     ts,
-    max(value) FILTER (WHERE source = 'opcua') AS opcua,
+    max(value) FILTER (WHERE source = 'opcua')  AS opcua,
     max(value) FILTER (WHERE source = 'modbus') AS modbus,
     max(value) FILTER (WHERE source = 'modbus')
       - max(value) FILTER (WHERE source = 'opcua') AS difference
 FROM reading
 WHERE signal_id = 'AERATION:AHU-1:DO'
-  AND ts >= '2026-09-26 12:00:00+00'
-  AND ts <  '2026-09-26 12:05:00+00'
+  AND ts = '2026-09-26 12:00:00+00'
 GROUP BY ts
-ORDER BY ts
-LIMIT 5;
+ORDER BY ts;
+
+ROLLBACK;
+```
+
+```
+          ts          | opcua | modbus | difference
+---------------------+-------+--------+------------
+ 2026-09-26 12:00:00+00 |  2.10 |   2.14 |       0.04
 ```
 
 `FILTER (WHERE …)` is the readable way to pivot. `CASE WHEN … THEN … END` also
@@ -114,8 +128,19 @@ states the intent — *of these rows, the ones where source is modbus* — witho
 
 **The `difference` column is the point of the exercise.** The gateway reads Modbus
 first and OPC UA second, so in normal operation only one source's row exists per
-poll. Both appear only when you ask a question that makes both faces record, which
-is what this query does by writing both sources at the same timestamp.
+poll, and **this database contains no `modbus` readings at all** — the seeder
+writes `opcua` and `seed`. Querying the two side by side against seeded data
+returns a `modbus` column of NULL and a `difference` of NULL, which is the honest
+answer and not a useful one.
+
+So the query writes its own two rows first, inside a transaction it rolls back.
+Four-tenths of a milligram per litre apart, at the same instant, on the same
+signal — and the only reason both rows can exist is `source`.
+
+**Wrap it in `ROLLBACK`.** This is the one query in the course that writes, and it
+exists to make a `SELECT` demonstrate something that seeded data cannot show. The
+`ROLLBACK` means your database is unchanged, and you can prove it — the last line
+of the next query returns nothing.
 
 ## And now the reason `source` is in the primary key
 

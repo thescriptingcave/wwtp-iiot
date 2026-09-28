@@ -235,7 +235,7 @@ the questions the plant exists to answer.
 Every ````sql` block is executed against a live server:
 
 ```bash
-# 64 queries across 21 files
+# 80 queries across 26 files
 uv run python tools/check_sql.py sql/
 ```
 

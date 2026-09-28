@@ -1,7 +1,10 @@
 # The SQL course
 
-Five stages, beginner to expert, run against a week of data this project
-generates. It is not an appendix. It is the reason the plant exists.
+Five stages, beginner to expert, all written, run against a week of data this
+project generates. It is not an appendix. It is the reason the plant exists.
+
+The last stage finds two real defects in this repository, and one of them is in the
+query the plant's own dashboard runs.
 
 Every lesson states **a question**, gives **a query**, and has its expected output
 inline. Work them in order: the later stages assume the shapes the earlier ones
@@ -46,8 +49,8 @@ uv run python tools/sqlrun.py "SELECT count(*) FROM reading"
 | [00-foundations](00-foundations/) | What a hypertable is; identity versus value and why they are different *tables*; why `value` can be NULL | Because every later stage assumes you know this, and because a time-series table is not a normal table with a timestamp column |
 | [01-beginner](01-beginner/) | `SELECT`, `WHERE`, aggregation, your first `time_bucket`, `CASE`, `HAVING` | Because this is where "read one signal" becomes "answer a question about a signal" |
 | [02-intermediate](02-intermediate/) | CTEs, window functions, joins, gaps, the quality scale as a filter | Because the questions get compositional, and a nested subquery stops being readable before it stops being possible |
-| `03-advanced/` | Continuous aggregates, chunks, retention, `EXPLAIN` | **Written** — 4 lessons |
-| `04-expert/` | Time-weighted averages, change detection, query planning, writing the dashboard query | Unwritten |
+| [03-advanced](03-advanced/) | Continuous aggregates, chunks, retention, `EXPLAIN` | Because the storage engine starts deciding what your query is allowed to do before it runs |
+| [04-expert](04-expert/) | Time-weighted averages, change detection, reading a plan, writing the dashboard query | Because every earlier stage had a right answer to check against, and this is the stage where the obvious query returns a confident wrong one — **and finds two real defects in this repository** |
 
 ## How to work through a lesson
 

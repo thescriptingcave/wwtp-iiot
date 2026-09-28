@@ -150,7 +150,7 @@ def free_port() -> int:
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
-        chosen = probe.getsockname()[1]
+        chosen: int = probe.getsockname()[1]
     if chosen < FIRST_SNIPPET_PORT:
         # Keep clear of the project's real ports even if the OS hands one back.
         return FIRST_SNIPPET_PORT
