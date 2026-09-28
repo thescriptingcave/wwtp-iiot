@@ -75,8 +75,25 @@ services:
     ports:
       # Host 5020 rather than 502: 502 is privileged, and 502 is also what half
       # the Modbus tooling on a laptop already has bound.
-      - "${MODBUS_PORT:-5020}:5020"
-      - "${OPCUA_PORT:-4840}:4840"
+      #
+      # `${HOST_BIND:-127.0.0.1}` is the fix `courses/opcua/07-security.md`
+      # asks for, and it is a default rather than a policy: the port is published
+      # on loopback, so "anyone who can reach the port" means *this machine*.
+      #
+      # It was `4840:4840` — no host prefix, which Docker reads as every
+      # interface — while the comment two lines above claimed that "publishing to
+      # the host is a separate, deliberate decision made per port below". Nothing
+      # in the repository recorded the decision, and `0.0.0.0` appeared in no
+      # markdown file at all, so the claim could not be resolved by reading the
+      # project.
+      #
+      # To expose the plant on a network, set `HOST_BIND=0.0.0.0` in `.env` and
+      # understand that the OPC UA endpoint is then **unauthenticated and
+      # unencrypted** — `SecurityPolicyNone`, no certificate — and that anyone
+      # who can reach it can read the site name, the design flow, all five permit
+      # limits and all 57 signals. See docs/SECURITY.md.
+      - "${HOST_BIND:-127.0.0.1}:${MODBUS_PORT:-5020}:5020"
+      - "${HOST_BIND:-127.0.0.1}:${OPCUA_PORT:-4840}:4840"
     networks: [plant]
     healthcheck:
       # The PLC has no HTTP endpoint — adding one purely for a healthcheck would
@@ -120,7 +137,7 @@ services:
     volumes:
       - db-data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${HOST_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     networks: [plant]
     healthcheck:
       # `pg_isready` with an explicit `-h 127.0.0.1`, and the `-h` is the point.
@@ -481,7 +498,7 @@ services:
       # image and this cache only holds revalidation state.
       - /app/.next/cache:size=64m
     ports:
-      - "${WEB_PORT:-3001}:3000"
+      - "${HOST_BIND:-127.0.0.1}:${WEB_PORT:-3001}:3000"
     networks: [plant]
     depends_on:
       db:
@@ -525,7 +542,7 @@ services:
       - ./ui/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "${HOST_BIND:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     networks: [plant]
     depends_on:
       db:

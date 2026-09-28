@@ -499,73 +499,75 @@ def test_the_lesson_claims_the_server_configures_no_security() -> None:
 
 
 def test_the_lesson_claims_the_bind_address_is_in_no_project_doc() -> None:
-    """`git grep -n '0\\.0\\.0\\.0' -- '*.md'` names only documents *about* it.
+    """`0.0.0.0` is now named in `docs/SECURITY.md`, and that is the point.
 
-    Scoped to exclude `courses/` and `docs/LEARNING-LOG.md`, and the exclusions
-    are the point rather than a convenience. This test failed twice on itself:
-    first on lesson 07, which quotes the endpoint in order to complain that
-    nobody documents it, and then on the learning-log entry about that lesson.
-    A gap gets named by the documents complaining about it, and a test that
-    forbids the very document making the complaint is a test that forbids the
-    fix.
+    Scoped to exempt the two documents that exist to *discuss* the gap — the
+    course and the learning log — because a gap gets named by the documents
+    complaining about it and a test forbidding the document making the complaint
+    forbids the fix. This test failed twice on itself for exactly that reason.
 
-    What is worth protecting is narrower: **the reference documentation** —
-    `SECURITY.md`, `ARCHITECTURE.md`, `GETTING-STARTED.md`, `README.md` — never
-    mentions the bind address, so `SECURITY.md`'s "anyone who can reach the port"
-    cannot be resolved by reading the project. That is the gap. A third document
-    joining the two above is tolerable; a fourth reference document is not, and
-    the assertion message names which.
+    What is now asserted is the positive claim: the bind address is documented
+    where somebody deciding whether to expose the plant would look, and it was
+    not before.
     """
-    exemptions = ("courses", "LEARNING-LOG.md")
+    discussing = ("courses", "LEARNING-LOG.md")
     offenders = [
         p.name for p in (ROOT).rglob("*.md")
         if ".venv" not in p.parts
-        and not any(x in p.parts or x in p.name for x in exemptions)
+        and not any(x in p.parts or x in p.name for x in discussing)
         and "0.0.0.0" in p.read_text(encoding="utf-8", errors="ignore")
     ]
-    assert not offenders, (
-        f"the bind address is now mentioned in {offenders}. If one of those is a "
-        f"document *about* the gap, exempt it by name as courses/ and "
-        f"LEARNING-LOG.md are; if it is reference documentation, lesson 07's claim "
-        f"is stale and SECURITY.md needs the fact."
+    assert "SECURITY.md" in offenders, (
+        "0.0.0.0 is no longer named in docs/SECURITY.md. The port binding is now "
+        "loopback by default, so the remediation list has changed — update lesson "
+        "07 and this test to say what is true now."
+    )
+    # And nothing *else* in the reference docs started naming it by accident.
+    unexpected = [n for n in offenders if n != "SECURITY.md"]
+    assert not unexpected, (
+        f"the bind address is now also mentioned in {unexpected}; if one of those "
+        f"is a document about the gap, exempt it by name as courses/ and "
+        f"LEARNING-LOG.md are"
     )
 
 
 def test_the_lesson_claims_compose_publishes_on_all_interfaces() -> None:
-    """`"${OPCUA_PORT:-4840}:4840"` binds every host interface, not loopback."""
+    """The loopback fix, asserted on the syntax rather than on the prose.
+
+    It was `"${OPCUA_PORT:-4840}:4840"`, which Docker reads as every host
+    interface. It is now `"${HOST_BIND:-127.0.0.1}:${OPCUA_PORT:-4840}:4840"`.
+    """
     text = (ROOT / "compose.yaml").read_text(encoding="utf-8")
-    assert '"${OPCUA_PORT:-4840}:4840"' in text, (
-        "compose.yaml's OPC UA port mapping changed; lesson 07's claim that the "
-        "port is published on all host interfaces needs rechecking"
+    assert '"${HOST_BIND:-127.0.0.1}:${OPCUA_PORT:-4840}:4840"' in text, (
+        "compose.yaml's OPC UA mapping no longer binds loopback by default; "
+        "lesson 07's claim that it does is stale"
     )
-    assert "127.0.0.1:${OPCUA_PORT" not in text, (
-        "compose.yaml now binds OPC UA to loopback, which is the first of the "
-        "three fixes lesson 07 recommends — say so in the lesson"
+    assert '"${OPCUA_PORT:-4840}:4840"' not in text, (
+        "the all-interfaces mapping is back — a bare `4840:4840` publishes an "
+        "unauthenticated, unencrypted OPC UA endpoint on every host interface"
     )
 
 
 def test_the_lesson_claims_the_address_space_has_no_drift_gate() -> None:
-    """Lesson 08's central structural finding, asserted against CI.
+    """The serialiser lesson 08 asked for now exists, and is wired into CI.
 
-    Five generated artifacts are written to disk and diffed in the `drift` job.
-    The address space — 686 nodes, the largest generated artifact — is not among
-    them, because it has no file. If somebody adds a serialiser and a sixth step,
-    the lesson's recommendation has been implemented and needs rewording.
+    Asserted positively, because the lesson's recommendation was implemented: the
+    five other generated artefacts are still checked, and a sixth now covers the
+    address space. If the serialiser is ever removed, `address_space` disappears
+    from the workflow and this fails.
     """
     wf = (ROOT / ".github" / "workflows" / "gates.yml").read_text(encoding="utf-8")
     for gated in ("scada.generate_tags --check", "scada.build_flows --check",
                   "ui.grafana.generate_dashboards --check",
                   "tools.extract_sql --check"):
         assert gated in wf, f"the drift job no longer checks {gated}"
-    for candidate in ("address_space", "address-space", "opcua_space"):
-        assert candidate not in wf, (
-            f"the drift job now references {candidate!r}; the address space has a "
-            f"serialised artifact and lesson 08's recommendation is done"
-        )
-    server = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
-    assert "--check" not in server, (
-        "the server module grew a --check mode, which is the serialiser lesson 08 "
-        "asks for"
+    assert "tools.opcua_address_space --check" in wf, (
+        "the address space is serialised to contracts/address-space.json but the "
+        "drift job does not check it, so the file can rot — which is the state "
+        "lesson 08 was written about"
+    )
+    assert (ROOT / "contracts" / "address-space.json").exists(), (
+        "the drift job checks an address space that is not committed"
     )
 
 

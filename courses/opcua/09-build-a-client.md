@@ -339,10 +339,13 @@ found by reasoning about the fix.
 
 **The remaining two recommendations are unchanged:**
 
-1. **Serialise the address space and gate it in CI.** A fifth `--check` beside
-   four that already exist (lesson 08).
-2. **Bind loopback in `compose.yaml`.** Two tokens per port, and "anyone who can
-   reach the port" becomes a bounded claim (lesson 07).
+1. ~~**Serialise the address space and gate it in CI.**~~ **DONE.** All 686
+   addressable nodes are now serialised to `contracts/address-space.json` by
+   `tools/opcua_address_space.py`, and a sixth step in the existing `drift` job
+   fails when it moves — naming the line and quoting both values, so a reviewer
+   is told which decision changed rather than handed a diff.
+2. ~~**Bind loopback in `compose.yaml`.**~~ **DONE.** All five published ports
+   bind `127.0.0.1` by default, with `HOST_BIND=0.0.0.0` as a documented opt-out.
 
 And one thing the course found that is still not on the repository's own thread
 list, because it is a finding about a tool rather than about the plant:

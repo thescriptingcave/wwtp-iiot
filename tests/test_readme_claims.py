@@ -266,6 +266,7 @@ def _count_tests(path: str) -> int:
         ("tests/test_web_page.py", 22),
         ("tests/test_opcua_course.py", 32),
         ("tests/test_opcua_minimal_client.py", 7),
+        ("tests/test_opcua_address_space.py", 12),
     ],
 )
 def test_the_per_area_test_counts(path: str, claimed: int) -> None:
@@ -470,12 +471,18 @@ def test_no_document_says_the_ci_workflow_has_five_jobs() -> None:
     Uses the shared `_claims_only` rule, which is where the reasoning lives: a
     number in quotation marks is somebody being cited, not this document
     asserting something.
+
+    The pattern allows an adjective between the number and the noun, because the
+    first version of this test did not — and so **passed against a README that
+    said "five CI jobs" while the workflow had six.** A guard with a regex
+    narrower than the prose it guards is worse than no guard, because it is
+    green. Caught by reading the failure mode rather than the pass.
     """
     offenders = [
         f"{path}: {line.strip()}"
         for path in DOCS
         for line in _claims_only(path)
-        if re.search(r"\b(?:five|5) jobs\b", line, re.I)
+        if re.search(r"\b(?:five|5)\s+(?:\w+\s+){0,2}?jobs\b", line, re.I)
     ]
     assert not offenders, (
         "the workflow has six jobs; these lines claim five:\n  "
@@ -526,9 +533,10 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 47,
+    "tests/test_readme_claims.py": 49,
     "tests/test_opcua_course.py": 32,
     "tests/test_opcua_minimal_client.py": 7,
+    "tests/test_opcua_address_space.py": 12,
     "tests/test_alarm_engine.py": 17,
 }
 

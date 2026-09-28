@@ -356,6 +356,14 @@ update).
 
 In rough order of value per effort:
 
+0. ~~**Stop publishing the ports on every interface.**~~ **DONE.** All five
+   published ports now bind `127.0.0.1` by default via `${HOST_BIND}`, and the
+   opt-out is documented in `.env.example` next to a warning about what it
+   exposes. It was the cheapest item on this list and it was not on it: the
+   compose file published `4840:4840` — which Docker reads as *every* interface —
+   while the comment above it claimed that host publishing was "a separate,
+   deliberate decision made per port below", and `0.0.0.0` appeared in no markdown
+   file in the repository. A test now asserts all five.
 1. **Write handlers on OPC UA** that reject out-of-range values, and a real
    certificate with a real trust list. Closes gap 1.
 2. **A protocol gateway** in front of Modbus, enforcing the register map, on its

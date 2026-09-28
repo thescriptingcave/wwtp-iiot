@@ -306,6 +306,17 @@ jobs:
         # material* is worse than drift in a service, because the stale copy is
         # the one a reader is more likely to run.
         run: uv run python -m tools.extract_sql --check
+      - name: the OPC UA address space
+        # The largest generated artefact in the project — 686 nodes — and until
+        # this step existed the only one with no file behind it. Built at
+        # startup, served, discarded: nothing to diff, nothing to review, and
+        # fourteen decisions buried in the generator of which three were wrong.
+        # This is the fix `courses/opcua/08-generated.md` asks for: the
+        # serialised form turns a change to one of those decisions into a row in
+        # a table, so a pull request can show it instead of asking to be
+        # trusted. The message names the first differing line and both values,
+        # because "the files differ" is not a review aid.
+        run: uv run python -m tools.opcua_address_space --check
       - name: the web page's read model
         # The seventh consumer of `contracts/tags.yaml`, and the one most likely
         # to name a signal that does not exist: a hand-written page holds signal

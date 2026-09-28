@@ -279,9 +279,13 @@ entirely, because the model was written for a different plant.
 
 The three things worth doing, in order:
 
-1. **Bind loopback in `compose.yaml`** — one token per port, and it converts
-   "anyone who can reach it" from unbounded to "this machine". For a development
-   stack there is no reason not to.
+1. ~~**Bind loopback in `compose.yaml`**~~ **DONE.** All five published ports
+   bind `127.0.0.1` by default now, through `${HOST_BIND}`, and the opt-out is
+   documented in `.env.example` beside a warning about what it exposes. It is a
+   default rather than a policy — `HOST_BIND=0.0.0.0` restores the old behaviour
+   for anyone demoing on a network they trust — and a test asserts all five,
+   because the failure mode is a compose file that parses perfectly and publishes
+   an unauthenticated plant to a network.
 2. **Move confidentiality into the threat model**, where the permit limits
    belong, and demote control-path integrity with a note saying the path is
    currently inert.

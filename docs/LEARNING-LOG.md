@@ -2608,6 +2608,88 @@ fourteen findings. Three are worth doing this week and none is hard — set
 a fifth `--check` beside the four that exist, and bind loopback in `compose.yaml`
 (two tokens per port).
 
+## The two cheap fixes from the course's list, and what they exposed
+
+### 686 nodes, now a file
+
+Lesson 08 recommended publishing the address space. Done:
+`contracts/address-space.json`, written by `tools/opcua_address_space.py`, and a
+**sixth** step in the `drift` job that already had five.
+
+The value is visible in the file itself. All 57 signals read `"data_type":
+"Double"`, which is lesson 02's wart as a row rather than a claim. All 57 read
+`"constructed_from": {"field": "normal_low", "value": ...}`, which is lesson 03's
+worst finding — the value the constructor invents, in a table, where a YAML diff
+of `contracts/tags.yaml` cannot show it, because the contract does not say the
+value is *used this way*. And all 22 pieces of equipment read
+`"run_state_constructed_as": 0`, which is lesson 01's closing example.
+
+The gate names the line and quotes both sides, because "the files differ" on a
+686-node file pushes the work back onto whoever the gate was built to help:
+
+```
+contracts/address-space.json is out of step with the address space the server
+builds: line 253: committed '"data_type": "Double"', built '"data_type": "Int32"'
+```
+
+Verified by mutation — changing `_variant_type` to return `Int32` makes
+`--check` exit 1, and a test does exactly that rather than asserting the gate
+would work.
+
+**Two things I got wrong writing it.** `_describe` read `DataType` from every
+node, and a Folder has no such attribute, so the walk died on the first area
+folder with `BadAttributeIdInvalid` — the server's correct answer, and my
+assumption that every node is a Variable. And `render` wanted `sort_keys=True` for
+determinism, which would have alphabetised 686 nodes and destroyed the tree order
+that is the entire reason a human would read the file. Determinism comes from the
+contract's ordering, not from sorting the output.
+
+### Five ports, one prefix
+
+`4840:4840` publishes on *every* host interface. The fix is `${HOST_BIND:-
+127.0.0.1}` in front of all five, with `HOST_BIND=0.0.0.0` as a documented opt-out
+in `.env.example` — a **default, not a policy**, because someone demoing the plant
+on a laptop they trust should not have to edit compose. The warning sits next to
+the opt-out, because a reader who sets it without opening `SECURITY.md` should
+still be told what it exposes.
+
+### A guard with a regex narrower than the prose it guarded
+
+While wiring the serialiser in I noticed `README.md` said **"five CI jobs"** and
+the workflow has six. The test written to catch exactly that,
+`test_no_document_says_the_ci_workflow_has_five_jobs`, **passed** — because its
+pattern was `\b(?:five|5) jobs\b` and the README said "five **CI** jobs".
+
+That is the third guard in this project that was green and wrong, and the
+interesting part is that widening the regex immediately found a second instance:
+
+```
+README.md:176:  The five CI jobs, and the three broken things writing the file found
+courses/opcua/08-generated.md:274:  ...was checked by five CI jobs.
+```
+
+The second one **I wrote four commits earlier, in lesson 08**, in the same
+session, while documenting the very problem the course exists to expose. A guard
+with a regex narrower than the prose it guards is worse than no guard, because it
+is green *and* it is cited as evidence that the claims are checked.
+
+The pattern now allows an adjective between the number and the noun. And the
+lesson's own sentence had to be reworded rather than the test narrowed again,
+which is the correct direction to resolve that conflict.
+
+### And a gate that punished its own documentation
+
+The source guard for the timezone fix asserted `"ua.DateTime.now()" not in source`
+and failed, because the server's comments name the function they forbid, on
+purpose. It now walks the AST and inspects the real call graph, so a comment may
+name the forbidden function and the guard still means what it says. Both that
+guard and the live one are verified by mutation.
+
+Three guards, three ways of being confidently wrong, all found by looking rather
+than by trusting a green tick. That is now the single most repeated lesson in
+this log, and it is worth more than any of the fourteen findings: **a test that
+has never been seen to fail is an assumption wearing a tick.**
+
 ---
 
 ## Thread triage

@@ -239,22 +239,29 @@ looked at.** And this project has already solved that exact problem four other
 times, for the tag list, the flows, the dashboards and the extracted queries —
 every one of them is written to a file, committed, and diffed in CI.
 
-So the fix is a fifth one of those:
+So the fix is a fifth one of those — **and it is now done**:
 
-1. **Serialise the built address space to a file** — node id, browse name, node
-   class, data type, parent, and the property set — committed alongside the
-   contract.
-2. **Add it to the `drift` job** with a `--check` that fails when the serialised
-   form moves. That job already exists and already has four steps of this shape.
-3. **The serialised form becomes the review surface.** A pull request that
-   changes `_add_signal` would show 57 changed rows saying `DataType:
-   BaseDataVariableType → AnalogItemType`, which is a reviewable diff. Today it
-   shows a Python function.
+1. ~~**Serialise the built address space to a file** — node id, browse name,
+   node class, data type, parent, and the property set — committed alongside the
+   contract.~~ `contracts/address-space.json`, 686 nodes, written by
+   `tools/opcua_address_space.py`.
+2. ~~**Add it to the `drift` job** with a `--check` that fails when the serialised
+   form moves.~~ Sixth step in the job that already had five, and it names the
+   first differing line with both values.
+3. **The serialised form is the review surface.** A pull request that changes
+   `_add_signal` shows 57 changed rows saying
+   `data_type: BaseDataVariableType → AnalogItemType`, which is a reviewable
+   diff. Today it shows a Python function.
 
-That is a day's work, and it would have caught decisions 6, 8, 9, 11 and 12
-immediately — because they all show up as a *value* in a table rather than as a
-line in a loop. It also happens to be the fix for lesson 01's `RunState = 0`,
-which is only visible as a value.
+Verified rather than asserted: changing `_variant_type` to return `Int32` makes
+`--check` fail with
+`line 253: committed '"data_type": "Double"', built '"data_type": "Int32"'`, and
+`tests/test_opcua_address_space.py` does exactly that as a test.
+
+The file also records the two decisions that lesson 08 could only argue about —
+`constructed_from: {field: normal_low, value: ...}` on all 57 signals, and
+`run_state_constructed_as: 0` on all 22 pieces of equipment. Both were
+invisible in a diff of the generator and both are now a row you can see.
 
 ## What is actually true
 
@@ -271,7 +278,8 @@ The honest summary is that generation was correct and *incomplete*. It solved
 consistency and did not solve reviewability, and it is entirely possible — as it
 was here — to get the first right, the second wrong, and never notice for the
 life of the project, because the thing that was wrong was invisible and the
-thing that was right was checked by five CI jobs.
+thing that was right was checked by CI jobs — four of which gate a generated
+artefact, and a fifth which gates the web page's read model.
 
 That is also the answer to the question this course started with. The reason
 nobody learned OPC UA from this project is not that the code is generated. It is
