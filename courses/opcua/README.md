@@ -121,7 +121,7 @@ by doing it.
 |---|---|---|
 | 01 | [How a client actually talks to an OPC UA server](01-talking-to-a-server.md) | the whole surface, once: connect, browse, walk, read, subscribe, disconnect |
 | 02 | [Nodes, classes and types](02-nodes-and-types.md) | what a thing *is*: `Object` vs `Variable`, type definitions, references, namespaces |
-| 03 | [Reading data properly](03-reading-data.md) | planned |
+| 03 | [Reading data properly](03-reading-data.md) | attributes, timestamps, batch reads, and the read that raises |
 | 04 | [Data types, units and ranges](04-units-and-ranges.md) | planned |
 | 05 | [Subscriptions in depth](05-subscriptions-in-depth.md) | planned |
 | 06 | [Status codes and quality](06-status-and-quality.md) | planned |
