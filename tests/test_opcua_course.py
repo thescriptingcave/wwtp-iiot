@@ -100,12 +100,23 @@ def test_the_opcua_course_exists_and_has_a_lesson() -> None:
     assert lessons, "the course has no lessons, which defeats its purpose"
 
 
-def test_every_lesson_is_linked_from_the_course_readme() -> None:
-    readme = (COURSE / "README.md").read_text(encoding="utf-8")
-    for lesson in COURSE.glob("*.md"):
-        if lesson.name == "README.md":
-            continue
-        assert lesson.name in readme, f"{lesson.name} is not in the course README"
+def test_every_lesson_is_linked_from_a_readme() -> None:
+    """Each lesson appears in the README of the folder it lives in.
+
+    There are two folders now, each with its own README: `courses/opcua/` for the
+    teaching lessons and `courses/opcua/audit/` for the nine post-mortems. A
+    lesson in neither is a file nobody was meant to find, which is the failure
+    mode a directory listing hides.
+    """
+    for folder in sorted(p for p in COURSE.iterdir() if p.is_dir()):
+        readme = (folder / "README.md").read_text(encoding="utf-8")
+        for lesson in folder.glob("*.md"):
+            if lesson.name == "README.md":
+                continue
+            assert lesson.name in readme, (
+                f"{lesson.name} is not in {folder.name}/README.md, so it is a file "
+                f"nobody was meant to find"
+            )
 
 
 def test_every_lesson_navigates_onward_and_back() -> None:
@@ -114,19 +125,20 @@ def test_every_lesson_navigates_onward_and_back() -> None:
     The SQL course does this at the top of every lesson and it is the only
     reason it is navigable without a table of contents.
 
-    One exemption: the lesson that *is* the entry point links only back. It is the
-    last lesson in the tree and has nowhere to send you, and a "Next:" pointing
-    nowhere is worse than no link.
+    Two exemptions, both terminal: the teaching course's entry point, and the
+    audit's last lesson. A "Next:" pointing nowhere is worse than no link.
     """
-    for lesson in COURSE.glob("*.md"):
-        if lesson.name == "README.md":
-            continue
-        text = lesson.read_text(encoding="utf-8")
-        assert "Back to the course" in text or "README.md" in text, (
-            f"{lesson.name} does not link back to the course"
-        )
-        if lesson.name != "10-talking-to-a-server.md":
-            assert "**Next:**" in text, f"{lesson.name} has no Next link"
+    terminal = {"01-talking-to-a-server.md", "09-build-a-client.md"}
+    for folder in sorted(p for p in COURSE.iterdir() if p.is_dir()):
+        for lesson in folder.glob("*.md"):
+            if lesson.name == "README.md":
+                continue
+            text = lesson.read_text(encoding="utf-8")
+            assert "README.md" in text, (
+                f"{lesson.name} does not link back to a course README"
+            )
+            if lesson.name not in terminal:
+                assert "**Next:**" in text, f"{lesson.name} has no Next link"
 
 
 def test_the_lesson_claims_the_address_space_really_has() -> None:
@@ -693,20 +705,31 @@ def test_the_lesson_claims_no_analog_item_type_instances_exist() -> None:
     assert "add_variable(" in src, "the lesson quotes add_variable() at a line"
 
 def test_the_course_readme_does_not_claim_lessons_that_do_not_exist() -> None:
-    """'Planned' must mean planned.
+    """'Planned' must mean planned, in *either* folder.
 
     The SQL course lists an unwritten `04-expert` stage and says so in words. The
     same rule here: a lesson listed without a status, or marked written without
     a file, is the kind of drift `tests/test_readme_claims.py` exists to catch,
     and a course is exactly where it does the most damage.
+
+    The audit's README has no status column — those nine all exist and all have
+    run against a live server for months — so a row there is simply checked for
+    existing.
     """
-    readme = (COURSE / "README.md").read_text(encoding="utf-8")
-    for row in re.findall(r"^\| (\d\d) \| \[(.+?)\]\((.+?)\) \| (.+?) \|$",
-                          readme, re.MULTILINE):
-        num, title, target, status = row
-        exists = (COURSE / target).exists()
-        written = "written" in status and "unwritten" not in status
-        assert exists == written, (
-            f"lesson {num} ({title}): file exists={exists}, status says "
-            f"{status!r} — the course README and the directory disagree"
-        )
+    for folder in sorted(p for p in COURSE.iterdir() if p.is_dir()):
+        readme = (folder / "README.md").read_text(encoding="utf-8")
+        for row in re.findall(r"^\| (\d\d) \| \[(.+?)\]\((.+?)\) \| (.+?) \|$",
+                              readme, re.MULTILINE):
+            num, title, target, status = row
+            exists = (folder / target).exists()
+            if "written" in status or "planned" in status:
+                written = "written" in status and "unwritten" not in status
+                assert exists == written, (
+                    f"{folder.name}: lesson {num} ({title}): file exists={exists}, "
+                    f"status says {status!r} — the README and the directory disagree"
+                )
+            else:
+                assert exists, (
+                    f"{folder.name}: lesson {num} ({title}) is listed as "
+                    f"{status!r} but {target} does not exist"
+                )

@@ -1,6 +1,6 @@
 # 06 — Why OPC UA is asyncio and Modbus is not
 
-**Next:** [07 — Security, and the warning on every start](07-security.md) · [Back to the course](README.md) · [Previous: 05](05-writing.md)
+**Next:** [07 — Security, and the warning on every start](07-security.md) · [Back to the course](../README.md) · [Previous: 05](05-writing.md)
 
 This is the first lesson where the code is mostly right, and the argument it
 makes is the one that justifies the whole shape of `softplc/main.py`. The

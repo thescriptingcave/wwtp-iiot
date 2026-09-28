@@ -1,6 +1,6 @@
 # 04 — Subscriptions, and the feature this project does not use
 
-**Next:** [05 — Writing](05-writing.md) · [Back to the course](README.md) · [Previous: 03](03-reading-and-quality.md)
+**Next:** [05 — Writing](05-writing.md) · [Back to the course](../README.md) · [Previous: 03](03-reading-and-quality.md)
 
 The module docstring lists what OPC UA buys over Modbus, and the second item is
 the one people quote:

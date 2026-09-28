@@ -1,25 +1,39 @@
 # The OPC UA course
 
-Nine lessons, run against a real OPC UA server — this plant.
+Nine lessons on the protocol, run against a live OPC UA server.
 
-It exists because of a gap this project had and did not notice for a long time.
-OPC UA was the primary protocol, 500 lines of server, a client, a browser tool
-and 370 lines of tests, and **not one lesson**. Every mention of it in the
-repository was one of four things: an architecture line, a command to run, a
-`45 nodes assembled` verification message, or a glossary entry. The SQL course
-had 21 lessons. This had none, and the reason is uncomfortable:
+**Start at [01 — How a client actually talks to an OPC UA server](01-talking-to-a-server.md).**
+It assumes you know nothing about OPC UA, nothing about this repository, and
+nothing about the plant it runs against. Everything in it works against any OPC UA
+server.
+
+There is a second set of lessons in [audit/](audit/README.md) about this
+repository specifically. They are worth reading if you are reviewing this project
+or changing it, and they are the wrong door if you are here to learn the
+protocol. The distinction is deliberate and it took nine lessons written the wrong
+way to see it — the story is at the bottom of this file.
+
+## Why this course exists at all
+
+OPC UA is the primary protocol in this project: 500 lines of server, a client, a
+browser tool, 370 lines of tests. For a long time it had **no lessons at all**.
+Every mention of it was an architecture line, a command to run, a
+`45 nodes assembled` message, or a glossary entry.
+
+The cause was the same one that shaped the dashboards, and it is worth stating
+plainly because it is a mistake worth not repeating:
 
 > **The two things most worth learning are the two things this project automated.**
 
 The SQL course works because the SQL is hand-written and runs against a live
-database — the artefact *is* the lesson. The OPC UA address space did not work
-that way. It is generated from `contracts/tags.yaml` by
-`softplc/servers/opcua.py`, so you can read that file and learn the answer. What
-you cannot do is learn how to *find* it, which is the transferable part, and
-without that you cannot notice when it is wrong.
+database — the artefact *is* the lesson. The OPC UA address space was generated,
+so you could read the generator and learn the answer, and could not learn how to
+*find* it.
 
-So these lessons do the thing the generated code made impossible: they make you
-walk the tree, and they tell you what is wrong with it when you get there.
+The nine audit lessons are what came out of fixing that. They work, every snippet
+runs, and they read as a post-mortem rather than a course — which is a failure no
+green tick would have caught. **A thing that works perfectly can still be the
+wrong thing**, and these nine are kept for the record rather than deleted.
 
 ## Before you start
 
@@ -86,36 +100,49 @@ is usually that the marker is more than one line above the fence.
 
 It proves the snippet **runs**. It does not compare the output printed in the
 lesson against what the snippet printed — so a snippet can keep running while the
-output above it goes stale. That is a real limitation, shared with
-`tools/check_sql.py`, and it is why the first version of these lessons was
-written by running every snippet and pasting what came back rather than by
-writing plausible output. Two errors in lesson 01 were caught exactly that way,
-including a reference id that had been guessed and was wrong.
+output above it goes stale.
+
+That limitation is why every expected output in both folders was written by
+running the snippet and pasting what came back, never by predicting it. It earns
+its keep more often than you would expect: writing lesson 02, a claimed
+`DisplayName` of "Dissolved oxygen" turned out to be `do_mg_l`, a subscription
+demo claimed zero notifications and produced sixty-five, and a browse loop that
+looked correct walked the whole tree backwards because it ignored `IsForward`.
+All three were caught by running, and all three would have been caught by nothing
+else.
 
 ## The lessons
 
-| # | Lesson | Status |
-|---|---|---|
-| 01 | [The address space is a tree, and you can walk it](01-the-address-space.md) | **written** |
-| 02 | [Units, types, and the one lie in the type system](02-units-and-types.md) | **written** |
-| 03 | [Reading, and what a StatusCode is for](03-reading-and-quality.md) | **written** |
-| 04 | [Subscriptions, and the feature this project does not use](04-subscriptions.md) | **written** |
-| 05 | [Writing, and the difference between enforced and not](05-writing.md) | **written** |
-| 06 | [Why OPC UA is asyncio and Modbus is not](06-async.md) | **written** |
-| 07 | [Security, and the warning on every start](07-security.md) | **written** |
-| 08 | [The address space as generated code, and what that cost](08-generated.md) | **written** |
-| 09 | [Build a client](09-build-a-client.md) | **written** |
-| 10 | [**How a client actually talks to an OPC UA server**](10-talking-to-a-server.md) | **written** |
+**Start at 01.** These nine teach the protocol. They work against any OPC UA
+server, assume no knowledge of this repository, and each one is a concept taught
+by doing it.
 
-**Lesson 10 is the one to start with if you are here to learn the protocol.** The
-other nine are about this repository — which decisions its server makes and what
-went wrong — and that is a post-mortem, not a course. Lesson 10 is about OPC UA
-itself, works against any server, and assumes you know nothing about this
-codebase.
+| # | Lesson | What it is about |
+|---|---|---|
+| 01 | [How a client actually talks to an OPC UA server](01-talking-to-a-server.md) | the whole surface, once: connect, browse, walk, read, subscribe, disconnect |
+| 02 | [Nodes, classes and types](02-nodes-and-types.md) | what a thing *is*: `Object` vs `Variable`, type definitions, references, namespaces |
+| 03 | [Reading data properly](03-reading-data.md) | planned |
+| 04 | [Data types, units and ranges](04-units-and-ranges.md) | planned |
+| 05 | [Subscriptions in depth](05-subscriptions-in-depth.md) | planned |
+| 06 | [Status codes and quality](06-status-and-quality.md) | planned |
+| 07 | [Writing values](07-writing.md) | planned |
+| 08 | [Finding things at scale](08-discovery.md) | planned |
+| 09 | [Building a client that survives](09-a-client-that-survives.md) | planned |
 
 **"Planned" means it does not exist.** It is in the table so the shape of the
 course is visible, not so it looks further along than it is. The same convention
 `sql/README.md` uses for its `04-expert` stage.
+
+## The audit — nine lessons about *this* repository
+
+The first attempt at a course here, and it failed as one. Those nine lessons each
+take a question about this server and answer it with measurements, which teaches a
+reader who is auditing this codebase and leaves a reader who wants to learn OPC UA
+with nothing. They are kept in [audit/](audit/README.md) because they are how the
+findings below were produced, and a finding nobody can re-check is a rumour.
+
+**Every snippet in both folders runs** against a live server, by
+`tools/check_lessons.py`.
 
 ## What these lessons are honest about
 

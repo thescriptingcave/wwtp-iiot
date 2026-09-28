@@ -1,6 +1,6 @@
 # 09 — Build a client
 
-**Next:** none — this is the last lesson · [Back to the course](README.md) · [Previous: 08](08-generated.md)
+**Next:** none — this is the last lesson · [Back to the course](../README.md) · [Previous: 08](08-generated.md)
 
 Eight lessons of things the server does wrong, and things the protocol does not
 do for you. This one is the other half: a client, in the repository, that does
@@ -8,7 +8,7 @@ the right thing about all of it.
 
     python -m tools.opcua_minimal_client
 
-It is [`tools/opcua_minimal_client.py`](../../tools/opcua_minimal_client.py) —
+It is [`tools/opcua_minimal_client.py`](../../../tools/opcua_minimal_client.py) —
 about 200 lines including the comments that explain *why* each safeguard is here,
 and five of them are load-bearing.
 
@@ -302,7 +302,7 @@ the reviewable one will find documentation bugs forever and design bugs never.**
 ## Where to go next
 
 The course is finished, and the honest summary of what it changed is on one page:
-[the course README](README.md) lists all fourteen findings with the lesson each
+[the course README](../README.md) lists all fourteen findings with the lesson each
 one belongs to.
 
 **The first of the three recommendations is now done.** `publish()` and

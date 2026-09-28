@@ -1,6 +1,6 @@
 # 07 — Security, and the warning on every start
 
-**Next:** [08 — The address space as generated code](08-generated.md) · [Back to the course](README.md) · [Previous: 06](06-async.md)
+**Next:** [08 — The address space as generated code](08-generated.md) · [Back to the course](../README.md) · [Previous: 06](06-async.md)
 
 Every single time the OPC UA server starts, it prints two lines to stderr:
 

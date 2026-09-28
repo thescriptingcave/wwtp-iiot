@@ -1,6 +1,6 @@
 # 01 — The address space is a tree, and you can walk it
 
-**Next:** [02 — engineering units, and the one lie in the type system](02-units-and-types.md) · [Back to the course](README.md)
+**Next:** [02 — engineering units, and the one lie in the type system](02-units-and-types.md) · [Back to the course](../README.md)
 
 Modbus gives you a flat list of integers. Register 40104 holds a number, and
 whether that number is m³/h or revolutions per minute is written down in a
@@ -38,7 +38,7 @@ uv run python tools/opcua_browser.py browse
 Every snippet on this page is run by `tools/check_lessons.py` against a live
 server, so if one of them stops working the gate fails rather than the lesson
 quietly becoming fiction. The snippets are given `client`, `root` and `space`
-already connected — see [the course README](README.md) for the convention.
+already connected — see [the course README](../README.md) for the convention.
 
 ## The tree
 

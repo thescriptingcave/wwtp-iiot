@@ -1,6 +1,6 @@
 # 02 — Units, types, and the one lie in the type system
 
-**Next:** [03 — Reading, and what a StatusCode is for](03-reading-and-quality.md) · [Back to the course](README.md) · [Previous: 01](01-the-address-space.md)
+**Next:** [03 — Reading, and what a StatusCode is for](03-reading-and-quality.md) · [Back to the course](../README.md) · [Previous: 01](01-the-address-space.md)
 
 [Lesson 01](01-the-address-space.md) ended on a claim worth stress-testing. The
 server publishes `EngineeringUnits = 6152` and `UnitSymbol = 'mg/L'` on every

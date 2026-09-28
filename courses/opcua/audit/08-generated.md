@@ -1,6 +1,6 @@
 # 08 — The address space as generated code, and what that cost
 
-**Next:** [09 — Build a client](09-build-a-client.md) · [Back to the course](README.md) · [Previous: 07](07-security.md)
+**Next:** [09 — Build a client](09-build-a-client.md) · [Back to the course](../README.md) · [Previous: 07](07-security.md)
 
 This is the lesson where the course argues against a decision I made, and the
 one where the argument is strongest. Lesson 02 ended with this:

@@ -1,6 +1,6 @@
 # 03 — Reading, and what a StatusCode is for
 
-**Next:** [04 — Subscriptions](04-subscriptions.md) · [Back to the course](README.md) · [Previous: 02](02-units-and-types.md)
+**Next:** [04 — Subscriptions](04-subscriptions.md) · [Back to the course](../README.md) · [Previous: 02](02-units-and-types.md)
 
 The module docstring makes a claim that this project treats as load-bearing:
 

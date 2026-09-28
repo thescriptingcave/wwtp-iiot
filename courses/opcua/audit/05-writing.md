@@ -1,6 +1,6 @@
 # 05 — Writing, and the difference between enforced and not
 
-**Next:** [06 — Why OPC UA is asyncio and Modbus is not](06-async.md) · [Back to the course](README.md) · [Previous: 04](04-subscriptions.md)
+**Next:** [06 — Why OPC UA is asyncio and Modbus is not](06-async.md) · [Back to the course](../README.md) · [Previous: 04](04-subscriptions.md)
 
 `docs/SECURITY.md` carries a gap with a number attached, and this lesson is where
 that number gets measured. From `softplc/servers/opcua.py:452`:
