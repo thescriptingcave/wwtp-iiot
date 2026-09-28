@@ -38,7 +38,9 @@ and the gate covers every Python file in the project.
 
 ### `make lint` had been failing the whole time
 
-Worse, and the same mistake. `ruff check .` reports **159 findings** today.
+Worse, and the same mistake. `ruff check .` reported **159 findings** when this
+was written; it is **158** now, the difference being a `ruff --fix` pass over
+`softplc/servers/opcua.py` that took that file from 27 findings to 6.
 Almost all of them are `E501` (long lines) and `PLC0415` (function-local imports)
 in `softplc/process/units.py`, `softplc/servers/opcua.py` and the Phase 1–2 test
 files — debt this project has tracked openly as an open thread since Phase 1
@@ -83,7 +85,7 @@ from them, because a named volume over `/data` silently shadows the image's
 | `integration` | every push | a real seeded TimescaleDB, the integration suite, the SQL course, the flow SQL, the dashboard queries, the replay |
 | `drift` | every push | generated files vs the contract, and `docker compose config` |
 | `images` | every push | the three images build, and the two non-core node types resolve |
-| `lint-debt` | every push | 159 findings is the baseline; going up fails |
+| `lint-debt` | every push | 158 findings is the baseline; going up fails |
 | `nightly` | 04:17 UTC | the fault × rule coverage matrix and the four slow tests |
 
 That is five on every push and one on a schedule, and the count is asserted by
@@ -157,7 +159,7 @@ and that is the assertion which would have caught it.
   ever been run by hand.
 * **`ui/web` has no tests at all** — the least verified part of the project, and
   `docs/LEARNING-LOG.md` has it as an open thread.
-* **The pre-existing lint debt** is measured, not fixed. 159 findings, tracked
+* **The pre-existing lint debt** is measured, not fixed. 158 findings, tracked
   in `lint-debt-baseline.txt`.
 * **`tests/test_scanloop.py::test_pace_divides_by_speed_so_a_backfill_is_not_throttled`**
   fails in a full run and passes alone. It is a wall-clock flake and it is not

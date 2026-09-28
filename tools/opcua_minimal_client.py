@@ -30,14 +30,14 @@ with a `Good` status and a `SourceTimestamp` of *now*, because `asyncua` stamps
 it at construction (lesson 03). A client that prints 1.5 is lying by omission,
 because nothing in the value says it was never measured.
 
-So this client compares `SourceTimestamp` against the moment it connected, and
-that handles the fresh-server case. Then a second discovery during development
-of this file: `publish()` writes
+So this client compares `SourceTimestamp` against the moment it connected, which
+handles the fresh-server case. Then a second discovery while writing this file:
+`publish()` was writing
 
     ua.DataValue(ua.Variant(entry.value, ua.VariantType.Double), StatusCode=status)
 
-with **no `SourceTimestamp`**, so the field `asyncua` set at construction is
-*cleared* on every publish. Verified against a live server:
+with **no `SourceTimestamp`**, so the field `asyncua` set at construction was
+*cleared* on every publish — and a client could not date a reading at all:
 
 ```
   fresh server            value=1.5  SourceTimestamp=1790564165.416149
@@ -45,23 +45,25 @@ with **no `SourceTimestamp`**, so the field `asyncua` set at construction is
   after publish of 9.9    value=9.9  SourceTimestamp=None
 ```
 
-So the only field that could distinguish a placeholder from a measurement is
-destroyed by the server's own write path, and a client that treats `None` as
-"unmeasured" is wrong in the other direction — it would report a perfectly good
-2.4 mg/L as never measured, forever, and eventually get ignored.
+A two-state verdict treating the missing timestamp as "unmeasured" reported a
+perfectly good 2.4 mg/L as never measured, **forever** — a safeguard that fires
+on 100 % of real data, which is a safeguard that gets switched off. That is
+fixed: the server now stamps every published value, and
+`test_publish_sets_the_source_timestamp` fails if it ever stops.
 
-Hence **three** freshness verdicts, not two:
+The ambiguity does not go away with the fix, so **three** verdicts:
 
-| verdict | condition | what it means |
+| verdict | when | means |
 |---|---|---|
-| `measured` | a timestamp at or after we connected | a real reading |
-| `unmeasured` | a timestamp *before* we connected | the constructor's placeholder |
-| `untimestamped` | no timestamp | the server is not timestamping; age unknown |
+| `measured` | stamped at/after we connected, **or** seen to move | a real reading |
+| `unmeasured` | stamped pre-connection, never moved | a placeholder, or a reading from just before we arrived |
+| `untimestamped` | no timestamp at all | a server that does not stamp; age unknown |
 
-`untimestamped` is the honest answer on this server once anything has been
-published, and the fix is one line in `publish()` — set
-`SourceTimestamp=ua.DateTime.now()`. Until then a client cannot know how old a
-value is, and this one says so rather than guessing.
+The middle row is the honest residual and the reason `_moved` exists: a genuine
+measurement published a moment *before* we connected is indistinguishable from a
+placeholder by timestamp alone, and only watching the value move settles it —
+which is what a subscription does naturally. `unmeasured` is the right direction
+to be wrong in: "I cannot vouch for this" rather than "this is fine".
 
 **4. Never silently downgrade quality.** `Good` and `Uncertain` are reported
 separately and never collapsed. Note that on this server `Bad` cannot occur at
@@ -120,6 +122,10 @@ class MinimalClient:
     plant: Any = None
     connected_at: float = 0.0
     nodes: dict[str, Any] = field(default_factory=dict)
+    #: Signals observed to change since we connected. A value that has moved is a
+    #: measurement whatever its timestamp says.
+    _moved: set[str] = field(default_factory=set)
+    _last: dict[str, float] = field(default_factory=dict)
 
     async def connect(self) -> bool:
         """Connect and locate the plant by browsing for it."""
@@ -178,20 +184,33 @@ class MinimalClient:
         for (signal, _), rv in zip(wanted, response, strict=True):
             status = rv.StatusCode.name if rv.StatusCode is not None else "?"
             value = float(rv.Value.Value) if rv.Value is not None else float("nan")
+            previous = self._last.get(signal)
+            if previous is not None and previous != value:
+                self._moved.add(signal)
+            self._last[signal] = value
             out.append(Reading(signal, value, status,
-                               self._freshness(rv.SourceTimestamp)))
+                               self._freshness(signal, rv.SourceTimestamp)))
         return out
 
-    def _freshness(self, stamp: Any) -> str:
-        """Three verdicts, because the server only offers two signals (safeguard 3).
+    def _freshness(self, signal: str, stamp: Any) -> str:
+        """Three verdicts, because a timestamp alone cannot answer the question.
 
-        `None` is not the same as "old". `publish()` clears `SourceTimestamp` on
-        every write, so a perfectly good reading arrives untimestamped, and
-        folding that into "unmeasured" would make this client report real data as
-        fake forever — which is the failure mode of a safeguard nobody trusts.
+        `publish()` used to write a `DataValue` with no `SourceTimestamp`, which
+        cleared the field `asyncua` set at construction — so a client could not
+        date a reading at all. That is fixed in the server, and this method is
+        the client half of the same fix.
+
+        The remaining subtlety is that **a value published just before we
+        connected is indistinguishable from a placeholder by timestamp alone.**
+        Both have a stamp older than our connection. What separates them is
+        whether the value has *moved* since we started watching, so that is what
+        this tracks — and a pre-connection value that has never moved is reported
+        as `unmeasured` rather than guessed at.
         """
         if stamp is None:
             return "untimestamped"
+        if signal in self._moved:
+            return "measured"
         return "measured" if stamp.timestamp() >= self.connected_at else "unmeasured"
 
     async def watch(self, path: tuple[str, ...], seconds: float) -> list[float]:

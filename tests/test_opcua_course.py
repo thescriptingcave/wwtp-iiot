@@ -420,6 +420,65 @@ def test_the_lesson_claims_the_modbus_thread_cannot_be_stopped() -> None:
     assert "self._running = False" in src
 
 
+def test_the_server_never_publishes_a_naive_timestamp() -> None:
+    """The bug the first fix for lesson 09's finding contained.
+
+    `ua.DateTime.now()` returns a **naive local** datetime, and `asyncua`'s
+    `datetime_to_win_epoch` branches on `tzinfo`: naive subtracts 1601-12-31 in
+    UTC, so a local time is encoded as though it were already UTC. The published
+    value looks entirely ordinary and arrives at the client hours out.
+
+    Two guards, because either alone is insufficient. This one reads the source —
+    it fails the moment someone "simplifies" `_utcnow()` back to
+    `ua.DateTime.now()`. `test_opcua_minimal_client.py` guards the other side,
+    by comparing a published timestamp against the wall clock over a real
+    connection, which is the only thing that catches it.
+    """
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef) and n.name == "_utcnow")
+    body = ast.unparse(fn)
+    # `datetime.now(timezone.utc)` would be correct too, but `ua.DateTime`'s
+    # constructor takes an integer rather than a datetime, so the form that
+    # actually type-checks against `DataValue.SourceTimestamp` is
+    # `fromtimestamp(..., tz=UTC)`. What matters is that the tz is *attached*,
+    # not merely imported.
+    assert "tz=UTC" in body or "timezone.utc" in body, (
+        "_utcnow() must pass an explicit UTC; asyncua encodes a naive datetime "
+        "against a UTC epoch and the offset becomes part of the value"
+    )
+    assert src.count("SourceTimestamp=_utcnow()") >= 2, (
+        "both publish() and _flush_states() must stamp SourceTimestamp; equipment "
+        "run state is a reading like any other and dating it costs one call"
+    )
+    # Checked against the *parsed* call graph rather than the raw text, so that
+    # explaining the trap in a comment does not trip the guard. The prose in this
+    # file names the very function it forbids, three times, on purpose.
+    calls = [ast.unparse(n.func) for n in ast.walk(ast.parse(src))
+             if isinstance(n, ast.Call)]
+    assert "ua.DateTime.now" not in calls, (
+        "ua.DateTime.now() is a naive local time and must not be used anywhere in "
+        "the server: asyncua encodes a naive datetime against a UTC epoch, so the "
+        "offset becomes part of the value"
+    )
+    # `datetime.now(timezone.utc)` is the *correct* call. Note that
+    # `ast.unparse(n.func)` yields just `datetime.now` — the argument is a
+    # sibling node, not part of it — so the whole call has to be reconstructed to
+    # tell a bare `now()` from `now(timezone.utc)`.
+    now_calls = [ast.unparse(n) for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and ast.unparse(n.func).endswith("datetime.now")]
+    naive = [c for c in now_calls if "timezone" not in c]
+    assert not naive, (
+        f"a bare datetime.now() is naive local time and is stamped into the value; "
+        f"use _utcnow(). Found: {naive}"
+    )
+    assert "ua.DateTime.now" not in calls, (
+        "ua.DateTime.now() is naive local time; it must not be used for "
+        "SourceTimestamp anywhere in the server"
+    )
+
+
 def test_the_lesson_claims_the_server_configures_no_security() -> None:
     """No `set_security_policy`, no `allow_anonymous`, no certificate.
 

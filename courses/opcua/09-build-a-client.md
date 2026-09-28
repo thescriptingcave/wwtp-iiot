@@ -108,8 +108,8 @@ await server.publish()
 ```
 
 ```
-    AERATION:AHU-1:DO                             2.4 [untimestamped]  Good
-    SITE:WEATHER:STORM                              0 [unmeasured]  Good
+      AERATION:AHU-1:DO                                             2.4  Good
+      SITE:WEATHER:STORM                            0 [unmeasured]  Good
 ```
 
 `SITE:WEATHER:STORM` was never published, so it is still the constructor's `0`,
@@ -132,7 +132,7 @@ await entry.node.write_value(
 )
 ```
 
-with **no `SourceTimestamp`**, so the field `asyncua` set at construction is
+with **no `SourceTimestamp`**, so the field `asyncua` set at construction was
 *cleared* on every publish. Measured:
 
 ```
@@ -141,32 +141,73 @@ with **no `SourceTimestamp`**, so the field `asyncua` set at construction is
   after publish of 9.9    value=9.9  SourceTimestamp=None
 ```
 
-So the only field that dates a value is destroyed by the server's own write
-path, and my "unmeasured" verdict reported a genuine 2.4 mg/L as never measured —
-**forever**. A safeguard that cannot clear is a safeguard that gets switched off,
-and this one fired on 100 % of real readings.
+So the only field that dates a value was destroyed by the server's own write
+path, and my "unmeasured" verdict reported a genuine 2.4 mg/L as never measured
+— **forever**. A safeguard that cannot clear is a safeguard that gets switched
+off, and this one fired on 100 % of real readings.
 
-Hence three verdicts, and a test that pins the defect:
+**That is now fixed**, and three verdicts are still what a client needs, because
+the ambiguity does not go away when the timestamp starts working:
 
 | verdict | condition | meaning |
 |---|---|---|
-| `measured` | a timestamp at or after we connected | a real reading |
-| `unmeasured` | a timestamp *before* we connected | the constructor's placeholder |
-| `untimestamped` | no timestamp | the server is not timestamping; age unknown |
+| `measured` | a timestamp at or after we connected, **or** we have seen the value move | a real reading |
+| `unmeasured` | a timestamp *before* we connected, never seen to move | the constructor's placeholder, or a reading from just before we arrived |
+| `untimestamped` | no timestamp | a server that does not stamp its data; age unknown |
 
-`untimestamped` is the honest answer on this server once anything has been
-published. The fix is one line — `SourceTimestamp=ua.DateTime.now()` in
-`publish()` — and
-`tests/test_opcua_minimal_client.py::test_publish_clears_the_source_timestamp`
-fails the moment it is applied, saying so.
+The middle row is the honest residual. A genuine measurement published a moment
+*before* the client connected has a timestamp older than the connection, exactly
+like a placeholder, and **one sample cannot tell them apart.** Only watching the
+value move can — which is what `_moved` tracks, and what a subscription does
+naturally. The client answers `unmeasured`, which is the right direction to be
+wrong in: it tells an operator "I cannot vouch for this" rather than "this is
+fine".
 
-**This is the finding worth keeping from the whole course.** Not "the server
+### The fix was wrong the first time too
+
+The obvious implementation is `SourceTimestamp=ua.DateTime.now()`. **It does not
+work**, and the reason is a real trap in the library:
+
+<!-- asyncua's encoder, quoted — the branch that makes a naive datetime wrong -->
+<!-- check: skip -->
+```python
+# asyncua/ua/ua_binary.py, datetime_to_win_epoch
+if dt.tzinfo is None:
+    ref = FILETIME_EPOCH_AS_DATETIME        # 1601-12-31, treated as UTC
+else:
+    ref = FILETIME_EPOCH_AS_UTC_DATETIME
+```
+
+A **naive** datetime is encoded as though it were already UTC, so a local time
+has the machine's UTC offset baked into the value and the client reads it back
+hours out. `ua.DateTime.now()` returns a naive local time. Measured on this
+laptop, with the naive version in place:
+
+```
+  wall clock          1790566160.150795
+  constructor stamp   2026-09-28 03:30:49.777213+00:00    delta  -0.1s
+  published stamp     2026-09-27 20:30:49.814630+00:00    delta  -7.0h
+```
+
+**Seven hours, and completely invisible in the published value** — it looks like
+an ordinary timestamp, and nothing on the server complains. The fix is
+`datetime.now(timezone.utc)`, wrapped in a `_utcnow()` helper, and guarded twice:
+once by a test that reads the source, and once by a test that compares a live
+published timestamp against `time.time()`.
+
+That is the second time in this course that the obvious implementation of a fix
+produced a plausible wrong value. The first was a `Counter` that counted
+distinct keys rather than entries. **Neither would have been found by reasoning
+about the fix**, which is the whole argument for a test that measures the thing
+rather than asserting what it ought to be.
+
+**This was the finding worth keeping from the whole course.** Not "the server
 publishes a placeholder" — lesson 03. Not "a filter is per-subscription" —
-lesson 04. *The one field a client would use to know whether a value is real is
-set once at construction and cleared on every write*, so no client can date a
+lesson 04. *The one field a client would use to know whether a value is real was
+set once at construction and cleared on every write*, so no client could date a
 reading from this server. Everything else in these nine lessons is a local
-mishap. This one is structural: it is in the design, and no amount of care at
-the client compensates.
+mishap. That one was structural: it was in the design, and no amount of care at
+the client compensated.
 
 ### 4. Never collapse quality
 
@@ -178,7 +219,7 @@ await server.publish()
 ```
 
 ```
-    AERATION:AHU-1:DO                             2.4 [untimestamped]  Uncertain
+      AERATION:AHU-1:DO                                             2.4  Uncertain
 ```
 
 The value is still there and still usable, and the status says so separately.
@@ -227,9 +268,12 @@ read from opc.tcp://127.0.0.1:4840/wwtp/server/
 
 That is the output of a tool with nothing driving it, and it is the most useful
 output in the project: four numbers, all `Good`, all wrong, and the client says
-so about every one. Run it against `docker compose up -d plc` and every verdict
-becomes `untimestamped` — real values, unknown age, which is the honest state of
-this server today.
+so about every one.
+
+Run it against `docker compose up -d plc` and the verdicts change to `measured`
+as the plant publishes — which is the whole point of finding 14's fix, and the
+reason this client can now be trusted on a running plant rather than only against
+a bare server.
 
 ## What the course added up to
 
@@ -258,20 +302,50 @@ the reviewable one will find documentation bugs forever and design bugs never.**
 ## Where to go next
 
 The course is finished, and the honest summary of what it changed is on one page:
-[the course README](README.md) lists all thirteen findings with the lesson each
-one belongs to. Three of them are worth doing this week, and none of them is
-hard:
+[the course README](README.md) lists all fourteen findings with the lesson each
+one belongs to.
 
-1. **Set `SourceTimestamp` in `publish()`.** One line, and every client in the
-   world can date a reading. The test that pins the defect tells you when it is
-   done.
-2. **Serialise the address space and gate it in CI.** A fifth `--check` beside
+**The first of the three recommendations is now done.** `publish()` and
+`_flush_states()` stamp `SourceTimestamp`, which is what finding 14 asked for
+and what makes the `measured` verdict above possible at all. Two things about
+that are worth keeping:
+
+**The fix was wrong the first time, and the test that caught it is the only
+reason it is right now.** The obvious implementation is
+`SourceTimestamp=ua.DateTime.now()`. That returns a **naive local** datetime, and
+`asyncua`'s `datetime_to_win_epoch` branches on `tzinfo`:
+
+<!-- asyncua's encoder, quoted — the branch that makes a naive datetime wrong -->
+<!-- check: skip -->
+```python
+if dt.tzinfo is None:
+    ref = FILETIME_EPOCH_AS_DATETIME        # 1601-12-31, treated as UTC
+else:
+    ref = FILETIME_EPOCH_AS_UTC_DATETIME
+```
+
+A naive local time is therefore encoded as though it were already UTC, the
+machine's offset becomes part of the value, and the client reads it back hours
+out. Measured on this laptop: **seven hours**, and completely invisible in the
+published value, which looks like an ordinary timestamp. The fix is
+`datetime.now(timezone.utc)`, wrapped in a `_utcnow()` helper so the trap is
+documented where the call is, and guarded twice — once by reading the source and
+once by comparing a live published timestamp against `time.time()`.
+
+That is the second time in this course that the obvious implementation of a fix
+was wrong in a way that produced a plausible value. The first was a
+`Counter` that counted distinct keys instead of entries. Neither would have been
+found by reasoning about the fix.
+
+**The remaining two recommendations are unchanged:**
+
+1. **Serialise the address space and gate it in CI.** A fifth `--check` beside
    four that already exist (lesson 08).
-3. **Bind loopback in `compose.yaml`.** Two tokens per port, and "anyone who can
+2. **Bind loopback in `compose.yaml`.** Two tokens per port, and "anyone who can
    reach the port" becomes a bounded claim (lesson 07).
 
-And the two things the course found that are not in this repository's own
-thread list, because they are findings about documentation rather than about the
-plant: the `SourceTimestamp` defect, and the browser tool's `read_data_value()`
-call, which will crash on the first degraded sensor and should be
+And one thing the course found that is still not on the repository's own thread
+list, because it is a finding about a tool rather than about the plant:
+`tools/opcua_browser.py` calls `read_data_value()` with the default, so it will
+crash on the first degraded sensor. It wants
 `raise_on_bad_status=False`.

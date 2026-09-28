@@ -30,15 +30,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 from asyncua import Server, ua
 
 from softplc.contract import (
-    UDT_FLOAT32,
     Contract,
     Signal,
+)
+from softplc.contract import (
     contract as get_contract,
 )
 
@@ -121,6 +124,31 @@ class AddressSpace:
     folder: Any = None
     namespace_index: int = 2
     equipment_nodes: dict[str, Any] = field(default_factory=dict)
+
+
+def _utcnow() -> ua.DateTime:
+    """Timezone-aware UTC now, for `DataValue.SourceTimestamp`.
+
+    **Not** `ua.DateTime.now()`, and not `ua.DateTime(datetime.now(UTC))`
+    either — that constructor takes an integer, not a datetime, so it raises.
+    `fromtimestamp` with an explicit `tz` is the form that gives a `ua.DateTime`
+    carrying UTC, which is both the type `DataValue` wants and the branch
+    `asyncua`'s encoder needs.
+
+    The trap this exists to avoid: `ua.DateTime.now()` returns a **naive local**
+    time, and `datetime_to_win_epoch` encodes a naive datetime against 1601-12-31
+    *in UTC*. The machine's offset therefore becomes part of the value and the
+    client reads it back hours out — with the published timestamp looking like a
+    perfectly ordinary one, and nothing on the server complaining. Measured at
+    **−7.0 h** before this was caught.
+
+    Verified rather than assumed, on both sides:
+    `tests/test_opcua_course.py::test_the_server_never_publishes_a_naive_timestamp`
+    reads this source, and
+    `tests/test_opcua_minimal_client.py::test_publish_sets_the_source_timestamp`
+    compares a live published timestamp against `time.time()`.
+    """
+    return ua.DateTime.fromtimestamp(time.time(), tz=UTC)
 
 
 def _unit_id(eu: str) -> int:
@@ -343,7 +371,7 @@ class OpcUaServer:
         """Block until the server is listening. Raises on timeout."""
         try:
             await asyncio.wait_for(self._ready.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(
                 f"OPC UA server did not start listening on {self.endpoint} "
                 f"within {timeout}s"
@@ -404,10 +432,23 @@ class OpcUaServer:
                 if entry.quality == 0
                 else ua.StatusCode(ua.UInt32(ua.StatusCodes.Uncertain))
             )
+            # `SourceTimestamp` is what lets a client tell a measurement from the
+            # constructor's placeholder — see `courses/opcua/09-build-a-client.md`.
+            #
+            # The explicit UTC is not decoration. `asyncua`'s
+            # `datetime_to_win_epoch` branches on `tzinfo`: given a **naive**
+            # datetime it subtracts 1601-12-31 in *UTC*, so a local time is
+            # encoded as though it were already UTC, and the client reads it back
+            # seven hours out. `ua.DateTime.now()` returns a naive local time, so
+            # using it here is silently wrong by the machine's UTC offset. On this
+            # laptop that is exactly what the first version of this fix did.
+            #
+            # A tz-aware datetime takes the other branch and is encoded correctly.
             await entry.node.write_value(
                 ua.DataValue(
                     ua.Variant(entry.value, ua.VariantType.Double),
                     StatusCode=status,
+                    SourceTimestamp=_utcnow(),
                 )
             )
             changed.add(signal_id)
@@ -445,7 +486,10 @@ class OpcUaServer:
             if node is None:
                 continue
             await node["state"].write_value(
-                ua.DataValue(ua.Variant(state, ua.VariantType.Int32))
+                ua.DataValue(
+                    ua.Variant(state, ua.VariantType.Int32),
+                    SourceTimestamp=_utcnow(),
+                )
             )
         self._pending_states.clear()
 

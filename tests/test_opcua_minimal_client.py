@@ -13,6 +13,8 @@ what it does with values a real server hands it. None of them mocks `asyncua`.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 import tools.opcua_minimal_client as mod
 from asyncua import ua
@@ -64,13 +66,48 @@ async def test_a_fresh_servers_values_are_reported_as_unmeasured(plant) -> None:
     assert "unmeasured" in str(do), "the verdict has to be visible in the output"
 
 
-async def test_a_published_value_is_not_reported_as_a_placeholder(plant) -> None:
+async def test_a_value_published_after_connecting_is_measured(plant) -> None:
     """Safeguard 3, second half: the verdict must actually be able to change.
 
     This is the test that caught the bug. The first version of the client had a
     two-state verdict and treated a missing `SourceTimestamp` as "unmeasured",
     which meant a genuine reading of 2.4 mg/L was reported as never-measured —
     forever. A safeguard that cannot clear is a safeguard that gets ignored.
+
+    The ordering matters and is the realistic one: connect, *then* publish, then
+    read. A value published before we connected is genuinely ambiguous — see
+    `test_a_value_published_before_connecting_is_reported_as_unmeasured`.
+    """
+    c = MinimalClient(endpoint=ENDPOINT)
+    assert await c.connect()
+    try:
+        plant.set_value("AERATION:AHU-1:DO", 2.4, 0)
+        await plant.publish()
+        readings = {r.signal: r for r in await c.read(WANT)}
+    finally:
+        await c.close()
+
+    do = readings["AERATION:AHU-1:DO"]
+    assert do.value == 2.4, "the published value did not arrive"
+    assert do.freshness == "measured", (
+        f"a value published after we connected is {do.freshness!r}; it should be "
+        f"'measured'. If this now fails, publish() has stopped setting "
+        f"SourceTimestamp and lesson 09 needs rewording."
+    )
+
+
+async def test_a_value_published_before_connecting_is_ambiguous(plant) -> None:
+    """The limitation, stated rather than papered over.
+
+    A real measurement published a moment *before* we connected has a timestamp
+    older than our connection, exactly like the constructor's placeholder. One
+    sample cannot tell them apart — only observing the value *move* can, which is
+    what `_moved` tracks and what a subscription would do naturally.
+
+    So the client reports `unmeasured`, which is the conservative answer: it
+    tells an operator "I cannot vouch for this" rather than "this is fine". That
+    is the correct direction to be wrong in, and it is worth a test so the
+    behaviour is deliberate.
     """
     plant.set_value("AERATION:AHU-1:DO", 2.4, 0)
     await plant.publish()
@@ -79,31 +116,37 @@ async def test_a_published_value_is_not_reported_as_a_placeholder(plant) -> None
     assert await c.connect()
     try:
         readings = {r.signal: r for r in await c.read(WANT)}
+        # Read again after a change: now the client has seen it move.
+        plant.set_value("AERATION:AHU-1:DO", 2.6, 0)
+        await plant.publish()
+        after = {r.signal: r for r in await c.read(WANT)}
     finally:
         await c.close()
 
-    do = readings["AERATION:AHU-1:DO"]
-    assert do.value == 2.4, "the published value did not arrive"
-    assert do.freshness != "unmeasured", (
-        "a value published after we connected is being called a placeholder"
+    assert readings["AERATION:AHU-1:DO"].freshness == "unmeasured", (
+        "a pre-connection value that has not been seen to move is ambiguous, "
+        "and 'unmeasured' is the conservative verdict"
     )
-    # On the server as it stands this is "untimestamped" rather than "measured",
-    # because `publish()` clears SourceTimestamp. See the test below.
-    assert do.freshness == "untimestamped", (
-        f"expected 'untimestamped' on the current server, got {do.freshness!r}. "
-        f"If this is now 'measured', publish() sets SourceTimestamp and lesson 09 "
-        f"and the client docstring need updating."
+    assert after["AERATION:AHU-1:DO"].freshness == "measured", (
+        "once the client has seen the value move, it is unambiguously measured"
     )
 
 
-async def test_publish_clears_the_source_timestamp(plant) -> None:
-    """The finding, pinned: the one field that dates a value is destroyed.
+async def test_publish_sets_the_source_timestamp(plant) -> None:
+    """Lesson 09's fourteenth finding, and the fix that closed it.
 
-    `asyncua` stamps `SourceTimestamp` when the node is constructed. `publish()`
-    writes a `DataValue` carrying only a `Value` and a `StatusCode`, so the
-    timestamp is *cleared* on every write. A client therefore cannot learn how
-    old a value is, and the fix is one line in `publish()`:
-    `DataValue(..., SourceTimestamp=ua.DateTime.now())`.
+    `asyncua` stamps `SourceTimestamp` when a node is *constructed*.
+    `publish()` used to write a `DataValue` carrying only a `Value` and a
+    `StatusCode`, so the field was **cleared** on every write — and a client
+    could not date a reading at all. The fix is `SourceTimestamp=_utcnow()` in
+    `publish()`.
+
+    This test asserts the fixed behaviour *and* the part that was wrong in the
+    fix: the timestamp must agree with the wall clock. The first version used
+    `ua.DateTime.now()`, which returns a **naive local** time, and `asyncua`
+    encodes a naive datetime against a UTC epoch — so the value went out
+    looking ordinary and came back seven hours out. Only a comparison against
+    `time.time()` catches that.
     """
     c = MinimalClient(endpoint=ENDPOINT)
     assert await c.connect()
@@ -119,9 +162,23 @@ async def test_publish_clears_the_source_timestamp(plant) -> None:
     finally:
         await c.close()
 
-    assert after is None, (
-        f"publish() now preserves SourceTimestamp ({after}); the 'untimestamped' "
-        f"verdict, the client docstring and lesson 09 are all stale"
+    assert after is not None, (
+        "publish() no longer sets SourceTimestamp. A client cannot date a "
+        "reading, which is the fourteenth finding in courses/opcua/ and the "
+        "reason the reference client needs three freshness verdicts."
+    )
+    assert after > before, (
+        f"the timestamp did not move: {before} -> {after}. A value that is "
+        f"re-published with a stale timestamp is worse than one with none."
+    )
+    # The part the naive-datetime bug slipped past.
+    drift = abs(after.timestamp() - time.time())
+    assert drift < 5, (
+        f"the published SourceTimestamp is {drift:.0f}s from the wall clock. "
+        f"`_utcnow()` must return a tz-aware datetime: asyncua encodes a naive "
+        f"one against a UTC epoch, so a local time arrives as though it were "
+        f"already UTC — wrong by exactly the machine's offset, and invisible in "
+        f"the value itself."
     )
 
 

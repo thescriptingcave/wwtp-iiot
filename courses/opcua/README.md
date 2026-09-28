@@ -227,15 +227,17 @@ lesson rather than a footnote:
    hand-writing nor abandoning generation — it is publishing the serialised space
    as a fifth drift-gated artifact, which would have caught all four defects as
    *values in a table* instead of lines in a loop. → **lesson 08**
-14. **The one field a client would use to date a reading is destroyed on every
-   write.** `asyncua` stamps `SourceTimestamp` when a node is constructed;
-   `publish()` writes a `DataValue` carrying only a `Value` and a `StatusCode`, so
-   the timestamp is *cleared* on every publish. Measured: `1.5` with a timestamp
-   on a fresh server, `None` after the first write. **No client can date a reading
-   from this server**, and the only workaround is a three-state freshness verdict
-   in the client — which is what the first version of the reference client got
-   wrong, reporting real data as fake forever. A one-line fix, pinned by a test.
-   → **lesson 09**, which ships
+14. ~~**The one field a client would use to date a reading is destroyed on every
+   write.**~~ **FIXED.** `asyncua` stamps `SourceTimestamp` when a node is
+   constructed; `publish()` wrote a `DataValue` carrying only a `Value` and a
+   `StatusCode`, so the timestamp was *cleared* on every publish and **no client
+   could date a reading from this server**. `publish()` and `_flush_states()` now
+   stamp `SourceTimestamp`, via a `_utcnow()` helper that exists because
+   `ua.DateTime.now()` is *not* usable here — it returns a naive local time and
+   `asyncua` encodes naive datetimes against a UTC epoch, so the machine's offset
+   becomes part of the value. The first version of the fix had exactly that bug
+   and was off by seven hours; a test comparing a published timestamp against the
+   wall clock is what caught it. → **lesson 09**, which ships
    [`tools/opcua_minimal_client.py`](../../tools/opcua_minimal_client.py) — a
    200-line reference client doing the other four things right, and showing why
    [`tools/opcua_browser.py`](../../tools/opcua_browser.py) crashes on the first

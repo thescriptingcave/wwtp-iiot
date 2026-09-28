@@ -2484,8 +2484,87 @@ treated a missing timestamp as `unmeasured`. That reports a genuine 2.4 mg/L as
 never-measured, forever — a safeguard that fires on 100 % of real data, which is a
 safeguard that gets switched off. Writing the code found that; describing the
 code would not have. The test that caught it is
-`test_a_published_value_is_not_reported_as_a_placeholder`, and its docstring says
-it is the test that caught the bug.
+`test_a_value_published_after_connecting_is_measured`, and its docstring says it
+is the test that caught the bug.
+
+### The fix was wrong the first time, and wrong invisibly
+
+Applying the one-line fix was the easy part. The interesting part is that the
+obvious implementation of it does not work:
+
+```python
+SourceTimestamp=ua.DateTime.now()      # what I wrote first
+```
+
+`ua.DateTime.now()` returns a **naive local** datetime, and `asyncua` encodes one
+against a UTC epoch:
+
+<!-- asyncua's encoder, quoted — the branch that makes a naive datetime wrong -->
+<!-- check: skip -->
+```python
+# asyncua/ua/ua_binary.py, datetime_to_win_epoch
+if dt.tzinfo is None:
+    ref = FILETIME_EPOCH_AS_DATETIME        # 1601-12-31, treated as UTC
+else:
+    ref = FILETIME_EPOCH_AS_UTC_DATETIME
+```
+
+So the machine's UTC offset becomes part of the value and the client reads it back
+hours out. Measured with the naive version in place:
+
+```
+  wall clock          1790566160.150795
+  constructor stamp   2026-09-28 03:30:49.777213+00:00    delta  -0.1s
+  published stamp     2026-09-27 20:30:49.814630+00:00    delta  -7.0h
+```
+
+**Seven hours, and completely invisible in the published value.** It looks like an
+ordinary timestamp, the server raises nothing, and the error appears only as a
+client-side time disagreeing with the wall clock. The fix is
+`datetime.now(timezone.utc)`, wrapped in a `_utcnow()` helper so the trap is
+documented where the call is.
+
+I found this because the test written for the *original* finding compares a
+published timestamp against `time.time()` — not because I reasoned about
+`tzinfo`, which I did not. That is the second time in this course that the
+obvious implementation of a fix produced a plausible wrong value, after a
+`Counter` that counted distinct keys rather than entries. **Neither was findable
+by reasoning about the fix**, and both were found by a test that *measures* the
+thing rather than asserting what it ought to be.
+
+**A guard that punishes its own documentation.** The test I wrote first asserted
+`"ua.DateTime.now()" not in source` — and then failed, because my explanatory
+comments in the server *name the function they forbid*, on purpose. A test that
+greps for a string punishes the documentation of its own trap. It now parses the
+AST and inspects the real call graph, so a comment may name the forbidden
+function and the guard still means what it says.
+
+Both guards were **verified by mutation**: I reintroduced the naive form, a bare
+`datetime.now()`, and a missing `SourceTimestamp` in turn, and confirmed each one
+fails. A guard never seen to fire is a guard nobody knows works — the same
+argument as the `Bad`-quality test in lesson 03.
+
+### A residual the fix does not remove
+
+There is a case the client still cannot resolve, and the honest thing is to say
+so rather than pick a winner. A genuine measurement published a moment *before*
+the client connected carries a timestamp older than the connection — exactly like
+the constructor's placeholder. **One sample cannot tell them apart.** Only
+watching the value move settles it, which is what the client now tracks and what
+a subscription does naturally.
+
+So three verdicts survive the fix, and the middle one is the interesting one:
+
+| verdict | condition | meaning |
+|---|---|---|
+| `measured` | stamped at/after we connected, **or** seen to move | a real reading |
+| `unmeasured` | stamped before we connected, never seen to move | placeholder, *or* a reading from just before we arrived |
+| `untimestamped` | no stamp | a server that does not timestamp; age unknown |
+
+`unmeasured` is the right direction to be wrong in — "I cannot vouch for this"
+rather than "this is fine". A client that guessed optimistically would be the
+pH-read-from-the-TSS-signal bug wearing a different hat, and the whole course is
+an argument against guessing in the optimistic direction.
 
 The shipped client is `tools/opcua_minimal_client.py`, ~200 lines with five
 safeguards, and it exists because the existing `tools/opcua_browser.py` is
