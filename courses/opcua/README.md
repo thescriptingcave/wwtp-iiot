@@ -104,7 +104,7 @@ including a reference id that had been guessed and was wrong.
 | 06 | [Why OPC UA is asyncio and Modbus is not](06-async.md) | **written** |
 | 07 | [Security, and the warning on every start](07-security.md) | **written** |
 | 08 | [The address space as generated code, and what that cost](08-generated.md) | **written** |
-| 09 | Build a client: discover, read, subscribe | planned |
+| 09 | [Build a client](09-build-a-client.md) | **written** |
 
 **"Planned" means it does not exist.** It is in the table so the shape of the
 course is visible, not so it looks further along than it is. The same convention
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Thirteen things are wrong or missing in this implementation, and each gets its own
+Fourteen things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -227,6 +227,19 @@ lesson rather than a footnote:
    hand-writing nor abandoning generation — it is publishing the serialised space
    as a fifth drift-gated artifact, which would have caught all four defects as
    *values in a table* instead of lines in a loop. → **lesson 08**
+14. **The one field a client would use to date a reading is destroyed on every
+   write.** `asyncua` stamps `SourceTimestamp` when a node is constructed;
+   `publish()` writes a `DataValue` carrying only a `Value` and a `StatusCode`, so
+   the timestamp is *cleared* on every publish. Measured: `1.5` with a timestamp
+   on a fresh server, `None` after the first write. **No client can date a reading
+   from this server**, and the only workaround is a three-state freshness verdict
+   in the client — which is what the first version of the reference client got
+   wrong, reporting real data as fake forever. A one-line fix, pinned by a test.
+   → **lesson 09**, which ships
+   [`tools/opcua_minimal_client.py`](../../tools/opcua_minimal_client.py) — a
+   200-line reference client doing the other four things right, and showing why
+   [`tools/opcua_browser.py`](../../tools/opcua_browser.py) crashes on the first
+   degraded sensor.
 
 ## Related
 

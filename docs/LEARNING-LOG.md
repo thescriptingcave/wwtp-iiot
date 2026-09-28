@@ -2429,6 +2429,106 @@ A constraint I had just written down and did not look up. It is a small thing an
 it is the same shape as everything else in this log: I produced a correct artifact
 and then consumed it from memory rather than from the artifact.
 
+### The one field a client would use to date a reading is destroyed on every write
+
+Lesson 09 was the capstone: write a real client rather than describe one, because
+the project's own thesis is that the artefact is the lesson. That turned out to
+matter more than expected — **the safeguard I designed was wrong, and writing the
+code is what proved it.**
+
+The safeguard: every variable in this server is constructed at its `normal_low`,
+so a fresh server reports DO at 1.5 mg/L with a `Good` status (lesson 03). A
+client that prints `1.5` is lying by omission, so the client records when it
+connected and compares `SourceTimestamp` against that. It worked — on a fresh
+server, every value came back `[unmeasured]`, correctly.
+
+Then I published a real value and it still said `[unmeasured]`:
+
+```
+  before anything is published:  1.5 (UNMEASURED)  Good
+  after one real publish of 2.4:  2.4 (UNMEASURED)  Good
+```
+
+I nearly recorded that as a subtlety of timestamp comparison. It is not. Checking
+the field directly:
+
+```
+  fresh server            value=1.5  SourceTimestamp=1790564165.416149
+  after publish of 2.4    value=2.4  SourceTimestamp=None
+  after publish of 9.9    value=9.9  SourceTimestamp=None
+```
+
+`asyncua` stamps `SourceTimestamp` at construction. `publish()` writes
+
+```python
+ua.DataValue(ua.Variant(entry.value, ua.VariantType.Double), StatusCode=status)
+```
+
+with **no `SourceTimestamp`**, so the field is *cleared* on every write. **The
+only field a client could use to know whether a value is a real reading is
+destroyed by the server's own write path.** Fix: `SourceTimestamp=ua.DateTime.now()`,
+one line, and `tests/test_opcua_minimal_client.py::test_publish_clears_the_source_timestamp`
+fails the moment it is applied and says so.
+
+This is the fourteenth finding and the only one that is neither a documentation
+error nor a local mishap. Lessons 02, 04, 05 and 06 were prose overstating
+working code. Lessons 01, 03 and 08 were design decisions nobody reviewed. This
+one is **in the design**: the server's publish path cannot tell a client when a
+value was measured, so no client can date a reading, and a client that tries has
+to invent a three-state verdict — `measured`, `unmeasured`, `untimestamped` —
+where the third state is the honest answer for every real reading on this server
+today.
+
+**And the lesson about the lesson:** my first client had a two-state verdict and
+treated a missing timestamp as `unmeasured`. That reports a genuine 2.4 mg/L as
+never-measured, forever — a safeguard that fires on 100 % of real data, which is a
+safeguard that gets switched off. Writing the code found that; describing the
+code would not have. The test that caught it is
+`test_a_published_value_is_not_reported_as_a_placeholder`, and its docstring says
+it is the test that caught the bug.
+
+The shipped client is `tools/opcua_minimal_client.py`, ~200 lines with five
+safeguards, and it exists because the existing `tools/opcua_browser.py` is
+demonstrably less correct: it calls `read_data_value()` with the default, so it
+**crashes on the first degraded sensor** (lesson 03), and it prints a plausible
+`1.5` for a plant that has never been measured. Both are defects in the tool
+whose job is to be trusted by a person looking at a plant. Its output against an
+undriven server:
+
+```
+    AERATION:AHU-1:DO                                1.5 [unmeasured]  Good
+    AERATION:AHU-1:AIR_FLOW                         2000 [unmeasured]  Good
+    INFLUENT:FLOW:FLOW                               200 [unmeasured]  Good
+    SITE:WEATHER:STORM                                 0 [unmeasured]  Good
+```
+
+Four numbers, all `Good`, all wrong, and the client says so about every one.
+
+## What nine lessons added up to
+
+The findings sort into three kinds, and only the third survives a careful read:
+
+1. **Documentation that overstated working code** — 02, 04, 05, 06. Fixed by
+   editing prose; all found by running something.
+2. **Design decisions nobody reviewed** — 01, 03, 08, 09. Placeholders at
+   `normal_low`, a cleared `SourceTimestamp`, 686 generated nodes with no
+   artifact and three wrong decisions in fourteen. None is a typo.
+3. **A threat model that does not match the code** — 07. The top-ranked asset is
+   inert, the top remediation exists unwired, and the exposed asset is not in the
+   list.
+
+**The reviewable surface and the defective surface are different surfaces.** A
+project that reviews only the reviewable one finds documentation bugs forever and
+design bugs never. That is the finding I would keep from all nine lessons, and
+it is not about OPC UA — it is about what happens when you optimise for
+*correct and reproducible* and treat *teachable* as a property of the docs.
+
+The course is now complete: nine lessons, 35 runnable snippets, 37 tests, and
+fourteen findings. Three are worth doing this week and none is hard — set
+`SourceTimestamp` in `publish()` (one line), serialise the address space and add
+a fifth `--check` beside the four that exist, and bind loopback in `compose.yaml`
+(two tokens per port).
+
 ---
 
 ## Thread triage

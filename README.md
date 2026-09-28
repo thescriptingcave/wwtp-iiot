@@ -171,7 +171,7 @@ Full walkthrough, including troubleshooting, in
 | [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
 | [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) | Every threshold, the measurement it came from, and the four that still do not work |
 | [`scada/README.md`](scada/README.md) | The Node-RED operator flows, and how they are kept in step with the contract |
-| [`courses/opcua/`](courses/opcua/README.md) | The OPC UA course — **1 of 9 lessons written** — and the four things this implementation gets wrong |
+| [`courses/opcua/`](courses/opcua/README.md) | The OPC UA course — **9 of 9 lessons** — and the **fourteen** things this implementation gets wrong |
 | [`ui/web/README.md`](ui/web/README.md) | The custom dashboard, its four decisions, and what is *not* verified |
 | [`docs/CI.md`](docs/CI.md) | The five CI jobs, and the three broken things writing the file found |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
