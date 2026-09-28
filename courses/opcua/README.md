@@ -126,7 +126,7 @@ by doing it.
 | 05 | [Subscriptions in depth](05-subscriptions-in-depth.md) | intervals vs filters, and what a deadband really discards |
 | 06 | [Status codes and quality](06-status-and-quality.md) | `Uncertain` is not a softer `Bad`, and why you keep the value |
 | 07 | [Writing values](07-writing.md) | the four ways a write goes wrong, and the one you cannot detect |
-| 08 | [Finding things at scale](08-discovery.md) | planned |
+| 08 | [Finding things at scale](08-discovery.md) | batching, caching, and why a hardcoded path is a bug |
 | 09 | [Building a client that survives](09-a-client-that-survives.md) | planned |
 
 **"Planned" means it does not exist.** It is in the table so the shape of the
