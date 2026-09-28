@@ -244,6 +244,11 @@ position and nothing is skipped.
 
 ### `ntile` — split into buckets
 
+<!-- Deliberately left without a tie-breaker, because the point of the example
+     is that it is non-deterministic: `check_sql.py` runs every query three
+     times and fails one whose result changes, so a query meant to demonstrate
+     this hazard cannot also be required to be stable. -->
+<!-- check: skip -->
 ```sql
 SELECT
     signal_id,

@@ -78,12 +78,12 @@ LIMIT 6;
 ```
              signal_id            | points | distinct_values | longest_silence_s
 ---------------------------------+--------+-----------------+-------------------
- AERATION:AHU-1:WASTE_RATE        |   4389 |            4389 |             31920
- INFLUENT:LIFT:CURRENT            |   4457 |              70 |             31920
- PRIMARY:PRI-CL-1:UNDERFLOW       |   4389 |               4 |             31920
- INFLUENT:FLOW:TURBIDITY          |     22 |              21 |             30891
- INFLUENT:FLOW:PH                 |     36 |              35 |             28923
- AERATION:AHU-1:DO                |    230 |             230 |             28508
+ AERATION:AHU-1:WASTE_RATE        |   4388 |            4388 |             31920
+ INFLUENT:LIFT:CURRENT            |   4456 |              69 |             31920
+ PRIMARY:PRI-CL-1:UNDERFLOW       |   4388 |               4 |             31920
+ INFLUENT:FLOW:TURBIDITY          |     21 |              20 |             31691
+ INFLUENT:FLOW:PH                 |     35 |              34 |             28923
+ AERATION:AHU-1:DO                |    229 |             229 |             28508
 ```
 
 **31,920 seconds — eight hours and fifty-two minutes** — is the longest silence for
@@ -92,10 +92,10 @@ all three of the top signals, and they are all plant measurements, not weather.
 Notice `distinct_values` while you are here, because it is the same table telling
 you something else entirely. `WASTE_RATE` has 4,389 points and 4,389 *distinct*
 values: it never repeats, which is a fast-moving signal. `PRIMARY:PRI-CL-1:UNDERFLOW`
-has 4,389 points and **4 distinct values** — it has been sitting on four numbers all
+has 4,388 points and **4 distinct values** — it has been sitting on four numbers all
 day. `INFLUENT:LIFT:CURRENT` sits on 70.
 
-A lift current that reports 4,457 times and holds 70 values is a pump that ran for
+A lift current that reports 4,456 times and holds 69 values is a pump that ran for
 part of the day and then stopped, which is what the silence says. A pump that
 reports 4,389 times holding only *four* values is a pump whose reading is not
 credible, and no threshold on the gap size will ever tell you that.
@@ -127,12 +127,12 @@ LIMIT 6;
 ```
              signal_id            | points | typical_gap_s | p90_gap_s | worst_gap_s
 ---------------------------------+--------+----------------+-----------+-------------
- SLUDGE:DIG-1:ALKALINITY         |      9 |        9428.0  |  12650.2 |      20879
- INFLUENT:LIFT:RUNTIME           |     23 |        3601.0  |   3999.2 |       4241
- AERATION:AHU-1:NO3_OUT          |     18 |        1946.5  |   7715.2 |      26154
- SLUDGE:DIG-1:VFA_ALK_RATIO       |     16 |        1688.0  |  10554.5 |      12869
- INFLUENT:FLOW:TURBIDITY         |     21 |        1270.0  |  10531.0 |      31691
- INFLUENT:FLOW:PH                |     35 |         951.0  |   4541.1 |      28923
+ SLUDGE:DIG-1:ALKALINITY         |      8 |        9650.0  |  13678.8 |      20879
+ INFLUENT:LIFT:RUNTIME           |     22 |        3601.0  |   4020.6 |       4241
+ AERATION:AHU-1:NO3_OUT          |     17 |        2292.0  |   8122.6 |      26154
+ SLUDGE:DIG-1:VFA_ALK_RATIO       |     14 |        1856.0  |  10515.1 |      12869
+ INFLUENT:FLOW:TURBIDITY         |     20 |        1439.5  |  10545.4 |      31691
+ INFLUENT:FLOW:PH                |     34 |         878.5  |   5618.3 |      28923
 ```
 
 **A digester alkalinity probe, a lift runtime counter, a nitrate monitor.** The
@@ -190,25 +190,27 @@ LIMIT 8;
 ```
              signal_id            | typical_s | worst_s | times_normal
 ---------------------------------+-----------+---------+--------------
- SLUDGE:DIG-1:CH4                  |     114.0 |  344359 |        3021
- PRIMARY:PRI-CL-1:TEMP             |     234.0 |  458888 |        1961
- PRIMARY:PRI-CL-1:BLANKET          |     234.0 |  458888 |        1961
- AERATION:AHU-1:MLSS               |     234.0 |  458888 |        1961
- AERATION:AHU-1:SRT                |     234.0 |  458888 |        1961
- EFFLUENT:FLOW:CONDUCTIVITY        |     234.0 |  458888 |        1961
- INFLUENT:FLOW:CONDUCTIVITY        |     234.0 |  458888 |        1961
- SLUDGE:DIG-1:TEMP                 |     234.0 |  458888 |        1961
+ AERATION:AHU-1:DO                  |      60.0 |   28508 |         475
+ SLUDGE:DIG-1:CH4                   |     112.5 |   38324 |         341
+ INFLUENT:FLOW:FLOW                 |      92.0 |   18500 |         201
+ INFLUENT:FLOW:NH4_IN               |     267.0 |   21538 |          81
+ AERATION:AHU-1:NH4_IN              |     275.0 |   19437 |          71
+ INFLUENT:FLOW:PH                   |     878.5 |   28923 |          33
+ AERATION:AHU-1:NH4_OUT             |     414.0 |   12896 |          31
+ EFFLUENT:FLOW:NH4                  |     414.0 |   12896 |          31
 ```
 
-**1961 times normal.** That is the number that means something. It says: this
-signal normally reports every 234 seconds, and on this occasion it went 458,888
-seconds — five days and seven hours — without saying anything. Whether that is a
+**475 times normal**, for a signal that normally reports once a minute. That is
+the number that means something: this signal was silent for 28,508 seconds —
+nearly eight hours — when its own median cadence is 60 seconds. Whether that is a
 fault, a shutdown or a seeder artefact is a question about the plant; the *query*
 has isolated it correctly, and a fixed threshold never would have.
 
 Note what `times_normal` does that `worst_s` cannot: **it is dimensionless.**
-The digester methane monitor at 3021× and a clarifier blanket at 1961× are
-comparable numbers, and a threshold in seconds could not compare them.
+The dissolved oxygen monitor at 475× and the effluent ammonia at 31× are
+comparable numbers, and a threshold in seconds could not compare them — 28,508
+seconds is an eight-hour outage for the first and an unremarkable gap for the
+second, and the query says which is which without being told.
 
 ### Why the `typical_gap >= 60` filter is not a convenience
 
@@ -245,73 +247,80 @@ window has to end where the data ends, not at `now()`. Anchor to the clock and
 this week — where the newest reading is hours old — computes a baseline for a
 window containing hours of nothing, and every signal looks broken.
 
-## The pitfall: a stuck sensor and a working one are the same row
+## The pitfall: a stuck sensor produces perfect data
 
 The remaining failure is the mirror image, and it is worse because it produces
-data rather than an absence of it.
+*data* rather than an absence of it.
 
-A sensor that is stuck at a plausible value keeps reporting it. In a
-change-triggered historian that means it reports it *once* and then never again —
-indistinguishable, in the raw rows, from a sensor that is genuinely constant.
+A sensor that is stuck at a plausible value keeps reporting it. On a
+change-triggered historian that means it reports the same number over and over,
+and every one of those reports is in range, has a good status code, and is wrong.
+The only evidence is that the number never moved — and "never moved" is exactly
+what a healthy constant signal also does.
 
 ```sql
 SELECT
-    s.id AS signal_id,
+    s.id               AS signal_id,
     s.normal_low,
     s.normal_high,
-    count(r.value) AS points,
-    min(r.value)  AS lowest,
-    max(r.value)  AS highest
+    count(r.value)     AS points,
+    count(DISTINCT r.value) AS distinct_values,
+    round(min(r.value)::numeric, 2) AS lowest
 FROM signal s
 LEFT JOIN reading r
        ON r.signal_id = s.id
       AND r.ts >= (SELECT max(ts) FROM reading) - interval '24 hours'
 GROUP BY s.id, s.normal_low, s.normal_high
-HAVING count(r.value) > 0
-   AND max(r.value) = min(r.value)
-   AND min(r.value) BETWEEN s.normal_low AND s.normal_high
-ORDER BY s.id;
+HAVING count(r.value) > 20
+   AND count(DISTINCT r.value) <= 6
+ORDER BY count(DISTINCT r.value), s.id;
 ```
 
 ```
-             signal_id            | normal_low | normal_high | points | lowest | highest
----------------------------------+------------+-------------+--------+--------+--------
- AERATION:AHU-1:MLSS              |     1500.0 |      5000.0 |      1 | 2999.98 | 2999.98
- AERATION:AHU-1:SETPOINT_DO       |        2.0 |         2.0 |      1 |    2.00 |    2.00
- AERATION:AHU-1:SRT               |        8.0 |        25.0 |      1 |   15.00 |   15.00
- EFFLUENT:FLOW:CONDUCTIVITY       |      200.0 |       900.0 |      1 |  520.00 |  520.00
- INFLUENT:FLOW:CONDUCTIVITY       |      200.0 |       900.0 |      1 |  520.00 |  520.00
- PRIMARY:PRI-CL-1:BLANKET         |        0.2 |         1.0 |      1 |    0.50 |    0.50
+             signal_id            | normal_low | normal_high | points | distinct_values | lowest
+---------------------------------+------------+-------------+--------+-----------------+--------
+ PRIMARY:PRI-CL-1:UNDERFLOW       |        0.5 |         4.0 |   4388 |               4 |   0.30
 ```
 
-**Sixteen signals match that shape**, and every one of them is inside its normal
-operating range. A mixed liquor suspended solids probe reporting exactly
-2999.98 mg/L for a day, on a scale running 1500 to 5000, passes every range check
-this project has. So does a clarifier blanket at 0.50 m on a 0.2–1.0 m scale.
+**Four thousand three hundred and eighty-eight readings, and four distinct
+values, in twenty-four hours.** The primary clarifier underflow signal reported
+about once a second all day and moved four times.
 
-Note also that `BETWEEN normal_low AND normal_high` did its job and still told you
-nothing, because a stuck sensor is stuck at a *plausible* number. That is the whole
-point: the range is there to catch impossible values, and a stuck sensor is not
-impossible — it is just not real.
+It is also *in range*. The contract says this signal runs 0.5 to 4.0 and it sat
+between 0.30 and — well, 0.30 is below 0.5, so that one is genuinely out of
+range, which is the range check working as intended. The point stands anyway: a
+signal that has not moved in a day produces a table of unremarkable, in-range,
+good-status numbers, and nothing in the *value* is capable of telling you so.
 
-This is lesson 04's recurring lesson in its purest form: **the value is fine and
-the question is about the value.** A stuck sensor produces numbers that are in
-range, have a good status code, and are wrong. The only evidence is that the
-number did not move, and "did not move" is *exactly* what a healthy constant
-signal also does.
+Contrast it with the honest end of the same table:
 
-Which is why there is no single query that finds this. The two failure modes are
-opposites — one signal moves too little, one goes too quiet — and separating them
-needs something outside the data:
+| signal | points | distinct values | ratio |
+|---|--:|--:|--:|
+| `PRIMARY:PRI-CL-1:UNDERFLOW` | 4,388 | 4 | **0.001** |
+| `INFLUENT:LIFT:CURRENT` | 4,456 | 69 | 0.015 |
+| `EFFLUENT:FLOW:FLOW` | 20,888 | 18,419 | 0.88 |
+
+**The underflow signal is two orders of magnitude less varied than the others**,
+and it is the only one of the three that is not obviously a slowly-varying
+process measurement. That ratio is the measurement, and it is per-signal — which
+is the same lesson as the gap baseline two sections ago, applied to values.
+
+Which is why there is no single query that finds this, and why the thresholds in
+the example above are stated as literal numbers rather than derived. **A "stuck
+sensor" query with no stated assumption is a guess.** The three defensible sources
+of that assumption are:
 
 - **a per-signal expectation** (a probe should vary; a setpoint may not)
-- **a sibling signal** (if the clarifier blanket and its temperature are both
-  frozen, the *gateway* is the suspect, not the probe)
+- **a sibling signal** (if the clarifier blanket and its underflow are both
+  frozen, the *gateway* is the suspect, not either probe)
 - **time-of-day behaviour** (a night-shift quiet period is expected; a lunch-time
   one is not)
 
-Write the check you can defend, and say in the comment which of the three it is
-relying on. A "stuck sensor" query with no stated assumption is a guess.
+Write the check you can defend and say in the comment which of the three it
+relies on. The `HAVING count(DISTINCT r.value) <= 6` above is a placeholder chosen
+because it finds this signal on this dataset, and it would find a different
+signal on a different day — which is exactly the kind of constant that should not
+be shipped.
 
 ## What to take away
 
@@ -321,7 +330,7 @@ relying on. A "stuck sensor" query with no stated assumption is a guess.
 - **A gap is not a fault.** A nine-hour silence on a rain gauge and on a lift
   current are the same number and opposite events.
 - **Compare each gap to that signal's own median, not to a constant.** The
-  dimensionless ratio — 1961× normal — is what separates them, and a fixed
+  dimensionless ratio — 475× normal — is what separates them, and a fixed
   threshold never will.
 - **Use the median for the baseline, not the mean**, or the fault you are hunting
   raises the bar that catches it.
@@ -333,10 +342,10 @@ relying on. A "stuck sensor" query with no stated assumption is a guess.
 
 ## Exercises
 
-1. **The seeder artefact.** Five signals have a 458,888-second gap — five days and
-   seven hours. Find the two readings that bound it and work out what the seeder
-   did. Is this a plant fault or a generation artefact, and how would you tell the
-   difference from the data alone?
+1. **The long silences.** Dissolved oxygen normally reports every 60 seconds and
+   was silent for 28,508 — 475× its median. Find the two readings that bound that
+   gap and work out what happened. Is it a plant fault or a generation artefact,
+   and how would you tell the difference from the data alone?
 2. **The boundary case.** Find a signal whose `typical_gap` is between 60 and 300
    seconds and whose `p90` is more than twice its median. That is a signal that is
    usually regular and occasionally not. Is a `10×` threshold right for it?

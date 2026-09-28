@@ -22,21 +22,21 @@ SELECT avg(value) FROM reading WHERE signal_id = 'AERATION:AHU-1:DO';
 ```
 
 ```
- Finalize Aggregate  (cost=1357.41..1357.42 rows=1 width=8) (actual rows=1 loops=1)
-   Buffers: shared hit=3578
-   ->  Append  (cost=867.36..1357.40 rows=2 width=32) (actual rows=2 loops=1)
-         Buffers: shared hit=3578
-         ->  Partial Aggregate  (cost=867.36..867.37 rows=1 width=32) (actual rows=1 loops=1)
-               Buffers: shared hit=2331
-               ->  Index Scan using _hyper_1_1_chunk_reading_signal_time_idx on _hyper_1_1_chunk
+ Finalize Aggregate  (cost=975.31..975.32 rows=1 width=8) (actual rows=1 loops=1)
+   Buffers: shared hit=1664
+   ->  Append  (cost=214.19..975.30 rows=2 width=32) (actual rows=2 loops=1)
+         Buffers: shared hit=1664
+         ->  Partial Aggregate  (cost=214.19..214.20 rows=1 width=32) (actual rows=1 loops=1)
+               Buffers: shared hit=509
+               ->  Index Scan using _hyper_1_7_chunk_reading_signal_time_idx on _hyper_1_7_chunk
                      Index Cond: (signal_id = 'AERATION:AHU-1:DO'::text)
-                     Buffers: shared hit=2331
-         ->  Partial Aggregate  (cost=490.01..490.02 rows=1 width=32) (actual rows=1 loops=1)
-               Buffers: shared hit=1247
-               ->  Index Scan using _hyper_1_2_chunk_reading_signal_time_idx on _hyper_1_2_chunk
+                     Buffers: shared hit=509
+         ->  Partial Aggregate  (cost=761.09..761.10 rows=1 width=32) (actual rows=1 loops=1)
+               Buffers: shared hit=1155
+               ->  Index Scan using _hyper_1_8_chunk_reading_signal_time_idx on _hyper_1_8_chunk
                      Index Cond: (signal_id = 'AERATION:AHU-1:DO'::text)
-                     Buffers: shared hit=1247
- Execution Time: 9.757 ms
+                     Buffers: shared hit=1155
+ Execution Time: 4.633 ms
 ```
 
 **Look at the good news first: the index is being used.** Both scans are
@@ -60,7 +60,7 @@ WHERE signal_id = 'AERATION:AHU-1:DO'
 ```
 
 ```
- Finalize Aggregate  (cost=458.28..458.29 rows=1 width=8) (actual rows=1 loops=1)
+ Finalize Aggregate  (cost=330.65..330.66 rows=1 width=8) (actual rows=1 loops=1)
    Buffers: shared hit=163
    InitPlan 2 (returns $1)
      ->  Result  (cost=1.12..1.13 rows=1 width=8) (actual rows=1 loops=1)
@@ -70,16 +70,19 @@ WHERE signal_id = 'AERATION:AHU-1:DO'
                  Order: ts DESC
                  Chunks Visited: 1
                  ->  Limit  (cost=0.43..0.45 rows=1 width=8) (actual rows=1 loops=1)
-                       ->  Index Only Scan using _hyper_1_1_chunk_reading_ts_idx
+                       ->  Index Only Scan using _hyper_1_7_chunk_reading_ts_idx
                              Index Cond: (ts IS NOT NULL)
                              Heap Fetches: 1
-   ->  Custom Scan (ChunkAppend) on reading  (cost=0.56..457.15 rows=2 width=32)
+   ->  Custom Scan (ChunkAppend) on reading  (cost=0.56..329.51 rows=2 width=32)
          Chunks excluded during startup: 0
- Execution Time: 0.849 ms
+         Chunks excluded during runtime: 1
+ Execution Time: 0.805 ms
 ```
 
-**`Chunks Visited: 1`.** One line, and it is the whole lesson. The time predicate
-let the storage engine skip an entire chunk before reading a single row of it.
+**`Chunks excluded during runtime: 1`.** One line, and it is the whole lesson. The
+time predicate let the storage engine skip an entire chunk without reading a
+single row of it — "runtime" because the bound that enabled the exclusion was
+itself discovered at run time, which is what the `InitPlan` below is for.
 
 The engine did that because the predicate's lower bound is itself a subquery, and
 subqueries in a `WHERE` clause are evaluated **once**, before the scan begins.
@@ -91,27 +94,29 @@ discovers mid-scan. The `InitPlan` is not a detail. It is the mechanism.
 | | no time filter | with time filter |
 |---|---|---|
 | chunks touched | 2 | **1** |
-| buffers | 3578 | **163** |
-| execution | 9.8 ms | **0.8 ms** |
+| buffers | 1664 | **163** |
+| execution | 4.6 ms | **0.8 ms** |
 
-**Twenty-two times fewer buffers, eleven times faster** — from a clause that says
-what you meant rather than what you defaulted to.
+**Ten times fewer buffers, six times faster** — from a clause that says what you
+meant rather than what you defaulted to.
 
 ## The number you are allowed to trust
 
 I ran the first query twice. Here is what it printed:
 
 ```
- Execution Time: 12.806 ms
- Execution Time:  9.757 ms
+ Execution Time: 4.633 ms
+ Execution Time: 4.581 ms
+ Execution Time: 4.702 ms
 ```
 
-**A 30 % difference between two runs of the same query on the same unchanged
-data.** If that is your measurement, you do not have a measurement. You have a
-number that moves, and "it got slower" is not a conclusion you can draw from it.
+**Three runs, a 2.6 % spread — and on a busy machine that spread has been an order
+of magnitude larger.** If that is your measurement, you do not have a measurement.
+You have a number that moves, and "it got slower" is not a conclusion you can draw
+from it.
 
-`Buffers: shared hit=3578` appeared in both. That number is a count of pages read
-from the buffer cache — it is a property of the work the plan did, not of how
+`Buffers: shared hit=1664` appeared in all three. That number is a count of pages
+read from the buffer cache — a property of the work the plan did, not of how
 quickly the machine happened to do it. **It is reproducible, and it is the number
 to reason with.**
 
@@ -158,8 +163,8 @@ wasted afternoon in database work.
 - **Chunk exclusion needs a bound known at plan time.** That is what
   `(SELECT max(ts) FROM reading)` buys you via the `InitPlan`; a literal cannot do
   it and `now()` would exclude everything.
-- **Reason about `Buffers`, not milliseconds.** The same query measured 12.8 ms
-  and 9.8 ms on unchanged data. Buffer counts reproduce; timings do not.
+- **Reason about `Buffers`, not milliseconds.** The same query measured 4.633,
+  4.581 and 4.702 ms on unchanged data. Buffer counts reproduce; timings do not.
 - **`hit` versus `read` decides the fix.** CPU-bound and I/O-bound look the same
   in milliseconds and have opposite remedies.
 - **When `rows=` and `actual rows=` disagree, fix the estimate, not the index.**

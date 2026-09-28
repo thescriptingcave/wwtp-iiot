@@ -14,4 +14,9 @@
 
 SELECT ts, avg(value) FROM reading
 WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'
+  -- Bounded, so the row count is reproducible. Every lesson here bounds its
+  -- window; `tools/check_sql.py` runs each query three times and fails any that
+  -- return a different number of rows twice, which is how a lesson with a live
+  -- plant writing into the database gets caught.
+  AND ts < (SELECT max(ts) FROM reading WHERE source = 'seed')
 GROUP BY ts;

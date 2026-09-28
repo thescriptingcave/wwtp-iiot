@@ -21,6 +21,42 @@ docker compose --profile demo run --rm seed   # a week of plant history
 Without seeded data every query returns no rows and every chart is flat, and the
 mistake everyone makes is concluding their SQL is wrong. Seed first.
 
+### And stop the plant, if it is running
+
+```bash
+docker compose stop scada          # do this before working through the course
+```
+
+**It is the gateway, not the plant, that has to stop.** `scada` is the service
+that reads the plant over Modbus and OPC UA and writes the rows; `softplc` is the
+plant itself. The two courses want opposite things and you can have both:
+
+| | SQL course | OPC UA course |
+|---|---|---|
+| `softplc` (plant, port 4840) | not needed | **needed** — lesson 01 talks to it |
+| `scada` (gateway, writes rows) | **must be stopped** | not needed |
+
+So the working combination for `make check` is both courses at once:
+`softplc` up, `scada` down.
+
+**A live plant writing into the database makes the course non-reproducible**, and
+not in a subtle way. The lessons anchor to `(SELECT max(ts) FROM reading)`, so a
+live writer moves that anchor, and:
+
+- a query that was looking at seeded history now looks at whatever arrived since;
+- "which signals have gone quiet" returns **nothing**, because a running plant
+  reports all 57 within any recent window;
+- expected outputs pasted into the lessons stop matching what you get.
+
+`tools/check_sql.py` runs every query **three times** and fails any that return a
+different number of rows twice, which is how this is caught rather than
+discovered. It found two lessons that were silently non-deterministic before this
+note existed — the fix was to bound those queries, and the prerequisite is here so
+the next person does not rediscover it.
+
+You do not need the plant stopped forever — only while you are working through the
+lessons, and while running `make check`.
+
 Then check you can see anything at all:
 
 ```sql

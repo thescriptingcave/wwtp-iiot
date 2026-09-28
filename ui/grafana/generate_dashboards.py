@@ -85,15 +85,38 @@ def _raw_query(c: Contract, signal_id: str) -> str:
     `sql/03-advanced/03-01` and exist for long ranges; at a one-day range the raw
     table is smaller than the rollup for a sparse signal and more precise for a
     fast one, and a panel showing the last 6 hours wants the actual samples.
+
+    Two mistakes this query made, both of which render a plausible line, and both
+    of which `sql/04-expert/04-04` is the long version of:
+
+    * **`avg(value)` inside the bucket.** The historian is change-triggered, so
+      the samples inside a five-second bucket are not a representative slice of
+      those five seconds — they are a slice sized by how fast the signal was
+      moving. On `PRIMARY:PRI-SCR-1:TORQUE`, sampled at about 1.2 s, the mean
+      disagreed with the last value by 1.9 on average and 6.7 at worst. It is not
+      a slightly-wrong time-weighted mean either: a trend panel wants *what the
+      signal is doing now*, so `(array_agg(value ORDER BY ts DESC))[1]` is the
+      statistic that answers the question being asked.
+    * **`AND value IS NOT NULL` in the `WHERE` clause.** That is 04-01's pitfall
+      in production: it filters before the aggregate, so a bucket an instrument
+      failed through disappears instead of being drawn as a bucket with no data,
+      and "no data" stays indistinguishable from "no change". `max(quality)` goes
+      in the SELECT instead and the panel gets to decide.
+
+    Neither was visible on a sparse signal — dissolved oxygen produces one sample
+    per five-second bucket, so there is nothing to aggregate and nothing to filter.
+    A defect that only appears on half your panels is the kind that survives for
+    years, which is why both were fixed in one place rather than panel by panel.
     """
     s = _tag(c, signal_id)
     return (
         "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time, "
-        "       avg(value) AS value "
+        "       (array_agg(value ORDER BY ts DESC))[1] AS value, "
+        "       max(quality) AS quality, "
+        "       count(*) AS samples "
         "FROM reading "
         f"WHERE signal_id = '{signal_id}' "
         f"  AND ts >= $__timeFrom() AND ts <= $__timeTo() "
-        "  AND value IS NOT NULL "
         f"GROUP BY time ORDER BY time -- {s.field}, raw tier"
     )
 

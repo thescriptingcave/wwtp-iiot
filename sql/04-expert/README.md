@@ -71,11 +71,12 @@ one without the other. This stage is what it costs to then *use* them:
 Not as an exercise — as the actual content.
 
 **04-04** is a defect in `ui/grafana/generate_dashboards.py`: the trend query
-uses `avg(value)` inside a `time_bucket` and filters `value IS NOT NULL` in the
-`WHERE` clause. On a screen scraper sampled at ~1.2 s that is a mean error of
-**1.9** and a worst-case of **6.7** on every five-second bucket. The lesson
-explains why the time-weighted fix from 04-01 is *also* wrong here, and what the
-right answer is instead.
+used to use `avg(value)` inside a `time_bucket` and filter `value IS NOT NULL` in
+the `WHERE` clause. On the plant power meter that was a mean error of **5.6** and a
+worst case of **22.4 kW** on every five-second bucket, and it was *exactly zero*
+on three other panels. **It is now fixed**, and the lesson explains why the
+time-weighted fix from 04-01 is also wrong here, and what the right answer is
+instead.
 
 **04-02** documents the seeder artefact that produces five-day gaps on eight
 signals, so that a reader who finds it in the data knows it is a generation

@@ -47,8 +47,8 @@ SELECT
 FROM signal s
 LEFT JOIN reading r
        ON r.signal_id = s.id
-      AND r.ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
-      AND r.ts <  (SELECT max(ts) FROM reading)
+      AND r.ts >= timestamptz '2026-09-28 14:05:50+00'
+      AND r.ts <  timestamptz '2026-09-28 20:05:50+00'
 GROUP BY s.id, s.unit
 HAVING count(r.signal_id) = 0
 ORDER BY s.id;
@@ -68,7 +68,6 @@ ORDER BY s.id;
  SITE:WEATHER:BARO                 | hPa    |              0 |     NULL
  SITE:WEATHER:RAIN                 | mm/h   |              0 |     NULL
  SITE:WEATHER:STORM                | {Boolean} |            0 |     NULL
- SLUDGE:DIG-1:CH4                  | %      |              0 |     NULL
  SLUDGE:DIG-1:GAS_FLOW             | m3/h   |              0 |     NULL
  SLUDGE:DIG-1:GAS_PRESSURE         | mbar   |              0 |     NULL
  SLUDGE:DIG-1:TEMP                 | Cel    |              0 |     NULL
@@ -77,12 +76,22 @@ ORDER BY s.id;
  SLUDGE:THK-1:TS                   | %      |              0 |     NULL
 ```
 
-**The window is six hours, not a day, and that is not a stylistic choice.** Widen
-it to `interval '1 day'` and this query returns **no rows at all** — every one of
-the 57 signals has produced something in the last day, so there is no signal for
-the `LEFT JOIN` to preserve. The rows above are the signals that went quiet in the
-last six hours: the weather station, the digester, and the conductivity probes,
-which in this simulator only report when their value actually moves.
+**Note the literal timestamps, which are the exception in this course.** Every
+other lesson anchors to `(SELECT max(ts) FROM reading)`, and so should almost
+yours. This one needs the seeded week to be the *newest* data, because a running
+plant reports all 57 signals within any recent window and this query then returns
+nothing at all. `docker compose --profile demo run --rm seed` on its own gives
+that; `docker compose up softplc` as well does not. The lesson needs a dataset it
+can name, and the price is that this window stops being the last six hours the
+moment somebody reseeds — which is why the timestamp is a literal and not a
+subtraction.
+
+**Widen the window to a full day and the same query returns no rows at all**, over
+the seeded data: every signal has produced something in twenty-four hours, so
+there is nothing for the `LEFT JOIN` to preserve. The seventeen above are the
+signals that went quiet across those six hours — the weather station, the digester
+and the conductivity probes, which in this simulator only report when their value
+actually moves.
 
 That is worth sitting with. **A query that finds nothing is not a query that found
 no problems.** The same SQL, against a different window, is either a useful

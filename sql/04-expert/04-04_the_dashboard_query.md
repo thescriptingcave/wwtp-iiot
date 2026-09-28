@@ -2,50 +2,56 @@
 
 **[Back to the course](../README.md)** · **Previous:** [04-03](04-03_fixing_a_slow_query.md) · **[End of the course](../README.md)**
 
-The last lesson takes everything above and puts it in the one place it matters:
-a query the plant's operators actually look at.
+The last lesson takes everything above and puts it in the one place it matters: a
+query the plant's operators actually look at.
 
-It also finds a bug in it. That is not a contrived exercise — it is the query this
-project ships, in `ui/grafana/generate_dashboards.py`, and the defect is the one
-[04-01](04-01_time_weighted_averages.md) taught you to recognise.
+It is also the one lesson where you cannot run the code and see the answer, because
+this one is **already fixed**. The shape of the change and the reasoning behind it
+are the lesson; the bug itself is in the git history.
 
-## The query
+## The question
 
-<!-- verbatim from ui/grafana/generate_dashboards.py; a Python string, not a
-     query the gate can run, so it is shown rather than executed -->
+> A panel says one number. It is averaging, and the historian is change-triggered.
+> Is that number right, and what should have been in the query instead?
+
+## What ships now
+
+`ui/grafana/generate_dashboards.py`, `_raw_query`, verbatim:
+
 <!-- check: skip -->
 ```python
 "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time, "
-"       avg(value) AS value "
+"       (array_agg(value ORDER BY ts DESC))[1] AS value, "
+"       max(quality) AS quality, "
+"       count(*) AS samples "
 "FROM reading "
 f"WHERE signal_id = '{signal_id}' "
 f"  AND ts >= $__timeFrom() AND ts <= $__timeTo() "
-"  AND value IS NOT NULL "
 f"GROUP BY time ORDER BY time"
 ```
 
-Three decisions are hidden in four lines, and every one of them is defensible on
-its own. Together they are a bug.
+The middle line used to be `avg(value) AS value`, and the `WHERE` clause used to
+carry `AND value IS NOT NULL`. Both were defects, and the second one is the more
+interesting of the two because it is the exact pitfall from
+[04-01](04-01_time_weighted_averages.md) shipping inside a file that already has
+a lesson about it.
 
-| | decision | right for |
-|---|---|---|
-| 1 | `time_bucket(5 seconds)` | the width of a trend panel |
-| 2 | `avg(value)` | **nothing in particular — see below** |
-| 3 | `AND value IS NOT NULL` | dropping bad readings — **in the wrong place** |
+Three clauses, and each answers a different question than the one it replaced:
 
-## Decision 2: what is a five-second bucket supposed to mean?
+| | was | now | why |
+|---|---|---|---|
+| 1 | `avg(value)` | `(array_agg(value ORDER BY ts DESC))[1]` | a trend shows the present, not a mean |
+| 2 | `AND value IS NOT NULL` in `WHERE` | `max(quality)` in `SELECT` | the failure is evidence, not noise |
+| 3 | — | `count(*)` | a bucket of one sample is not a bucket of five |
 
-`avg(value)` inside a bucket is a different question from `avg(value)` over six
-hours, and it is worth being clear about which one this is. A five-second trend
-panel is showing the operator **what the signal was doing just now**. It wants the
-value at the end of the bucket, not a mean of everything that happened inside it.
+## Decision 1: `AVG` is not a slightly-wrong time-weighted mean
 
-The current query returns a third thing — an unweighted mean of the samples that
-landed in the bucket — which is neither. And because the historian is
-change-triggered, that bucket does not even contain a representative slice of the
-five seconds.
+This is the part that is genuinely counter-intuitive, and it is worth doing
+properly because the obvious conclusion from lesson 04-01 is wrong.
 
-Here is the size of the difference, on a screen scraper sampled at about 1.2 s:
+Lesson 04-01 established that `AVG` over a period is not the time-weighted mean.
+The tempting next step is "so use the time-weighted mean everywhere". Here is why
+that would have been wrong for this panel.
 
 ```sql
 WITH windowed AS (
@@ -59,144 +65,157 @@ WITH windowed AS (
     FROM reading
     WHERE signal_id = 'PRIMARY:PRI-SCR-1:TORQUE'
       AND ts >= (SELECT max(ts) FROM reading) - interval '1 hour'
-      AND value IS NOT NULL
 ),
-per_bucket AS (
+bucketed AS (
     SELECT
         bucket,
+        count(*) AS samples,
         avg(value) AS naive_avg,
+        (array_agg(value ORDER BY ts DESC))[1] AS last_value,
         (sum(value * extract(epoch FROM held_for))
              FILTER (WHERE held_for IS NOT NULL)
-         / NULLIF(sum(extract(epoch FROM held_for)), 0)) AS time_weighted,
-        (array_agg(value ORDER BY ts DESC))[1] AS last_value
+         / NULLIF(sum(extract(epoch FROM held_for)), 0)) AS time_weighted
     FROM windowed
     GROUP BY bucket
 )
 SELECT
-    count(*)                                            AS buckets,
-    round(avg(abs(naive_avg - last_value))::numeric, 3)     AS avg_dev_from_last,
-    round(max(abs(naive_avg - last_value))::numeric, 3)     AS worst_dev_from_last,
-    round(avg(abs(time_weighted - last_value))::numeric, 3) AS weighted_dev_from_last
-FROM per_bucket;
+    bucket,
+    samples,
+    round(naive_avg::numeric, 3)                  AS old_avg,
+    round(last_value::numeric, 3)                 AS new_last,
+    round(time_weighted::numeric, 3)              AS weighted,
+    round(abs(naive_avg - last_value)::numeric, 3) AS old_was_off_by
+FROM bucketed
+WHERE naive_avg IS NOT NULL AND last_value IS NOT NULL
+ORDER BY old_was_off_by DESC
+LIMIT 5;
 ```
 
-```
- buckets | avg_dev_from_last | worst_dev_from_last | weighted_dev_from_last
----------+-------------------+--------------------+------------------------
-     721 |             1.910 |              6.713 |                  2.598
-```
+**Look at the `old_was_off_by` column and then at the `weighted` column.**
 
-**Three points of average error on a scraper torque, and six point seven at the
-worst.** Across a whole hour of a five-second trend that is a visible disagreement
-with the instantaneous value — the number on the screen is not the number the
-instrument was showing.
+The old number was up to **5.2** away from what the instrument last reported. And
+the time-weighted mean is *not* closer to that value — it sits at 40.874 when the
+instrument was showing 45.379.
 
-Now the interesting part. **The time-weighted mean is *further* from the last
-value than the naive average is** — 2.598 against 1.910. The fix for this panel
-is therefore not the fix from lesson 04-01.
+Because **none of the three is the answer to the question the panel is asking.**
+A five-second trend is showing an operator what the signal is doing *now*. The
+value at the end of the bucket is the answer. `avg` is a third statistic, and
+`time_weighted` is a fourth, and both of them are answers to a different question
+— "what was the average over this period" — which is a question no operator asks
+of a live trend panel.
 
-That is worth sitting with, because it is the whole lesson:
+> **`AVG` is not a worse time-weighted mean. It is a different statistic, and which
+> one is right depends on what the panel is for.**
 
-> **`AVG` is not a slightly-wrong time-weighted mean. It is a different
-> statistic, and which one is right depends on what the panel is for.**
+That is the sentence worth taking out of this lesson. It also means the fix for
+04-01's problem is *not* automatically the fix for this one, which is exactly the
+trap when a lesson teaches you a rule.
 
-For the six-hour compliance average in 04-01, the time-weighted mean was right,
-because "average over the period" is what was asked. For a five-second trend, the
-last value is right, because "what is it doing now" is what is being asked. The
-dashboard used `avg` for both and was right in neither.
+## How wrong was it, and on which signals
 
-The corrected trend query:
+The size of the error is not uniform, and that is the most useful thing to know
+about it:
 
 ```sql
+WITH windowed AS (
+    SELECT
+        signal_id,
+        time_bucket(INTERVAL '5 seconds', ts) AS bucket,
+        value,
+        ts
+    FROM reading
+    WHERE ts >= (SELECT max(ts) FROM reading) - interval '1 hour'
+      AND signal_id IN ('PRIMARY:PRI-SCR-1:TORQUE',
+                        'UTILITY:SITE:PLANT_POWER',
+                        'AERATION:AHU-1:BLOWER_VALVE',
+                        'AERATION:AHU-1:DO',
+                        'INFLUENT:FLOW:TURBIDITY',
+                        'INFLUENT:FLOW:PH')
+)
 SELECT
-    time_bucket(INTERVAL '5 seconds', ts) AS time,
-    (array_agg(value ORDER BY ts DESC))[1] AS value
-FROM reading
-WHERE signal_id = 'PRIMARY:PRI-SCR-1:TORQUE'
-  AND ts >= (SELECT max(ts) FROM reading) - interval '1 hour'
-  AND value IS NOT NULL
-GROUP BY time
-ORDER BY time;
+    signal_id,
+    count(*)                                              AS buckets,
+    round(avg(abs(naive_avg - last_value))::numeric, 3)  AS mean_off_by,
+    round(max(abs(naive_avg - last_value))::numeric, 3)  AS worst_off_by
+FROM (
+    SELECT
+        signal_id,
+        bucket,
+        avg(value) AS naive_avg,
+        (array_agg(value ORDER BY ts DESC))[1] AS last_value
+    FROM windowed
+    GROUP BY signal_id, bucket
+    HAVING count(value) > 0
+) AS bucketed
+WHERE naive_avg IS NOT NULL AND last_value IS NOT NULL
+GROUP BY signal_id
+ORDER BY worst_off_by DESC
+LIMIT 6;
 ```
 
-`array_agg(...)[1]` is the idiomatic last-value-per-group in Postgres, and it is
-both cheaper and clearer than an aggregate that has to be explained.
-
-**One caveat, honestly stated:** taking the last value means a bucket containing
-one bad reading *and* the good reading before it shows the good one. For a trend
-that is what you want. If a panel must never hide a bad reading, add
-`max(quality)` alongside it and let the renderer decide — which is the same rule as
-04-01's coverage figure: **the aggregation and the caveat are separate outputs.**
-
-## Decision 3: the NULL filter is in the wrong place
-
-<!-- a fragment lifted out of the query above, not a statement -->
-<!-- check: skip -->
-```sql
-AND value IS NOT NULL
+```
+             signal_id            | buckets | mean_off_by | worst_off_by
+---------------------------------+---------+-------------+--------------
+ UTILITY:SITE:PLANT_POWER          |     721 |       5.623 |       22.408
+ PRIMARY:PRI-SCR-1:TORQUE          |     721 |       1.925 |        6.718
+ AERATION:AHU-1:BLOWER_VALVE        |     721 |       0.121 |        0.270
+ AERATION:AHU-1:DO                  |       1 |       0.000 |        0.000
+ INFLUENT:FLOW:PH                   |       1 |       0.000 |        0.000
+ INFLUENT:FLOW:TURBIDITY            |       1 |       0.000 |        0.000
 ```
 
-This is the 04-01 pitfall, in production. The filter runs before the bucket
-aggregate, so any interval a failed instrument covered simply vanishes from the
-bucket instead of being counted as a bucket with no data.
+**Three signals with an error of 0.000, exactly.** Not approximately zero — the
+`avg` of a bucket containing one sample *is* that sample. Dissolved oxygen, influent
+pH and influent turbidity each produced a single reading in the whole hour, so
+there was nothing to aggregate and the old query was right on them.
 
-Two consequences, and the second is the nastier one:
+**A plant power meter with a worst error of 22.4 kW** — on a signal whose typical
+value is around 550. That is four per cent, every bucket, for an hour, on a panel
+an operator glances at to confirm the plant is running normally.
 
-- **The gap is invisible.** A bucket where the sensor was dead for the whole five
-  seconds produces no row at all, exactly like a bucket outside the query range.
-  Grafana draws a gap for both. The operator cannot tell "no data" from "no
-  change".
-- **A bucket that *partly* contains a failure is silently averaged over the
-  survivors.** The value that gets plotted is not the value the instrument last
-  reported before the failure.
+Look at the `buckets` column too. The three correct signals have **one bucket**
+between them; the plant power meter and the blower valve have all 721, and only
+those two with real traffic show any error at all. **The signals where the defect
+bites are the ones that report most often** — the exact opposite of what a reviewer
+skimming a panel list would predict, and the reason nobody reported it.
 
-The fix is to keep the bucket and carry the quality through, so the renderer can
-decide:
+> **A defect that is exactly zero on half your panels and large on the rest is the
+> kind that survives for years.** Nobody looks at the panel where it does not
+> appear, so nobody reports it, so it is never fixed.
 
-```sql
-SELECT
-    time_bucket(INTERVAL '5 seconds', ts) AS time,
-    (array_agg(value ORDER BY ts DESC))[1] AS value,
-    max(quality)                          AS worst_quality
-FROM reading
-WHERE signal_id = 'PRIMARY:PRI-SCR-1:TORQUE'
-  AND ts >= (SELECT max(ts) FROM reading) - interval '1 hour'
-GROUP BY time
-ORDER BY time;
-```
+This is the argument for fixing it in the generator rather than per panel — which
+is what the dashboards here are for. Every panel is generated from one function,
+so a fix lands in all of them at once, and `tests/test_grafana_dashboards.py`
+executes every generated query against a live database. A dashboard JSON file that
+is never run is a screenshot of somebody's guess.
 
-Now a bucket that is entirely bad has `value IS NULL` and `worst_quality = 2`, and
-the panel can grey it. A bucket that is partly bad tells you so.
+## Decision 2: the NULL filter was deleting the evidence
 
-## Decision 1: the bucket width is not the interesting choice
+The old `WHERE` clause had `AND value IS NOT NULL`. That is 04-01's pitfall, in
+production, and it fails in two distinct ways.
 
-`INTERVAL '5 seconds'` is fine, and the reason it is worth mentioning at all is
-that it interacts with the other two decisions. At 5 seconds a sparse signal like
-dissolved oxygen produces **at most one sample per bucket** — 39 buckets and 39
-samples over six hours — so the aggregation question never arises and the NULL
-question never arises. At 5 seconds the bug is invisible on that signal. It only
-appears on the fast ones, where it is worst.
+**It hides a bucket that should be drawn as empty.** A filter in the `WHERE`
+clause runs before the aggregate, so a five-second bucket that the instrument
+spent entirely dead produces no row at all — identical to a bucket outside the
+query's time range. The panel draws a gap for both, and an operator cannot tell
+"the sensor failed" from "nothing happened".
 
-So the bug is not on every panel. **A defect that only shows up on some of your
-charts is the kind that survives for years**, because nobody ever looks at the
-panel where it does not appear. That is an argument for writing the query once,
-correctly, and generating every panel from it — which is what
-`ui/grafana/generate_dashboards.py` already does, and is the one part of this
-story that is right.
+**It averages over the survivors.** A bucket that *partly* contains a failure is
+not dropped; it is silently computed from the readings that did survive. The value
+plotted is not the value the instrument last reported.
 
-## The finished query
-
-Everything the stage produced, in one statement:
+The fix inverts the responsibility. `value` may be NULL, `quality` travels with it,
+and the renderer decides:
 
 ```sql
 SELECT
     time_bucket(INTERVAL '5 seconds', ts)  AS time,
-    (array_agg(value ORDER BY ts DESC))[1] AS value,     -- 04-04: last, not avg
-    max(quality)                           AS quality,   -- 04-01: the caveat travels
-    count(*)                               AS samples    -- 04-02: how much was there
+    (array_agg(value ORDER BY ts DESC))[1] AS value,
+    max(quality)                           AS quality,
+    count(*)                               AS samples
 FROM reading
-WHERE signal_id = 'PRIMARY:PRI-SCR-1:TORQUE'
-  AND ts >= (SELECT max(ts) FROM reading) - interval '1 hour'  -- 04-03: chunk exclusion
+WHERE signal_id = 'AERATION:AHU-1:DO'
+  AND ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
   AND ts <= (SELECT max(ts) FROM reading)
 GROUP BY time
 ORDER BY time
@@ -204,101 +223,86 @@ LIMIT 5;
 ```
 
 ```
-          time          |      value  | quality | samples
------------------------+--------------+---------+---------
- 2026-09-28 19:05:50+00 | 40.885227787 |       0 |      3
- 2026-09-28 19:05:55+00 | 37.270565520 |       0 |      4
- 2026-09-28 19:06:00+00 | 40.718758229 |       0 |      4
- 2026-09-28 19:06:05+00 | 37.252342676 |       0 |      3
- 2026-09-28 19:06:10+00 | 39.677927726 |       0 |      4
+          time          |     value  | quality | samples
+-----------------------+------------+---------+---------
+ 2026-09-28 16:29:55+00 | 2.39987023 |       0 |      1
+ 2026-09-28 16:31:35+00 | 2.41994068 |       0 |      1
+ 2026-09-28 16:33:25+00 | 2.44002807 |       0 |      1
+ 2026-09-28 16:35:40+00 | 2.46007850 |       0 |      1
+ 2026-09-28 16:38:10+00 | 2.48038969 |       0 |      1
 ```
 
-**Three or four samples in a five-second bucket, a value, a quality, and a count.**
-The `samples` column is the one that makes the rest readable: it says how much of
-that five seconds this row actually represents, and a bucket showing `samples = 1`
-is telling you something the value alone cannot.
+**One sample per bucket, and one bucket every 1 min 40 s.** The panel now shows
+that dissolved oxygen reports about thirty-six times an hour rather than implying
+continuous coverage — and `samples = 1` says so explicitly, rather than leaving an
+operator to infer it from a line that is not quite continuous.
 
-Look also at the values — 40.9, 37.3, 40.7, 37.3, 39.7. The scraper is genuinely
-moving that fast. That is why the `avg` question in this lesson is not academic:
-the samples inside one bucket disagree, so which one you pick changes what the
-operator sees.
+Read the values too: 2.400, 2.420, 2.440, 2.460, 2.480. The basin is climbing and
+every one of these is a reading somebody might have to act on. The old query
+returned exactly the same numbers here, because a bucket of one sample has nothing
+to average — and that coincidence is precisely why the defect survived review.
 
-Four clauses, and each one is a lesson:
+Had a reading been bad, this row would have `value` NULL and `quality` 2, and the
+panel could grey it. That is the whole change: **the aggregation and the caveat
+are separate outputs, and the renderer is what decides how to draw them.**
 
-- **`ts >= (SELECT max(ts) FROM reading) - $window`** — the subquery is evaluated
-  once, as an `InitPlan`, which is what lets the engine exclude whole chunks. A
-  literal cannot, and `now()` would exclude everything.
-- **`(array_agg(value ORDER BY ts DESC))[1]`** — the aggregation states what the
-  panel is for. Last value for a trend; a time-weighted mean for a period
-  average; both are defensible, `avg` is not.
-- **`max(quality)`** — the status travels with the value instead of being filtered
-  away, so "no data" and "bad data" remain distinguishable.
-- **`count(*)`** — the coverage. A bucket with one sample out of a possible five
-  is a different statement from one with five, and only the count says so.
+## What keeps it fixed
 
-**None of these is exotic.** Every clause is a plain, readable piece of Postgres
-that this course has already met. The value of the expert stage is not that the
-SQL got harder — it is that you now know which of four defensible-looking choices
-is the wrong one, and why.
+The fix is held in place by a test that asserts the *output* of the generator, not
+its source:
+
+<!-- check: skip -->
+```python
+raw = gen._raw_query(get_contract(), "AERATION:AHU-1:DO")
+
+assert "(array_agg(value ORDER BY ts DESC))[1] AS value" in raw
+assert "max(quality) AS quality" in raw
+assert "count(*) AS samples" in raw
+assert "value IS NOT NULL" not in raw
+```
+
+Checking the output rather than the source is deliberate, and it is the third time
+in this project that detail has mattered: **the docstring quotes the old broken
+query to explain why it was broken**, so a test that greps the source reads its own
+explanation as the code still being wrong. That mistake was made, caught, and the
+test rewritten to call the function.
+
+Both regressions have been tried against it — putting `avg(value)` back, and
+putting the NULL filter back in the `WHERE` clause — and each fails with a message
+naming the lesson it came from.
 
 ## What to take away
 
-- **Decide what an aggregate means before choosing it.** `AVG` is not a
-  slightly-wrong time-weighted mean; it is a different statistic. A trend wants
-  the last value, a period average wants the time-weighted mean, and `avg` is
-  right for neither.
-- **`AND value IS NOT NULL` in the `WHERE` clause deletes your evidence of a
-  failure.** Carry `quality` out and let the renderer decide.
-- **The same bug can be invisible on half your panels and glaring on the rest.**
-  Generate every panel from one correct query rather than fixing them one at a
-  time.
-- **The subquery anchor is load-bearing.** It is what makes chunk exclusion
-  possible, and it is why a report is reproducible against a database whose newest
-  reading is a week old.
-- **Ship the coverage with the value.** `count(*)` next to a bucketed reading is
-  the difference between a chart and an answer.
-
-## The bug is still in the code, on purpose
-
-Everything above is a criticism of a query that `ui/grafana/generate_dashboards.py`
-still ships. That is deliberate, and there are two reasons.
-
-**The reasoning is the lesson.** A lesson that says "here is the fix" and hands you
-a corrected query teaches you one thing. A lesson that shows you a live defect,
-measures it, and makes *you* write the fix teaches you how to notice the next one —
-and the next one is in a file you have never opened.
-
-**The guard will tell you when you are wrong.** `tests/test_readme_claims.py` has a
-test asserting that `_raw_query` still contains both defects and that this lesson
-still names it. The moment you fix the generator, that test fails and tells you
-this lesson needs rewriting. It is a one-directional check on purpose: it cannot
-stop this lesson from becoming wrong, but it will stop the repository from quietly
-having a lesson about a bug that no longer exists.
-
-So exercise 1 is not homework. It is the fix, and the dashboard tests in
-`tests/test_grafana_dashboards.py` assert on the query text, so part of it is
-working out what they are actually checking.
+- **Decide what an aggregate means before choosing it.** A trend wants the last
+  value; a period average wants the time-weighted mean; `avg` is right for neither.
+- **A rule taught in one lesson is not automatically the rule in the next.** The
+  04-01 fix was wrong here, and the reason is that the two panels ask different
+  questions.
+- **Check which signals a defect affects, not just how large it is.** Exactly zero
+  on half the signals is what let this one survive.
+- **`WHERE value IS NOT NULL` deletes your evidence of a failure.** Carry the
+  quality out and let the renderer decide.
+- **Test a generator's output, not its source**, when the source documents the
+  mistake it is guarding against.
 
 ## Exercises
 
-1. **Fix the generator.** Change `_raw_query` in
-   `ui/grafana/generate_dashboards.py` to take the last value and carry
-   `max(quality)` and `count(*)`. Regenerate the dashboards and check that the
-   panel tests in `tests/test_grafana_dashboards.py` still hold — several of them
-   assert on the query text, and you will need to read what they are actually
-   asserting.
-2. **Find the worst panel.** For every signal, compute the mean absolute
-   difference between `avg(value)` and the last value per 5-second bucket over one
-   hour. Which signals would an operator have complained about, and in what units
-   is the error significant?
-3. **Time-weight a trend anyway.** Build the 04-01 time-weighted mean *per bucket*
-   and compare all three aggregations on a signal where the signal changes fast
-   within a bucket. Under what circumstances would a trend panel genuinely want
-   the mean rather than the last value?
-4. **Prove the gap is invisible.** Using only the broken query, count the buckets
-   in a one-hour window, then count them again with the `value IS NOT NULL` filter
-   removed. For a signal that failed mid-hour, the difference is the number of
-   buckets the old query was hiding. Find such a signal or construct one.
+1. **Make the old query visible.** Add `avg(value) AS old_avg` alongside the
+   current columns and render both as two series. On which signals would an
+   operator have noticed the difference within a day, and on which would they
+   never have?
+2. **The rollup tier has the same shape.** `_rollup_query` reads `reading_1h` and
+   selects `mean`. Is `mean` the right statistic for a long-range trend panel, or
+   does it have the same problem `avg` had? Check what `reading_1h` actually
+   stores before answering — the module docstring in `generate_dashboards.py`
+   records a past version of that query failing loudly on a missing column.
+3. **Prove the gap is still invisible somewhere.** The `WHERE` clause is fixed for
+   the value, but what happens to a bucket that contains *no rows at all* because
+   the instrument reported nothing for those five seconds? Construct the case and
+   decide whether `count(*)` can be made to say something about it.
+4. **Check the other panels.** The module docstring claims "no panel here has a
+   line that simply stops". Find the panel that comes closest to that claim being
+   false, and decide whether the `quality` column should reach it too.
 
 ---
 

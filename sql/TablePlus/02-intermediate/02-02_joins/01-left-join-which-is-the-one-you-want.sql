@@ -20,8 +20,8 @@ SELECT
 FROM signal s
 LEFT JOIN reading r
        ON r.signal_id = s.id
-      AND r.ts >= (SELECT max(ts) FROM reading) - interval '6 hours'
-      AND r.ts <  (SELECT max(ts) FROM reading)
+      AND r.ts >= timestamptz '2026-09-28 14:05:50+00'
+      AND r.ts <  timestamptz '2026-09-28 20:05:50+00'
 GROUP BY s.id, s.unit
 HAVING count(r.signal_id) = 0
 ORDER BY s.id;

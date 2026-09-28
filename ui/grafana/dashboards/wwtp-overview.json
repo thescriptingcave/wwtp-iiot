@@ -47,7 +47,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'INFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'INFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- flow_m3h, raw tier",
           "interval": "5s",
           "legendFormat": "flow_m3h"
         },
@@ -59,7 +59,7 @@
           "refId": "B",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'EFFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'EFFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- flow_m3h, raw tier",
           "interval": "5s",
           "legendFormat": "flow_m3h"
         }
@@ -122,7 +122,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- do_mg_l, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- do_mg_l, raw tier",
           "interval": "5s",
           "legendFormat": "do_mg_l"
         }
@@ -199,7 +199,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:BLOWER_RPM'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- blower_rpm, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:BLOWER_RPM'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- blower_rpm, raw tier",
           "interval": "5s",
           "legendFormat": "blower_rpm"
         },
@@ -211,7 +211,7 @@
           "refId": "B",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- air_flow_m3h, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- air_flow_m3h, raw tier",
           "interval": "5s",
           "legendFormat": "air_flow_m3h"
         }
@@ -349,7 +349,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'SECONDARY:SEC-CL-1:BLANKET'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- blanket_m, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'SECONDARY:SEC-CL-1:BLANKET'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- blanket_m, raw tier",
           "interval": "5s",
           "legendFormat": "blanket_m"
         },
@@ -361,7 +361,7 @@
           "refId": "B",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        avg(value) AS value FROM reading WHERE signal_id = 'SLUDGE:DIG-1:PH'   AND ts >= $__timeFrom() AND ts <= $__timeTo()   AND value IS NOT NULL GROUP BY time ORDER BY time -- ph, raw tier",
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'SLUDGE:DIG-1:PH'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- ph, raw tier",
           "interval": "5s",
           "legendFormat": "ph"
         }

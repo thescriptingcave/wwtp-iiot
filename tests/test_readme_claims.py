@@ -166,7 +166,7 @@ def test_the_course_has_twenty_one_lessons() -> None:
       hold several statements and `check_sql.py` also classifies 53 of them as
       illustrative and skips them.
 
-    So: 21 lessons is the number a reader can check by looking, and 80 queries
+    So: 21 lessons is the number a reader can check by looking, and 78 queries
     is `check_sql.py`'s number, asserted separately below against the tool's own
     output rather than re-derived here.
     """
@@ -188,7 +188,7 @@ def test_the_course_has_twenty_one_lessons() -> None:
 
 @pytest.mark.integration
 def test_the_query_count_matches_what_the_runner_reports() -> None:
-    """The README's "80 queries" is `check_sql.py`'s number, checked against it.
+    """The README's "78 queries" is `check_sql.py`'s number, checked against it.
 
     Not re-derived. `check_sql.py` owns the definition of a query — how many
     statements a block contains, and which are illustrative — and a second
@@ -205,9 +205,9 @@ def test_the_query_count_matches_what_the_runner_reports() -> None:
     assert m, f"could not read the runner's summary:\n{out.stdout[-300:]}"
     queries, files = int(m.group(1)), int(m.group(2))
 
-    assert queries == 80, f"the course has {queries} queries, the README says 80"
+    assert queries == 78, f"the course has {queries} queries, the README says 78"
     assert files == 26, f"check_sql.py sees {files} files, the README says 26"
-    assert re.search(r"80 queries (in|across) 26 files", _readme()), (
+    assert re.search(r"78 queries (in|across) 26 files", _readme()), (
         "the README's course line is stale"
     )
 
@@ -1047,35 +1047,52 @@ def test_the_guide_never_hardcodes_a_port_a_reader_must_visit() -> None:
     )
 
 
-def test_04_expert_claims_a_defect_the_generator_still_has() -> None:
-    """Lesson 04-04 names a specific defect in `_raw_query`. Keep it honest.
+def test_04_expert_claims_the_dashboard_query_that_shipped() -> None:
+    """Lesson 04-04 describes `_raw_query`; keep the two from diverging.
 
-    The lesson says the shipped trend query uses `avg(value)` inside a
-    `time_bucket` and filters `value IS NOT NULL` in the `WHERE` clause, and
-    measures both as defects. If the generator is ever fixed, the lesson is
-    describing a bug that no longer exists — which is the same failure as a
-    README claiming a lesson is unwritten when it is not.
+    The lesson used to be a critique of a bug that was still in the tree, on the
+    argument that the reasoning was the lesson. That was defensible and it was
+    still the wrong call for something operators look at, so the query is now
+    fixed and the lesson describes the fix. This asserts the fix is still there:
+    a regression back to `avg()` inside the bucket, or back to filtering NULLs in
+    the `WHERE` clause, fails.
 
-    Deliberately one-directional: it fails while the defect is present and the
-    lesson has not caught up, which is the direction that matters.
+    The generated JSON is checked separately — `test_grafana_dashboards.py` runs
+    every panel's query against a live database, and asserts the JSON is in step
+    with the generator. This is the cheaper guard on the generator itself.
     """
-    generator = Path(
-        "ui/grafana/generate_dashboards.py"
-    ).read_text(encoding="utf-8")
-    lesson = Path("sql/04-expert/04-04_the_dashboard_query.md").read_text(
-        encoding="utf-8"
+    from ui.grafana import generate_dashboards as gen  # noqa: PLC0415
+
+    # The generator's *output*, not its source: the docstring quotes the old
+    # broken query to explain why it was broken, and a source check reads that
+    # prose as the code still being wrong.
+    raw = gen._raw_query(get_contract(), "AERATION:AHU-1:DO")
+
+    assert "(array_agg(value ORDER BY ts DESC))[1] AS value" in raw, (
+        "the trend query averages again instead of taking the last value in the "
+        "bucket; that is the defect lesson 04-04 exists to explain"
+    )
+    assert "max(quality) AS quality" in raw, (
+        "the trend query stopped carrying the quality, so a panel can no longer "
+        "distinguish a bad reading from no reading"
+    )
+    assert "count(*) AS samples" in raw, (
+        "the trend query stopped reporting how many samples a bucket holds, so "
+        "coverage went back to being invisible"
+    )
+    assert "value IS NOT NULL" not in raw, (
+        "the NULL filter is back in the WHERE clause, which is 04-01's pitfall: "
+        "a bucket an instrument failed through disappears instead of being drawn "
+        "as a bucket with no data"
     )
 
-    assert "avg(value) AS value" in generator, (
-        "the trend query no longer averages; lesson 04-04 is built around why it "
-        "was wrong, and needs rewriting to say what replaced it"
-    )
-    assert "AND value IS NOT NULL" in generator, (
-        "the NULL filter moved out of the WHERE clause; lesson 04-04's third "
-        "decision no longer describes the shipped query"
-    )
+    lesson = Path(
+        "sql/04-expert/04-04_the_dashboard_query.md"
+    ).read_text(encoding="utf-8")
+
+    # The lesson must still describe the code it is about.
     for claim in ("_raw_query", "ui/grafana/generate_dashboards.py"):
         assert claim in lesson, (
             f"lesson 04-04 no longer names {claim!r}, so a reader cannot find the "
-            "code it is criticising"
+            "code it is explaining"
         )
