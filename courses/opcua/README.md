@@ -123,7 +123,7 @@ by doing it.
 | 02 | [Nodes, classes and types](02-nodes-and-types.md) | what a thing *is*: `Object` vs `Variable`, type definitions, references, namespaces |
 | 03 | [Reading data properly](03-reading-data.md) | attributes, timestamps, batch reads, and the read that raises |
 | 04 | [Data types, units and ranges](04-units-and-ranges.md) | why a `Double` is not a measurement, and the range nobody enforces |
-| 05 | [Subscriptions in depth](05-subscriptions-in-depth.md) | planned |
+| 05 | [Subscriptions in depth](05-subscriptions-in-depth.md) | intervals vs filters, and what a deadband really discards |
 | 06 | [Status codes and quality](06-status-and-quality.md) | planned |
 | 07 | [Writing values](07-writing.md) | planned |
 | 08 | [Finding things at scale](08-discovery.md) | planned |
