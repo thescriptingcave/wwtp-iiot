@@ -1986,6 +1986,101 @@ from writing plausible text faster than I could observe it, and the gate caught
 all three. That is the argument for the gate, and it is also an argument against
 my own instincts.
 
+### The project chose OPC UA for a reason it then declined to use
+
+Lesson 04 went looking for the feature the docstring sells second:
+
+> **Subscriptions.** A client subscribes once and receives changes. Modbus makes
+> the client poll, which means deadbanding, change detection and data volume all
+> become the client's problem.
+
+```
+$ git grep -c create_subscription -- '*.py'
+tools/opcua_browser.py:1
+```
+
+**One hit, in the tool built for a human to look around.** Not the gateway, not
+the server, not the soft PLC. And the gateway — the client this project actually
+wrote — polls:
+
+```python
+# gateway/clients/opcua_client.py:184,199
+async def poll(self) -> OpcUaPollResult:
+    response = await self._client.uaclient.read(params)
+```
+
+A batch read of all 57 nodes, `poll_interval_s: float = 1.0`, forever, whether
+or not anything moved. So the project picked OPC UA, built a real address space,
+and then consumed it exactly as Modbus would require. The single best argument
+for the protocol is the one argument the protocol is not being used for here, and
+`gateway/deadband.py` is 241 lines of well-tested code doing by hand — on the
+wrong side of the wire — the job a `DataChangeFilter` does natively.
+
+Three comments describe machinery that is not there:
+
+* The class docstring says the server "keeps one internal subscription with a
+  data-change filter and pushes updates through a single writer callback." There
+  is no internal subscription. `OpcUaServer` holds `self._dirty: set[str]` and
+  `publish()` walks it. The *advice* about per-value subscriptions is right; the
+  implementation is not the thing it names.
+* `mark_dirty` says it is "called from the scan loop, which knows what changed
+  because the deadband said so." It is called from `set_value()`. The scan loop
+  has no deadband — `softplc/main.py:236-238` filters on **exact equality**, so
+  every distinct float is published however far below the contract's deadband it
+  falls. The only deadband is client-side, downstream.
+* Which means the sentence's own conclusion — *"pushing only real changes is what
+  makes an OPC UA subscription cheaper than Modbus polling"* — describes a saving
+  that has not been taken.
+
+**And the cost side, which the one-paragraph pitch never mentions.** Measured
+with a real subscription, DO ramping 0.01 per publish:
+
+```
+  client A (no filter):  41 notifications, last value 2.39
+  client B (deadband 0.02): 2 notifications, last value 2.0
+  the server says: 2.39
+```
+
+Two clients, same server, same node, same instant, both receiving `Good`.
+Client B is **16 % low** and there is no field in its notification saying so. A
+filter is negotiated *per subscription*, not a property of the data, so two
+clients can hold genuinely different beliefs about one value with nothing to
+reconcile them — and a deadband does not queue, summarise or timestamp what it
+drops, so a historian on a filtered subscription has no record that DO moved in
+nineteen steps at all.
+
+The other measurement worth keeping: **41 notifications carrying 3 distinct
+values.** Thirty-eight of them said nothing new. A filterless subscription
+reproduces the "data volume is the client's problem" complaint the docstring
+raises *about Modbus*, which is the kind of result that makes the comparison
+unreliable in the direction that flatters the thing you built.
+
+### A measurement I could not reproduce, and what I did about it
+
+The first run of that comparison printed 41 / 41 / 41 — the deadband appearing to
+suppress nothing, which contradicted everything I expected. The second run, on a
+different code path, printed 41 / 1 / 1. Rather than pick the one I liked, I
+re-ran the first pattern exactly, and got 41 / 1 / 1.
+
+So the first script was buggy and its output was wrong, and I had two options:
+publish the number that told the story I wanted, or go back and find out which
+one the server actually does. The rule this project already has — *a number in
+prose is a measurement or nothing* — only means anything if the measurement is
+reproducible, and a number I cannot reproduce twice is a number I do not have.
+
+What I actually had was a script with a bug and no way to tell which of two
+contradictory outputs was the bug. The fix was to re-run the *first* pattern
+verbatim rather than to keep refining the second one, because the second one was
+the one I had just written and the first one was the one that surprised me. A
+surprising result deserves more scepticism than a confirming one, not less.
+
+Lesson 04's numbers come from the reproduced pattern, and the divergence between
+them is now a test: `tests/test_opcua_course.py` asserts that nothing in
+`gateway/`, `softplc/main.py` or `softplc/servers/opcua.py` creates a
+subscription, and that the server-side filter is still exact equality. Both
+assert that the *defect* persists, so fixing it fails the build with a message
+saying the lesson is now stale.
+
 ---
 
 ## Thread triage

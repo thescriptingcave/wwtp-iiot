@@ -99,7 +99,7 @@ including a reference id that had been guessed and was wrong.
 | 01 | [The address space is a tree, and you can walk it](01-the-address-space.md) | **written** |
 | 02 | [Units, types, and the one lie in the type system](02-units-and-types.md) | **written** |
 | 03 | [Reading, and what a StatusCode is for](03-reading-and-quality.md) | **written** |
-| 04 | Subscriptions — `DataChangeNotification`, and why our deadband is not OPC UA's | planned |
+| 04 | [Subscriptions, and the feature this project does not use](04-subscriptions.md) | **written** |
 | 05 | Writing: access levels, and the range that is *not* enforced on the wire | planned |
 | 06 | Why OPC UA is asyncio and Modbus is not | planned |
 | 07 | Security: certificates, endpoints, and why nobody exposes 4840 | planned |
@@ -113,7 +113,7 @@ course is visible, not so it looks further along than it is. The same convention
 ## What these lessons are honest about
 
 The point of a course is to be right, including about the parts that are wrong.
-Eight things are wrong or missing in this implementation, and each gets its own
+Nine things are wrong or missing in this implementation, and each gets its own
 lesson rather than a footnote:
 
 1. **The address space is not conformant.** `add_variable()` creates a
@@ -164,11 +164,23 @@ lesson rather than a footnote:
 7. **The engineering range is advisory.** OPC UA does not enforce it and
    `asyncua` does not either, so a client can write 99 mg/L to a DO setpoint
    whose range is 0.5–6.0 and the server accepts it. Write *permission* is
-   genuinely enforced; the range is a promise. → lesson 05
+   genuinely enforced; the range is a promise. → **lesson 05**
 8. **`RunState` is zero until the process model drives it.** A bare
    `OpcUaServer` — a unit test, or the snippet gate — publishes 22 pieces of
    equipment all reading `0`, which is indistinguishable from 22 stopped motors.
-   → lesson 01, where it is the closing example
+   → **lesson 01**, where it is the closing example
+9. **Nothing in the product subscribes, and three comments say otherwise.** The
+   docstring sells subscriptions as the reason to prefer OPC UA over Modbus;
+   `git grep -c create_subscription` finds exactly one hit in the whole
+   repository, in `tools/opcua_browser.py`. The gateway polls a batch read once a
+   second (`gateway/main.py:82`). The class docstring describes "one internal
+   subscription with a data-change filter" — the implementation is
+   `self._dirty: set[str]`. And `mark_dirty` says the scan loop filters on the
+   deadband, where it filters on exact equality; the only deadband is
+   `gateway/deadband.py`, on the wrong side of the wire. → **lesson 04**, which
+   also shows the cost side: a filter is negotiated *per subscription*, so two
+   clients on one node hold different values — measured at 2.39 and 2.0 at the
+   same instant, both `Good`, with no staleness marker on either.
 
 ## Related
 

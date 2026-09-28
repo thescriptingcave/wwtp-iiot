@@ -243,6 +243,60 @@ def test_the_lesson_claims_the_browser_tool_would_raise_on_a_degraded_value() ->
     )
 
 
+def test_the_lesson_claims_the_gateway_polls_and_never_subscribes() -> None:
+    """Lesson 04's central claim, asserted against the source.
+
+    The project chose OPC UA partly for subscriptions — the module docstring
+    says so — and the gateway polls a batch read once a second. If someone wires
+    up a real subscription this test fails, which is the correct outcome: the
+    lesson's sharpest sentence would then be wrong.
+
+    `tools/opcua_browser.py` is the one client that does subscribe, so it is
+    excluded deliberately rather than by accident.
+    """
+    prod = [p for p in ("gateway/main.py", "gateway/clients/opcua_client.py",
+                        "softplc/servers/opcua.py", "softplc/main.py")
+            if (ROOT / p).exists()]
+    for path in prod:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert "create_subscription" not in src, (
+            f"{path} now creates a subscription; lesson 04's claim that nothing "
+            f"in the product subscribes is stale"
+        )
+    reader = (ROOT / "gateway" / "clients" / "opcua_client.py").read_text(
+        encoding="utf-8")
+    assert "async def poll(" in reader, "the gateway's reader is no longer poll()"
+    assert "uaclient.read(" in reader, (
+        "the gateway no longer batch-reads; lesson 04's comparison is stale"
+    )
+    main = (ROOT / "gateway" / "main.py").read_text(encoding="utf-8")
+    assert "poll_interval_s: float = 1.0" in main, (
+        "the 1.0 s poll interval lesson 04 quotes has changed"
+    )
+
+
+def test_the_lesson_claims_the_server_side_filter_is_exact_equality() -> None:
+    """`mark_dirty`'s docstring says the scan loop applies a deadband. It does not.
+
+    `softplc/main.py` filters on `entry.value == values[signal_id]` — exact
+    equality, so every distinct float is published however far below the
+    contract's deadband it falls. The only deadband in the product is
+    `gateway/deadband.py`, on the client side, downstream of the wire.
+    """
+    src = (ROOT / "softplc" / "main.py").read_text(encoding="utf-8")
+    assert "entry.value == values[signal_id]" in src, (
+        "the server-side publish filter is no longer exact equality, so "
+        "lesson 04's account of where the deadband is not is stale"
+    )
+    deadband = (ROOT / "gateway" / "deadband.py").read_text(encoding="utf-8")
+    assert "class Deadband" in deadband, "the client-side deadband has moved"
+    server = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    assert "_dirty: set[str]" in server, (
+        "OpcUaServer no longer tracks a dirty set, so the claim that it has no "
+        "internal subscription needs revisiting"
+    )
+
+
 def test_the_lesson_claims_bad_quality_is_never_published() -> None:
     """Lesson 03's second claim: `Bad` is documented and never produced."""
     src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
