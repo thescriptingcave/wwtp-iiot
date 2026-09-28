@@ -1,6 +1,6 @@
 # 08 — Finding things at scale
 
-**Next:** [09 — Building a client that survives](09-a-client-that-survives.md) · [Back to the course](README.md) · [Previous: 07](07-writing.md)
+**Next:** [09 — A client that survives](09-a-client-that-survives.md) · [Back to the course](README.md) · [Previous: 07](07-writing.md)
 
 Lessons 01–07 each did one thing to one node. A real client does those things to
 hundreds, and the arithmetic changes: what was a convenience becomes the whole
@@ -306,4 +306,4 @@ consequences are measured in
 [audit/01](../audit/01-the-address-space.md) and are worth knowing about for
 reasons that have nothing to do with this lesson.
 
-**Next:** [09 — Building a client that survives](09-a-client-that-survives.md)
+**Next:** [09 — A client that survives](09-a-client-that-survives.md)

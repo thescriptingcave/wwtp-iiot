@@ -127,11 +127,15 @@ by doing it.
 | 06 | [Status codes and quality](06-status-and-quality.md) | `Uncertain` is not a softer `Bad`, and why you keep the value |
 | 07 | [Writing values](07-writing.md) | the four ways a write goes wrong, and the one you cannot detect |
 | 08 | [Finding things at scale](08-discovery.md) | batching, caching, and why a hardcoded path is a bug |
-| 09 | [Building a client that survives](09-a-client-that-survives.md) | planned |
+| 09 | [A client that survives](09-a-client-that-survives.md) | what a dead server looks like, and why a cached value is a lie with a number on it |
 
-**"Planned" means it does not exist.** It is in the table so the shape of the
-course is visible, not so it looks further along than it is. The same convention
-`sql/README.md` uses for its `04-expert` stage.
+**All nine are written and every snippet in them runs** against a live server.
+Read them in order: each one assumes the previous, and 09 is the client you would
+have written by the end of 08.
+
+Where the SQL course lists an unwritten `04-expert` stage it says so, and the same
+convention would apply here — there is no "planned" row left in this table
+because there is no planned row left to have.
 
 ## The audit — nine lessons about *this* repository
 

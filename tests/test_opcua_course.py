@@ -17,6 +17,8 @@ fail rather than quietly become a lie. That is the same rule
 from __future__ import annotations
 
 import ast
+import dataclasses
+import inspect
 import re
 import subprocess
 import sys
@@ -733,3 +735,56 @@ def test_the_course_readme_does_not_claim_lessons_that_do_not_exist() -> None:
                     f"{folder.name}: lesson {num} ({title}) is listed as "
                     f"{status!r} but {target} does not exist"
                 )
+
+
+def test_lesson_09_claims_a_timeout_is_load_bearing() -> None:
+    """The lesson's central claim is that `Client(timeout=...)` is not optional.
+
+    Measured on this server: with `timeout=2` the connect to a socket that
+    accepts and never answers gave up at 2.0 s; with no timeout it was still
+    blocked when an external 6 s backstop fired. That is the difference between a
+    client that fails and one that silently disappears, and it is the kind of
+    claim that goes stale silently if the default changes.
+
+    Mutation-tested: removing the `timeout` argument fails this test.
+    """
+    from asyncua import Client  # noqa: PLC0415 - kept local to the claim
+
+    assert inspect.signature(Client.__init__).parameters["timeout"].default == 4, (
+        "asyncua's default client timeout changed; lesson 09 says `timeout` is "
+        "not optional and the reader needs the new default to know that"
+    )
+
+    lesson = (COURSE / "09-a-client-that-survives.md").read_text(encoding="utf-8")
+    assert "Client(url=ep, timeout=5)" in lesson, (
+        "lesson 09 demonstrates a timeout on the client; that call is what the "
+        "lesson is arguing for, and it has stopped being there"
+    )
+    assert "no timeout" in lesson and "gave up after 6.0 s" in lesson, (
+        "lesson 09's no-timeout measurement is gone; it is the only evidence in "
+        "the lesson that the timeout is load bearing"
+    )
+
+
+def test_lesson_09_claims_a_cached_value_needs_an_age() -> None:
+    """The lesson's other central claim: a value without an age is a lie.
+
+    `tools/opcua_minimal_client.py` is the code the lesson points at, so the
+    claim is only true if the reference client actually carries an age. If the
+    freshness verdict were removed the lesson would be teaching a rule the
+    repository does not follow.
+
+    Mutation-tested: dropping `age_seconds` from `Reading` fails this test.
+    """
+    from tools.opcua_minimal_client import Reading  # noqa: PLC0415
+
+    fields = {f.name for f in dataclasses.fields(Reading)}
+    assert "freshness" in fields, (
+        "the reference client's Reading no longer carries a freshness verdict, "
+        "so lesson 09's 'never report a value without its age' is a rule nothing "
+        "in this repository follows"
+    )
+    assert "status" in fields, (
+        "lesson 06 taught that the status travels with the value; if Reading "
+        "dropped it, the two lessons would be teaching different things"
+    )

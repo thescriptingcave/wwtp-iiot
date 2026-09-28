@@ -14,11 +14,11 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 685 | no |
+| Unit, no database | 687 | no |
 | Integration | 46 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 4 | no — they run the plant model, ~18 min |
 | SQL course | 64 queries in 17 lessons | yes |
-| OPC UA course | 79 snippets in 17 lessons — **8 of 9 teaching lessons written** | no — the gate starts its own server |
+| OPC UA course | 87 snippets in 18 lessons — **all 9 teaching lessons written** | no — the gate starts its own server |
 | Extracted queries (`sql/TablePlus/`) | 64 files, run against a live database | yes |
 | `mypy` | clean across 57 source files | no |
 | `ruff` | clean on the gated packages; 158 tracked findings elsewhere | no |
@@ -39,9 +39,9 @@ Per file, for the ones worth naming:
 | `test_alarm_replay.py` | 22 | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
 | `test_readme_claims.py` | 49 |
-| `test_opcua_course.py` | 32 |
+| `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
-| `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing | the lesson gate's own behaviour, and the claims the course makes |
+| `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 
