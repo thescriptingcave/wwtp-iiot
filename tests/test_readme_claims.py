@@ -1421,6 +1421,17 @@ def test_every_env_line_is_a_plain_key_equals_value() -> None:
     #   FOO=a\ b    exports `a\ b` — a literal backslash in the value.
     #
     # So the value may not contain a quote, a space or a backslash.
+    # CI has no `.env`, and that is correct — it is git-ignored and holds real
+    # credentials. The rule only matters where a developer has one, so a missing
+    # file is the case this test has nothing to say about.
+    #
+    # The first version read the file unconditionally and CI failed with
+    # `FileNotFoundError: '.env'` — a test asserting that a git-ignored
+    # credentials file exists in a fresh clone, which is a test asserting the
+    # wrong thing. Discovered by CI, which is the only place a fresh clone exists.
+    if not Path(".env").is_file():
+        pytest.skip("no .env here; the rule only constrains one that exists")
+
     lines = Path(".env").read_text(encoding="utf-8").split("\n")
     offenders = [
         f"{number}: {line!r}"

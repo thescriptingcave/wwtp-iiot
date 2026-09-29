@@ -87,6 +87,15 @@ env:
   # Not a secret. It is a throwaway password for a database created and destroyed
   # inside the runner, and it was already committed in the job-level copies.
   # `.env` is the developer's; CI's own credential belongs to CI.
+  #
+  # Written as `:=` on purpose. An earlier attempt added this key here and then
+  # ran a cleanup that stripped *every* `POSTGRES_PASSWORD: itpass` line in the
+  # file to remove the job-level copies — including the one just added. The result
+  # was a workflow with the comment above and **no setting anywhere**, which is
+  # worse than the original: eight jobs that needed it lost it, and the only sign
+  # was the same CI error coming back. A cleanup that greps a file rather than
+  # reasoning about it removes the thing you just wrote.
+  POSTGRES_PASSWORD: itpass
 
 jobs:
   # ── the fast gate: no database, no containers ──────────────────────────────

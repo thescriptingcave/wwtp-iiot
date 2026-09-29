@@ -15,8 +15,18 @@
 # unthrottled scan loop, arrived at a third time.
 
 SHELL := /bin/bash
-.SHELLFLAGS := -euo pipefail -c
-.DEFAULT_GOAL := help
+.SHELLFLAGS := -euo pipefail -a -c
+# `make` alone opens the notebooks. It used to print the target list, which is a
+# reasonable default for a repository whose whole point is its gates — and the
+# wrong default for the one job most people arrive here to do, which is to read
+# them. `make help` still prints the list, and `make check` still runs everything
+# CI runs.
+#
+# The prerequisites below are the whole reason this is one command rather than a
+# remembered incantation: dependencies, a database, a stopped gateway, and the
+# generated notebooks. Each was a thing that had to be right, and each was
+# separately forgettable.
+.DEFAULT_GOAL := notebooks-open
 
 # Every recipe gets the values from `.env`.
 #
@@ -43,10 +53,74 @@ SHELL := /bin/bash
 # is a plain `KEY=value` — a quoted value would keep its quotes, because make
 # does not strip them. `tests/test_readme_claims.py` asserts that shape so a
 # future `.env` that breaks this fails a test rather than a notebook.
-ifneq (,$(wildcard .env))
-include .env
-export
-endif
+# Every recipe gets the values from `.env`, with **shell** semantics.
+#
+# ## Why `BASH_ENV` and not `include .env`
+#
+# `include` is the obvious tool and it is wrong, in two ways that fail silently.
+#
+# **One.** `.env` is a *shell* file — compose sources it, and it uses shell
+# syntax. This one has:
+#
+#     SOFTPLC_SEED=${SOFTPLC_SEED:-20260926}
+#
+# Make reads `${SOFTPLC_SEED:-20260926}` as a substitution reference on an
+# undefined variable and expands it to **empty** — not the literal string, not an
+# error. Sourcing it in bash gives `20260926`, which is what the seeder expects and
+# what compose would hand a container.
+#
+# **Two.** `include` appends the file to `$(MAKEFILE_LIST)`, which the `help`
+# target greps. With `.env` in that list, grep prints a filename prefix on every
+# match and `make help` lists a target called `Makefile` twenty times instead of
+# the twenty targets. That is exactly what happened, in the commit that added the
+# `include`, and it went unnoticed because I had stopped running `make help` the
+# moment the default goal changed.
+#
+# `BASH_ENV` is bash's own mechanism: it sources that file at the start of every
+# non-interactive shell, which is every recipe. One line, correct semantics, no
+# make in the middle.
+#
+# The `-a` above is load-bearing and was the missing half. Bash sources `BASH_ENV`
+# at startup, but a plain assignment in a sourced file creates a *shell* variable,
+# not an environment variable — so `.env` was sourced correctly and its values then
+# stopped at the shell. `POSTGRES_PORT` was `55433` in the recipe and absent from
+# the `python` it ran, which asked the database for 5432 and failed. Observed, not
+# theorised: the recipe printed `PORT=55433` and its child printed
+# `POSTGRES_PORT=None` in the same run.
+#
+# `-a` (allexport) makes every assignment from that point on exported, which is
+# what `set -a; . .env; set +a` does by hand and what compose does internally.
+export BASH_ENV := $(CURDIR)/tools/env.sh
+
+# ## Why any of this exists
+#
+# `make notebooks-open` launched JupyterLab with no `POSTGRES_PORT`, so
+# `storage.postgres.schema.dsn()` fell back to its defaults — port 5432, password
+# "wwtp" — and the first cell of notebook 01 died with:
+#
+#     connection to server at "127.0.0.1", port 5432 failed:
+#     FATAL:  password authentication failed for user "wwtp"
+#
+# which reads like a wrong password rather than a wrong port. **The port is the
+# tell**: this project's database is on 55433 and nothing here has ever run on
+# 5432.
+#
+# `docker compose` loads `.env` itself, which is exactly why `make up` and
+# `make seed` always worked and hid the gap. Compose was the only thing loading
+# it. Anything reaching Postgres directly — `make psql`, `make query`,
+# `make test`, `make notebooks-open` — had to be handed the environment by its
+# caller, and I had been doing that by hand in my own shell, which is precisely
+# the condition under which a missing line goes unnoticed.
+#
+# ## Precedence
+#
+# `.env` is sourced *after* the inherited environment, so **`make` wins**:
+# `POSTGRES_PORT=5999 make notebooks-open` still targets 55433. That is intended —
+# `.env` is this project's configuration, and a stray variable in a shell profile
+# should not decide which database gets read. A recipe-level assignment beats
+# both, which is how `make integration` reaches `POSTGRES_TEST_PORT`:
+#
+#     POSTGRES_TEST_PORT=$(TEST_PORT) $(PY) -m pytest ...
 
 # The venv's python, not `uv run` — which needs --no-sync or it strips the
 # optional extras and then everything that touches a database fails with an
@@ -76,8 +150,17 @@ NB_TOKEN := $(shell uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
         coverage coverage-json alarms browse watch psql query roles contract \
         lessons tableplus notebooks notebooks-build notebooks-open
 
+# `head -1` on $(MAKEFILE_LIST) rather than the whole list.
+#
+# This target greps for `target:  ## description`, and any *other* file in
+# MAKEFILE_LIST would be grepped with a `filename:` prefix on every match, so awk's
+# first field becomes the filename and every row reads `Makefile`. It happened
+# when `.env` was `include`d and this target silently stopped listing targets.
+#
+# The first makefile is the only one with targets in it, so it is the only one
+# worth reading — and `head -1` means a future `include` cannot break this again.
 help:
-	@grep -E '^[a-z][a-zA-Z-]*:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-z][a-zA-Z-]*:.*?## .*$$' $(firstword $(MAKEFILE_LIST)) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 # ── the gates ────────────────────────────────────────────────────────────────
@@ -180,8 +263,15 @@ notebooks-read:  ## execute every notebook to notebooks/read/*.html, for reading
 	done
 	@echo "  open: notebooks/read/  ($$(ls notebooks/read/*.html 2>/dev/null | wc -l | tr -d ' ') file(s))"
 
-notebooks-open:  ## open JupyterLab on the notebooks, in this project's venv
+# `make` with no arguments. The prerequisites are the whole point: install
+# everything, bring up the database, stop the gateway, build the notebooks, check
+# there is actually a week of data to read, then open JupyterLab.
+#
+# Ordering matters and make does not promise it across sibling prerequisites, so
+# the stack is ordered through one chain rather than four parallel edges.
+notebooks-open: sync db-still notebooks-build notebooks-has-data
 	@echo "  kernel : Python 3 (ipykernel) - check the status bar says .venv"
+	@echo "  read   : notebooks/read/  (make notebooks-read, for HTML)"
 	@echo "  open   : http://127.0.0.1:$(NB_PORT)/lab?token=$(NB_TOKEN)"
 	@echo "  stop   : Ctrl-C"
 	@MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab \
@@ -190,7 +280,110 @@ notebooks-open:  ## open JupyterLab on the notebooks, in this project's venv
 		--ServerApp.token=$(NB_TOKEN) \
 		--no-browser
 
+# Refuse to open a notebook series against an empty database, and say how to fix
+# it, rather than letting every cell raise `relation "reading" does not exist`.
+#
+# It deliberately does **not** re-seed. Seeding rewrites the week — `make seed`
+# deletes and reinserts — which is two minutes of work to destroy something the
+# user may have been reading numbers out of. A warning and a command is the right
+# trade here; an automatic destructive step behind a command that sounds like
+# "open the notebooks" is not.
+notebooks-has-data:
+	@n=$$($(PY) -c "from storage.postgres.schema import connect; \
+	c = connect(); \
+	print(c.execute('SELECT count(*) FROM reading').fetchone()[0]); c.close()" \
+	2>/dev/null | tr -d ' \n'); \
+	if [ "$$n" -gt 0 ] 2>/dev/null; then \
+	  echo "   $$n readings in the database"; \
+	else \
+	  echo ""; \
+	  echo "   no readings, so every notebook will fail on its first query."; \
+	  echo "   nothing has been changed. To load a week of history:"; \
+	  echo ""; \
+	  echo "       make up"; \
+	  echo ""; \
+	  echo "   that takes about two minutes and REPLACES any existing data."; \
+	  exit 1; \
+	fi
+
+# Every optional extra, in one place.
+#
+# `uv sync` extras are **additive per invocation, not cumulative**. `uv sync
+# --extra analysis` on its own installs pandas and matplotlib and *removes*
+# asyncua, pymodbus and fastapi, because it resolves the environment against that
+# one extra and treats the rest as unwanted. Nothing warns about it.
+#
+# So every extra is always listed together, and `make sync` is the only supported
+# way to install. That is the loose end this closes.
+EXTRA := --extra protocols --extra storage --extra analysis --extra serve
+
 # ── the stack ────────────────────────────────────────────────────────────────
+
+# Skipped when the virtualenv already satisfies every import.
+#
+# `uv` is not on PATH everywhere — a Homebrew or pyenv install can put it outside
+# what a non-login shell sees — and the first version of this target made `make`
+# fail on a missing `uv` even when the environment was already complete. A command
+# whose whole job is "open the notebooks" should not refuse to open them because a
+# package manager is not installed and nothing needs installing.
+sync:
+	@missing=""; \
+	for m in asyncua pymodbus psycopg fastapi pandas matplotlib seaborn \
+	         jupyterlab nbformat nbclient; do \
+	  $(PY) -c "import $$m" >/dev/null 2>&1 || missing="$$missing $$m"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "── installing:$$missing"; \
+	  uv sync $(EXTRA); \
+	else \
+	  echo "── dependencies already present"; \
+	fi
+
+# Is the database reachable, from here, right now?
+#
+# A subprocess rather than a shell probe so it goes through `dsn()` and therefore
+# through `.env` — the same path the notebooks take, so "reachable" means reachable
+# *the way the notebooks will find it*. A TCP probe would say yes while a notebook
+# still failed on the port.
+db-live:
+	@$(PY) -c "from storage.postgres.schema import connect; \
+	c = connect(); c.execute('SELECT 1'); c.close()" >/dev/null 2>&1 \
+	&& echo yes || echo no
+
+# Bring the database up only if it is not already answering.
+#
+# `db-live` first, on purpose. This repository runs its database in compose on port
+# 55433, but nothing here *requires* that: a Postgres reachable on the configured
+# port is equally good, and `make` should not demand docker to open a notebook when
+# the data is already there. The previous version called `docker compose up` first
+# unconditionally, which meant `make` failed on a machine with no docker even
+# though the database it wanted was right there.
+db-up:
+	@if [ "$$($(MAKE) --no-print-directory db-live)" = "yes" ]; then \
+	  echo "── database already reachable"; \
+	else \
+	  command -v docker >/dev/null 2>&1 || { \
+	    echo "no database, and no docker to start one."; \
+	    echo "Set POSTGRES_* in .env for a database you already run, or install docker."; \
+	    exit 1; }; \
+	  echo "── starting the database"; \
+	  docker compose up -d db; \
+	  for i in $$(seq 1 60); do \
+	    if [ "$$($(MAKE) --no-print-directory db-live)" = "yes" ]; then \
+	      echo "   database ready"; exit 0; \
+	    fi; sleep 1; \
+	  done; \
+	  echo "the database did not become reachable in 60s"; exit 1; \
+	fi
+
+# The gateway writes; the notebooks read. Left running it moves the data out from
+# under a notebook mid-run, so `make` stops it — and says so, because silently
+# stopping a service the user started is its own surprise.
+db-still: db-up
+	@if [ "$$(docker compose ps --status running --services 2>/dev/null | grep -cx gateway)" = "1" ]; then \
+	  echo "   stopping gateway: it writes, and the notebooks read"; \
+	  docker compose stop gateway; \
+	fi
 
 up:  ## a running plant with a week of history
 	docker compose up -d
