@@ -3284,3 +3284,90 @@ in prose, and a guard matching the bare word would fail on its own explanation.
 Also: `make notebooks     # a comment` in a fenced bash block failed
 `test_no_command_line_carries_a_trailing_comment`, correctly. In some contexts that
 `#` reaches the shell as an argument.
+
+### Notebook 01: two claims I was about to ship, both wrong
+
+Building the orientation notebook surfaced the sharpest version of the same
+failure: **I wrote a finding, then checked it, and the check refuted it in a way I
+would not have noticed by reading.**
+
+**"Four signals correlate with the air temperature at exactly 1.0000."** They do
+not. `INFLUENT:FLOW:TEMP` and `SITE:WEATHER:AIR_TEMP` share only **28** readings,
+and the correlation on those 28 is +0.999958 — a number that is true and that I
+had rounded into a falsehood. On hourly means with a `min_periods=48` floor it
+still came out because the *resampled* frame has more non-null cells than the raw
+overlap suggests. A near-perfect correlation computed on 28 points is not a
+finding.
+
+**"32 of 849 pairs correlate above 0.99, driven by the daily cycle."** Also wrong,
+in the way that matters: the top six pairs were the *duplicate tags from section
+one*, so I had written the same finding twice and counted the duplicates as
+evidence of independence. Dropping the six redundant tags gives **18 of 491**, and
+the strongest surviving pair is +0.999958.
+
+The fix is better than the correction, and it became the notebook's third
+technique:
+
+    +0.999958  n=163  INFLUENT:FLOW:TEMP         SITE:WEATHER:AIR_TEMP
+
+**Print six decimals and the sample size.** The duplicate pair prints
+`+1.000000`; the real relationship prints `+0.999958`. At the two decimals this
+project's own dashboard habits reach for, both print `1.00` and nothing
+distinguishes a tag-list artefact from a physical fact.
+
+### The duplicate sweep found nine, not two
+
+I opened the notebook naming two duplicate pairs and left "find the rest" as
+exercise 1. Then I ran the sweep. **Nine pairs, and only six redundant tags** —
+the four water temperatures (`INFLUENT:FLOW:TEMP`, `AERATION:AHU-1:WTEMP`,
+`SECONDARY:SEC-CL-1:TEMP`, `EFFLUENT:FLOW:TEMP`) are **1,943 identical readings**
+under four names, every pair among them equal, which is six of the nine pairs from
+four tags.
+
+The exercise became the notebook, because the sweep is nine lines and the lesson is
+much better as "here is how you find them" than as "here are two, trust me."
+
+One detail the sweep exposed: `EFFLUENT:FLOW:TSS` has 128,030 rows against
+`SECONDARY:SEC-CL-1:OVERFLOW`'s 128,222, identical on everything they share.
+**"Identical on the overlap" is not "the same series"** — check the row counts.
+
+### A +1.0000 that is not +1
+
+`AERATION:AHU-1:WASTE_RATE` and `INFLUENT:LIFT:CURRENT` correlate at
+**+1.000000** on hourly means, and are **not** the same series: max absolute
+difference 20.83 over 15,359 shared readings.
+
+So `r == 1.0` is not available as a duplicate test even in principle — the
+correlation is computed on aggregated values, two deterministic functions of a
+shared driver can produce it, and pandas prints it rounded. The duplicate test
+has to be on raw values, and the correlation needs its digits.
+
+### The averaging case I chose was the wrong signal, and the right one was 21 %
+
+My section on "two averages, ten per cent apart" used influent ammonia and got
+**2 %** — a boring result I had written up as a dramatic one, because the number I
+had in my head came from a scratch query that had silently `dropna()`-ed a pivot
+and measured a different subset.
+
+Ranking every signal with more than 1,000 raw readings by relative disagreement
+found the real case immediately:
+
+    AERATION:AHU-1:BLOWER_VALVE  29.36 -> 23.09  -21.4%
+    INFLUENT:LIFT:WETWELL_LEVEL   3.09 ->  3.45  +11.9%
+    EFFLUENT:FLOW:TURBIDITY     10.17 ->  9.22   -9.4%
+
+**The two most active signals disagree the most**, which is the mechanism stated
+as a pattern: the more a signal moves, the more its raw mean over-states its
+hourly mean, because a change-triggered historian samples activity. That is
+notebook 02's finding arriving from a third direction.
+
+### A pandas detail that ate an hour of guesswork
+
+The disagreements table printed as
+
+    AERATION:AHU-1:BLOWER_VALVE 29.36 -> 23.09 -21.4% (n=  268,086 raw, 169 hours)
+
+and the gate rejected it, because `f"{268086:>7,}"` is exactly seven characters —
+**the thousands separator counts toward the field width**. So `>7` adds no padding
+at all for six-digit numbers and one space for five-digit ones. Reconstructed from
+the printed run rather than reasoned about, which is the only reliable method.

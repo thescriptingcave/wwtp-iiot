@@ -80,23 +80,27 @@ Use `ax.plot()`, and do the aggregation visibly. seaborn is here for `histplot`,
 
 ## The series
 
-| # | notebook | the question |
-|---|---|---|
-| 1 | [Meet the plant](01-meet-the-plant.ipynb) | what is here, and what does it measure |
-| 2 | [Three kinds of nothing](02-three-kinds-of-nothing.ipynb) | no data, bad data, no change — `dropna` cannot tell them apart |
-| 3 | [Choosing your tier](03-choosing-a-tier.ipynb) | raw, 1-minute, or 1-hour — and what each costs |
-| 4 | [Resampling buys you nothing](04-resampling-buys-you-nothing.ipynb) | the irregular-sampling error, measured |
-| 5 | [Autocorrelation](05-autocorrelation.ipynb) | how many independent observations are in that hour |
-| 6 | [Detrending and differencing](06-detrending-and-differencing.ipynb) | stationarity before modelling |
-| 7 | [What are you estimating](07-what-are-you-estimating.ipynb) | time- versus flow-weighted |
-| 8 | [Rolling-origin validation](08-rolling-origin-validation.ipynb) | why a random split lies |
-| 9 | [Anomaly detection](09-anomaly-detection.ipynb) | per-signal expectations, not global thresholds |
-| 10 | [Change points](10-change-points.ipynb) | when did the plant change, not just what |
-| 11 | [Dose or flow](11-dose-or-flow.ipynb) | attributing a change to an intervention |
+| # | notebook | the question | |
+|---|---|---|---|
+| 1 | [Meet the plant](01-meet-the-plant.ipynb) | what is here, what it does, and which tags are secretly the same measurement | **done** |
+| 2 | [Three kinds of nothing](02-three-kinds-of-nothing.ipynb) | no data, bad data, no change — `dropna` cannot tell them apart | **done** |
+| 3 | Choosing your tier | raw, 1-minute, or 1-hour — and what each costs | |
+| 4 | Resampling buys you nothing | the irregular-sampling error, measured | |
+| 5 | Autocorrelation | how many independent observations are in that hour | |
+| 6 | Detrending and differencing | stationarity before modelling | |
+| 7 | What are you estimating | time- versus flow-weighted | |
+| 8 | Rolling-origin validation | why a random split lies | |
+| 9 | Anomaly detection | per-signal expectations, not global thresholds | |
+| 10 | Change points | when did the plant change, not just what | |
+| 11 | Dose or flow | attributing a change to an intervention | |
 
-Only notebook 02 exists so far. It is the pilot, and it is deliberately first in
-the *series* argument despite being second in the list: it establishes the
-vocabulary the rest of the series uses.
+Only 01 and 02 exist so far, and the table does not pretend otherwise — a course
+index that links to unwritten lessons is the same failure as a count in prose, and
+this repository has already been bitten by both.
+
+02 is second in the list and first in the *argument*: it establishes the
+vocabulary the other ten use. Read it after 01, not instead of it — 01 gives you
+the plant and 02 gives you the three ways a signal can fail to give you a number.
 
 ## Related
 

@@ -257,10 +257,18 @@ who already write pandas and SQL. It does not teach either. It is about **what
 the plant is telling you and what it is not** — a question the two courses set up
 but neither can answer, because both are about how to ask.
 
-Eleven notebooks. The pilot,
-[`02 — Three kinds of nothing`](notebooks/02-three-kinds-of-nothing.ipynb),
-establishes the vocabulary the rest of the series uses: *no data*, *bad data* and
-*no change* are three different facts, and `dropna` collapses all three into one
+Eleven notebooks. Two are written.
+
+[`01 — Meet the plant`](notebooks/01-meet-the-plant.ipynb) is the orientation, and
+it ends with two findings that only appear when you compute them: **nine pairs of
+the 57 tags are one measurement under two names** — the four water temperatures
+are 1,943 identical readings — and **after removing those duplicates, 18 of 491
+independent signal pairs still correlate above 0.99**, because one daily cycle
+drives nearly everything in the plant.
+
+[`02 — Three kinds of nothing`](notebooks/02-three-kinds-of-nothing.ipynb)
+establishes the vocabulary the other nine use: *no data*, *bad data* and *no
+change* are three different facts, and `dropna` collapses all three into one
 indistinguishable hole.
 
 They are authored as markdown and generated as `.ipynb`, and the generated files
