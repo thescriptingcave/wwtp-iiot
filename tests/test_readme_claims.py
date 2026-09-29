@@ -536,7 +536,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 55,
+    "tests/test_readme_claims.py": 57,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
@@ -1382,4 +1382,105 @@ def test_an_untagged_fence_is_rejected(tmp_path) -> None:
     built = build_notebooks.build_one(good)
     assert all(c["cell_type"] == "markdown" for c in built["cells"]), (
         "an output fence became a code cell; it would execute instead of claim"
+    )
+
+
+def test_every_env_line_is_a_plain_key_equals_value() -> None:
+    """`Makefile` does `include .env`, so a quoted or spaced value breaks it.
+
+    The Makefile loads `.env` with GNU make's `include` plus a bare `export`,
+    which is how every recipe gets `POSTGRES_PORT` and friends. That is safe only
+    because every line in `.env` is a plain `KEY=value`.
+
+    It is *not* safe in general, and the failure would be silent and confusing:
+
+    * a quoted value keeps its quotes, because make does not strip them — so
+      `POSTGRES_PASSWORD="s3cret"` exports the literal `"s3cret"` and every
+      connection fails with a wrong-password error naming a password that is
+      correct on screen;
+    * a line like `export FOO=bar` becomes a make variable named `export FOO`;
+    * a comment line starting with a tab is a recipe line, not a comment.
+
+    So this asserts the *shape* of `.env` rather than its contents — the file holds
+    real credentials and is never committed, so a test cannot read its values.
+    """
+    # The whole line has to be `KEY=value` — not merely *start* with `KEY=`.
+    #
+    # The first version of this test used `^[A-Za-z_][A-Za-z0-9_]*=` and was
+    # fooled by `QUOTED_SECRET="with quotes"`, which matches it: the regex never
+    # looked at the value. That is precisely the case the test exists for, so a
+    # guard that cannot see the quoted value is a guard that reports the one thing
+    # it should catch.
+    #
+    # What make does with the value, and why each costs something:
+    #
+    #   FOO="bar"   exports `"bar"` — quotes included, because make does not strip
+    #               them. The password on screen is correct and every connection
+    #               fails on it.
+    #   FOO=a b     exports `a b` and passes the second word to the recipe as $1.
+    #   FOO=a\ b    exports `a\ b` — a literal backslash in the value.
+    #
+    # So the value may not contain a quote, a space or a backslash.
+    lines = Path(".env").read_text(encoding="utf-8").split("\n")
+    offenders = [
+        f"{number}: {line!r}"
+        for number, line in enumerate(lines, start=1)
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=[^\s\"'\\]*$", line)
+    ]
+    assert not offenders, (
+        "`.env` has lines that GNU make's `include` cannot read as variables. "
+        "The Makefile includes it to export these to every recipe, and a quoted "
+        "or spaced value is exported with the quote or the space still in it.\n"
+        + "\n".join(f"    {line}" for line in offenders)
+    )
+
+
+def test_the_makefile_loads_env_for_every_recipe() -> None:
+    """`make` must hand `POSTGRES_PORT` to recipes, not only to `docker compose`.
+
+    This was the cause of a failure that named the wrong thing entirely.
+    `make notebooks-open` launched JupyterLab with no `POSTGRES_PORT` in its
+    environment, so `dsn()` fell back to its defaults — port 5432 — and the first
+    cell of notebook 01 died with::
+
+        connection to server at "127.0.0.1", port 5432 failed:
+        FATAL:  password authentication failed for user "wwtp"
+
+    A reader reads that as a wrong password. The tell is the port: this project's
+    database is on 55433 and nothing in the repository has ever run on 5432.
+
+    `docker compose` loads `.env` itself, which is exactly why `make up` and
+    `make seed` always worked and hid the gap — compose was the only thing loading
+    it, and anything reaching Postgres directly was relying on its caller to export
+    the environment by hand.
+
+    This asserts the Makefile contains the `include`/`export` pair and that they
+    are inside the `ifneq (,$(wildcard .env))` guard, rather than executing a
+    recipe, because a recipe that opens a database cannot run in this test.
+    """
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+
+    assert "include .env" in makefile, (
+        "the Makefile no longer includes .env, so every recipe that reaches "
+        "Postgres directly gets dsn()'s defaults instead of this project's port"
+    )
+    assert re.search(r"^\s*export\s*$", makefile, re.MULTILINE), (
+        "the Makefile includes .env but does not export it, so the values are "
+        "make variables and never reach a recipe's environment"
+    )
+
+    guarded = re.search(
+        r"ifneq\s*\(\s*,\s*\$\(wildcard \.env\)\)\s*\n"
+        r"(?:.*\n)*?include \.env\s*\n"
+        r"(?:.*\n)*?export\s*\n"
+        r"endif",
+        makefile,
+    )
+    assert guarded, (
+        "`include .env` and `export` are present but not inside a "
+        "`ifneq (,$(wildcard .env))` guard. Without the guard a fresh clone with "
+        "no .env fails at parse time instead of telling the reader to copy "
+        ".env.example"
     )

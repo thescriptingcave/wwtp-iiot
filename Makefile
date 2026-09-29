@@ -18,6 +18,36 @@ SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
 .DEFAULT_GOAL := help
 
+# Every recipe gets the values from `.env`.
+#
+# This was missing, and the failure it produced was a lie about where it came
+# from: `make notebooks-open` launched JupyterLab with no `POSTGRES_PORT`, so
+# `storage.postgres.schema.dsn()` fell back to its defaults — port 5432, password
+# "wwtp" — and the first cell of notebook 01 died with
+#
+#     connection to server at "127.0.0.1", port 5432 failed:
+#     FATAL:  password authentication failed for user "wwtp"
+#
+# which reads like a wrong password rather than a wrong port. The port is the
+# tell: this project's database is on 55433 and nothing here has ever run on 5432.
+#
+# `docker compose` loads `.env` itself, which is exactly why `make up` and
+# `make seed` always worked and hid this. Compose was the only thing loading it.
+# Anything reaching Postgres directly — `make psql`, `make query`, `make test`,
+# `make notebooks-open` — had to be handed the environment by its caller, and I
+# had been doing that by hand in my own shell, which is precisely the condition
+# under which a missing line goes unnoticed.
+#
+# `include` reads `.env` as make variables; `export` (with no arguments) puts all
+# of them into every recipe's environment. Safe here because every line in `.env`
+# is a plain `KEY=value` — a quoted value would keep its quotes, because make
+# does not strip them. `tests/test_readme_claims.py` asserts that shape so a
+# future `.env` that breaks this fails a test rather than a notebook.
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
 # The venv's python, not `uv run` — which needs --no-sync or it strips the
 # optional extras and then everything that touches a database fails with an
 # ImportError that looks like a code problem.
@@ -28,6 +58,17 @@ PY := .venv/bin/python
 # week is a bad afternoon. See the guard in tests/integration/conftest.py.
 TEST_DB    ?= wwtp_test
 TEST_PORT  ?= 55432
+
+# Where `make notebooks-open` serves. Pinned, not left to Jupyter: port 8888 was
+# already in use on this machine and Jupyter moved to 8889 *silently*, so the URL
+# in the log stopped matching the documented one and the only symptom was a
+# connection refused. A fixed port turns that into a visible collision.
+#
+# The token is minted here rather than in the recipe. JupyterLab 4 prints its own
+# URL with the token masked as `token=...`, so the line it logs is not a URL
+# anyone can open — the target has to print its own.
+NB_PORT  ?= 8899
+NB_TOKEN := $(shell uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
 
 .PHONY: help check lint lint-all lint-debt types test integration sql sql-check \
         up seed wait down clean logs \
@@ -114,9 +155,14 @@ notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 	$(PY) -m tools.build_notebooks
 
 notebooks-open:  ## open JupyterLab on the notebooks, in this project's venv
-	@echo "── kernel: choose 'Python 3 (ipykernel)' if JupyterLab offers a list ──"
-	MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab --notebook-dir=notebooks \
-		--ServerApp.token=$$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
+	@echo "  kernel : Python 3 (ipykernel) - check the status bar says .venv"
+	@echo "  open   : http://127.0.0.1:$(NB_PORT)/lab?token=$(NB_TOKEN)"
+	@echo "  stop   : Ctrl-C"
+	@MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab \
+		--notebook-dir=notebooks \
+		--ServerApp.port=$(NB_PORT) \
+		--ServerApp.token=$(NB_TOKEN) \
+		--no-browser
 
 # ── the stack ────────────────────────────────────────────────────────────────
 

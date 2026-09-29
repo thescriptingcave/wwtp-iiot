@@ -74,6 +74,7 @@ being told something it does not need to know.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -95,6 +96,38 @@ VERBATIM = {"sql", "bash", "sh", "shell", "console", "output", "text", "yaml"}
 
 FENCE = re.compile(r"^```([a-zA-Z0-9_+-]*)\s*$")
 SKIP_MARKER = "<!-- check: skip -->"
+
+
+def cell_id(kind: str, text: str) -> str:
+    """A stable cell identifier, from the cell's own content.
+
+    **This exists because Jupyter rewrites notebooks that have no `id`, and a
+    notebook that Jupyter rewrites no longer matches its source.**
+
+    `nbformat` warns about the missing field and hands you `normalize()`, which
+    adds one. JupyterLab calls it on load, marks the document dirty, and writes
+    the result back on save — so merely *opening* `01-meet-the-plant.ipynb` in
+    JupyterLab was enough to make `make notebooks` report it out of step. A gate
+    that fails because someone followed the instructions is worse than no gate.
+
+    So the id is derived from the cell's text rather than generated at random:
+    rebuilding from an unchanged source produces an unchanged file, and editing a
+    cell changes its id, which is what a notebook diff wants anyway.
+
+    nbformat requires `[a-zA-Z0-9-_]+`, 1-64 characters. The `c`-prefix keeps it
+    from starting with a digit, and eight hex characters is far short of 64.
+    """
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=4).hexdigest()
+    return f"c-{kind}-{digest}"
+
+
+def as_lines(text: str) -> list[str]:
+    """`source` as nbformat writes it: a list of lines, each keeping its newline.
+
+    A single joined string is valid nbformat and reads the same, but it is not
+    what Jupyter saves, so it is drift the moment the file is opened.
+    """
+    return text.splitlines(keepends=True)
 
 #: A fenced block with no language tag. In a notebook source this is ambiguous
 #: and it is the one authoring mistake the gate cannot otherwise catch: the
@@ -155,8 +188,12 @@ def _cells(markdown: str) -> list[dict[str, Any]]:
     def flush() -> None:
         text = "\n".join(buffer).strip("\n")
         if text.strip():
-            cells.append({"cell_type": "markdown", "metadata": {},
-                          "source": text})
+            cells.append({
+                "cell_type": "markdown",
+                "id": cell_id("md", text),
+                "metadata": {},
+                "source": as_lines(text),
+            })
         buffer.clear()
 
     while i < len(lines):
@@ -189,14 +226,24 @@ def _cells(markdown: str) -> list[dict[str, Any]]:
         skipped, skip_next = skip_next, False
         text = "\n".join(body).strip("\n")
         if language in EXECUTED and not skipped:
-            cells.append({"cell_type": "code", "execution_count": None,
-                          "metadata": {}, "outputs": [], "source": text})
+            cells.append({
+                "cell_type": "code",
+                "id": cell_id("py", text),
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": as_lines(text),
+            })
         else:
             label = f"```{language}\n{text}\n```"
             if skipped:
                 label = "<!-- not executed: `check: skip` -->\n\n" + label
-            cells.append({"cell_type": "markdown", "metadata": {},
-                          "source": label})
+            cells.append({
+                "cell_type": "markdown",
+                "id": cell_id("md", label),
+                "metadata": {},
+                "source": as_lines(label),
+            })
     flush()
     return cells
 

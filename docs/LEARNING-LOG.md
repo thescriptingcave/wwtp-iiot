@@ -3427,3 +3427,89 @@ moves, the further apart the two estimators get") that the single example could
 not have supported.
 
 Ranking to find the worst case is both more honest and more useful than picking one.
+
+### The port was the fault, and the error named the password
+
+Notebook 01's first cell died with:
+
+    connection to server at "127.0.0.1", port 5432 failed:
+    FATAL:  password authentication failed for user "wwtp"
+
+The password was correct. **The port was not** — this project's database is on
+**55433**, and `storage.postgres.schema.dsn()` defaults to 5432. The message named
+the wrong thing, and I had written a `make notebooks-open` target that handed the
+kernel no `POSTGRES_PORT` at all.
+
+**`docker compose` loads `.env` itself, which is exactly why nobody had noticed.**
+`make up` and `make seed` always worked. Compose was the only thing in the
+repository loading that file, and anything reaching Postgres directly —
+`make psql`, `make query`, `make test`, `make notebooks-open` — was relying on its
+caller to export the environment by hand. **I had been doing that by hand in my
+own shell**, which is precisely the condition under which a missing line stays
+missing.
+
+Fixed at the Makefile level rather than in the notebook:
+
+    ifneq (,$(wildcard .env))
+    include .env
+    export
+    endif
+
+`include` reads `.env` as make variables; a bare `export` puts all of them into
+every recipe's environment. Safe here because every line is a plain `KEY=value` —
+and now tested, because **make does not strip quotes**, so `FOO="bar"` exports the
+literal `"bar"`, the password on screen is correct, and every connection fails on
+it.
+
+### A guard I wrote that could not catch its own target
+
+`test_every_env_line_is_a_plain_key_equals_value` used `^[A-Za-z_][A-Za-z0-9_]*=`,
+which **matches `QUOTED_SECRET="with quotes"`** — the regex never looked at the
+value. Found by mutation: appended a quoted line, the test passed, and the case it
+exists for walked straight through.
+
+The regex now has to match the whole line with a value free of quotes, spaces and
+backslashes, and it names what make does to each. Second time in this work that a
+guard's regex was narrower than the prose it guarded.
+
+### Jupyter rewrites notebooks that have no cell `id`
+
+The bigger find, and it was waiting behind the port.
+
+`nbformat` warns that cells lack an `id` field and offers `normalize()`. JupyterLab
+calls it on load, marks the document dirty, and writes it back on save — so
+**merely opening `01-meet-the-plant.ipynb` and pressing Ctrl-S** added an `id` to
+every cell and split every `source` from a single string into a list of lines. A
+585-line diff, all of it generated, none of it requested.
+
+> A gate that fails because someone followed the instructions to use the tool is
+> worse than no gate. The instruction and the gate were contradicting each other
+> and I had only just written both.
+
+Fixed by generating the file **in the form Jupyter itself writes**: `source` as a
+list of lines, and `id` derived from `blake2b(cell text)` rather than randomly, so
+an unchanged source still produces an unchanged file. Verified by launching
+JupyterLab through `make`, opening notebook 01, saving it, and confirming
+`git status` was clean and `--check` exited 0.
+
+The `MissingIDFieldWarning` that had been in every gate run since the notebooks
+existed is now gone, which is the other half of the point: it was not noise, it was
+the tool telling me the file was not in the shape it wanted to own.
+
+### A Jupyter checkpoint got committed
+
+`.ipynb_checkpoints/` appeared the moment anyone opened a notebook, and my first
+attempt at this commit included a mid-session copy of a generated file. Now
+git-ignored, with the reason: it is drift with a timestamp on it.
+
+### `@NB_PORT ?= 8899` inside a recipe is a shell command
+
+Writing make variables as recipe lines fails with `NB_PORT: command not found`,
+because a tab-prefixed line is a recipe and `?=` means something else there. Both
+variables now live beside `TEST_PORT` at make level.
+
+JupyterLab 4 also prints its own URL with the token **masked as `token=...`**, so
+the target mints the token and prints the URL itself. And the port is pinned at
+8899 rather than left to Jupyter, which had silently moved to 8889 because 8888 was
+in use — a failure that would have shown up as a connection refused against the
+documented URL.

@@ -132,3 +132,9 @@ temp/
 # picture of a database that no longer exists — the same failure mode as a pasted
 # output block, which is why `notebooks/src/*.md` carries the claims instead.
 notebooks/figures/
+
+# JupyterLab's autosave checkpoints. A `.ipynb_checkpoints/` directory appears the
+# first time anyone opens a notebook, and its contents are a mid-session copy of a
+# file that is generated from `notebooks/src/*.md` anyway — so it is drift with a
+# timestamp on it, and committing one puts a half-written notebook in the history.
+notebooks/.ipynb_checkpoints/

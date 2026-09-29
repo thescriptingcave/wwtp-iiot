@@ -34,7 +34,8 @@ uv sync --extra protocols --extra storage --extra analysis --extra serve
 make notebooks-open
 ```
 
-Then open `01-meet-the-plant.ipynb`.
+It prints a URL with a token in it — use that one. JupyterLab serves on `8899`
+and mints the token itself.
 
 **Use the `Python 3` kernel from this venv.** A `jupyter` earlier on your `PATH` —
 from a system Python, conda, pyenv — will open these notebooks under the *wrong
@@ -44,6 +45,20 @@ why JupyterLab lives in the venv: `uv run` and the dependencies are the same
 environment by construction. If JupyterLab shows a kernel picker, pick
 `Python 3 (ipykernel)` and check the status bar says
 `/Users/dev/Developer/wwtp-iiot/.venv`.
+
+**The database port comes from `.env`,** which the `Makefile` reads and exports to
+every recipe. If you start Jupyter some other way — `uv run jupyter lab`, a
+notebook opened in an editor, a bare `jupyter` — load `.env` yourself first, or
+`dsn()` falls back to port 5432 and you get:
+
+```
+connection to server at "127.0.0.1", port 5432 failed:
+FATAL:  password authentication failed for user "wwtp"
+```
+
+which names a *password* when the real fault is the *port*. This project's database
+is on **55433**; nothing in the repository has ever run on 5432, so the port in
+that message is the tell.
 
 ## How they are authored
 
