@@ -52,9 +52,32 @@ CLEAN_ENV = {
 }
 
 
+def _require_env_file() -> Path:
+    """`.env`, or a skip.
+
+    **The skip is the point, and it was unreachable when it was written.** `.env`
+    is gitignored, so a runner has none by design. The first version raised
+    `FileNotFoundError` on three tests in CI — there was a `pytest.skip` a few
+    lines further down, but the `read_text` that would have told it to skip came
+    first, so the skip could never be reached. The same reasoning is already
+    written out in `test_the_makefile_loads_env_for_every_recipe`: the *mechanism*
+    has to exist everywhere, but demonstrating it needs a file to load.
+
+    `test_a_missing_env_is_a_warning_and_not_a_failure` is the test that runs
+    everywhere instead, and it builds its own root rather than needing one.
+    """
+    env_file = ROOT / ".env"
+    if not env_file.is_file():
+        pytest.skip(
+            "no .env here (it is gitignored, and a runner has none); the "
+            "mechanism still has to exist, but there is nothing for it to load"
+        )
+    return env_file
+
+
 def _env_value(name: str) -> str:
     """One `KEY=value` out of `.env`, without sourcing the whole file."""
-    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+    for line in _require_env_file().read_text(encoding="utf-8").splitlines():
         if line.startswith(f"{name}="):
             return line.split("=", 1)[1].strip().strip('"')
     pytest.skip(f"{name} is not in .env")
@@ -161,7 +184,14 @@ def test_both_recipe_paths_see_the_same_environment(
     The bisection, kept as a test. Before the fix the `;` line printed the port
     and the line without it printed `NONE` — same target, same make, same `.env`.
     If the two ever disagree again the fast path has come back.
+
+    It needs a `.env` to compare anything *against*. On a runner there is none, and
+    the two runs then fail for two different reasons — the same `env.sh` error,
+    reported against a different line of the throwaway Makefile each time — which
+    is a disagreement about the harness rather than about the fast path. Skipped
+    rather than reported, and the mechanism is covered here instead.
     """
+    _require_env_file()
     _, makefile = probe
     fast = _run(["-C", str(ROOT), "-f", str(makefile), "fast-path-probe"])
     slow = _run(["-C", str(ROOT), "-f", str(makefile), "slow-path-probe"])

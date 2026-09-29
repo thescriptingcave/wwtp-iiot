@@ -120,19 +120,40 @@ raw = series.value.mean()  # what AVG(value) does in SQL
 print(f"mean of {len(buckets)} hourly means : {unweighted:.6f}")
 print(f"count-weighted mean of the same   : {weighted:.6f}")
 print(f"AVG(value) over the raw readings  : {raw:.6f}")
-print(f"weighted vs AVG difference        : {abs(weighted - raw):.2e}")
+
+# **An assertion, not a printed difference.** The first version printed
+# `abs(weighted - raw)` in scientific notation and claimed `0.00e+00` — exactly
+# zero. That is not a fact about the data. Both sides sum the same 168 terms in
+# **a different order**, and floating-point addition is not associative, so the
+# last bit depends on the platform's vector width and on which pairwise
+# summation numpy was built with. The number is real and it is a property of the
+# *machine*: on the CI runner it printed `1.33e-15`, on this laptop `0.00e+00`,
+# from the same rows in the same database.
+#
+# So the claim is stated the only way it can be checked on two machines: are the
+# two numbers equal to within floating-point noise? That is a yes/no about the
+# arithmetic rather than a rendering of the noise.
+within_noise = abs(weighted - raw) < 1e-9
+print(f"the two agree to nine decimal places: {within_noise}")
+assert within_noise, "the weighted mean is not AVG(value), and this notebook is wrong"
 ```
 
 ```output
 mean of 168 hourly means : 23.934729
 count-weighted mean of the same   : 29.596180
 AVG(value) over the raw readings  : 29.596180
-weighted vs AVG difference        : 0.00e+00
+the two agree to nine decimal places: True
 ```
 
 **The count-weighted mean of the hourly means is `AVG(value)`**, to floating-point
-precision — the difference above is the rounding of the last digit, and it is that
-small for any data, because it is the same sum divided by the same count.
+precision — they differ by about a part in 10<sup>15</sup>, which is the rounding of
+the last digit, and they are that close for any data, because it is the same sum
+divided by the same count.
+
+The gap between the two numbers is the point, and it is *not* floating-point noise:
+**23.9 against 29.6** is a whole quarter. The two are equal only because the
+weights happen to reconstruct the raw sum. Remove the weighting and you have a
+different question, answered differently — which is the section below.
 
 That means `AVG` over the raw table is not a shortcut that is close to the right
 answer. It **is** the right answer to a specific question:

@@ -34,8 +34,9 @@ A fifth notebook gate — **no number that depends on the disk, the clock or the
 host** — scans every source once rather than being per-notebook, so it is not in
 that count. It is worth naming here because it is the only one of the five that
 cannot be settled by running the notebooks: the other four compare a number
-against a run *on the same machine*, and `hypertable_size()` passed all four on
-the laptop that wrote notebook 03 and failed on a runner.
+against a run *on the same machine*, and both of the numbers that have been fixed
+so far passed all four on the laptop that wrote them — `hypertable_size()` in
+notebook 03, and a printed floating-point difference in notebook 04.
 
 Per file, for the ones worth naming:
 

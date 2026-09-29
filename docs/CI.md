@@ -250,6 +250,20 @@ moment `set -a` moved inside an `if [ -f … ]`. The guard was matching the file
 — unindent the file until the old regex matches again — look the same from a
 distance, and only one of them leaves the behaviour intact.
 
+Fixing `env.sh` is not the same as fixing its tests. `tests/test_makefile_env.py`
+had a `pytest.skip` for "`POSTGRES_PORT` is not in `.env`" sitting *after* the
+`read_text()` that raises `FileNotFoundError` when there is no `.env` at all — so on
+a runner the three tests failed and the skip was unreachable. The guard has to come
+first, and the tests that need a file to demonstrate anything now ask for one
+explicitly. What runs everywhere instead is
+`test_a_missing_env_is_a_warning_and_not_a_failure`, which builds its own
+`.env`-less root and deletes nothing.
+
+The unit suite is now exercised in both shapes: `make test` with `.env`, and the
+same pytest invocation under `env -i` with the workflow's variables and no `.env` at
+all. Running the gate the way the runner runs it costs nothing, and it found a
+fourth instance of this class that no log had — see below.
+
 ## What CI does not cover, stated plainly
 
 * **The flows' JavaScript is not executed.** Their *SQL* is, against the same

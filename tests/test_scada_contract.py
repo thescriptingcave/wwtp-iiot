@@ -1050,8 +1050,35 @@ def test_the_scada_service_itself_is_valid() -> None:
     if shutil.which("docker") is None:
         pytest.skip("no docker")
 
-    env = {**os.environ, "POSTGRES_PASSWORD": os.environ.get(
-        "POSTGRES_PASSWORD", "unused-in-this-check")}
+    # **Every variable compose interpolates, not just this one.** The fallback
+    # below covers `POSTGRES_PASSWORD` and nothing else, so on a machine with no
+    # `.env` the check failed on the *next* required variable:
+    #
+    #     error while interpolating services.gateway.environment.… is missing
+    #
+    # which says nothing about the volume arrangement this test is about. The
+    # same situation is a skip in
+    # `test_readme_claims.py::test_the_compose_file_is_valid`, and one of the two
+    # shapes is wrong.
+    #
+    # So the check is skipped when the environment cannot answer it, and what it
+    # actually asserts — the read-only bind at `/flows` and the credential volume
+    # nested inside the writable one — is read from `compose.yaml` below and does
+    # not need a container at all. `docker compose config` confirms the file is
+    # *loadable*; it was never the thing that catches this.
+    env = {**os.environ}
+    required = (
+        "POSTGRES_PASSWORD",
+        "GATEWAY_DB_PASSWORD",
+        "WEB_DB_PASSWORD",
+        "GRAFANA_ADMIN_PASSWORD",
+    )
+    missing = [name for name in required if not env.get(name)]
+    if missing:
+        pytest.skip(
+            f"compose cannot be interpolated without {', '.join(missing)}; "
+            "these come from .env, which is gitignored"
+        )
     result = subprocess.run(
         ["docker", "compose", "--profile", "scada", "config", "-q"],
         capture_output=True, text=True, check=False, env=env,

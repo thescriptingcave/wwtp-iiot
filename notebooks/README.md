@@ -223,12 +223,23 @@ re-seed would turn eleven green notebooks into eleven quietly different ones.
 
 Gates 1 to 4 all compare a number against a run **on the machine doing the
 running**, so none of them can catch a number that is true here and false
-elsewhere. `hypertable_size()` was notebook 03's cost column, beside its row
-counts; the rows matched on a CI runner to the digit and the megabytes did not,
-because a hypertable is measured in compressed chunks and the compression depends
-on the order the rows were written. The gate's own message said *re-run it and
-update the block*, and following that would have committed a number that is wrong
-on the laptop it was written on.
+elsewhere. Two were, both on CI:
+
+* `hypertable_size()` was notebook 03's cost column, beside its row counts. The
+  rows matched on a runner to the digit and the megabytes did not, because a
+  hypertable is measured in compressed chunks and the compression depends on the
+  order the rows were written.
+* `abs(weighted - raw)` was notebook 04's proof that a count-weighted mean of
+  hourly means *is* `AVG(value)`. It claimed `0.00e+00` — exactly zero. Both sides
+  sum the same 168 terms in a different order, and floating-point addition is not
+  associative, so the last bit depends on the platform's vector width. The runner
+  printed `1.33e-15` from the same rows.
+
+The gate's message for the first one said *re-run it and update the block*, and
+following that would have committed a number that is wrong on the laptop it was
+written on. The second is now an assertion (`abs(weighted - raw) < 1e-9`) rather
+than a printed difference: a yes/no about the arithmetic that can be true on two
+machines, instead of a rendering of the noise.
 
 So a fifth rule scans the **python fences of every source** for calls that cannot
 produce a portable number — `hypertable_size`, `pg_total_relation_size`,
@@ -238,10 +249,11 @@ notebook 03 has to *name* `hypertable_size()` to explain why the column is gone,
 and a rule that cannot be explained at the site it applies to gets disabled where
 it hurts.
 
-It catches the call, not the effect. A notebook that hardcodes `1043` with no call
-in it passes this and fails gate 1 on a runner — which is the honest limit of a
-source-level rule, and the reason the list exists rather than the reason it is
-sufficient.
+It catches the call, not the effect. Notebook 04's floating-point difference was
+caught by a human reading the output and recognising an exact zero as too good, and
+a notebook that hardcodes `1043` with no call in it passes the rule and fails gate
+1 on a runner. That is the honest limit of a source-level rule, and the reason the
+list exists rather than the reason it is sufficient.
 
 ## Related
 
