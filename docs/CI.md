@@ -176,6 +176,46 @@ does:
 
 and that is the assertion which would have caught it.
 
+## Two gates that had never passed, and why a local run could not tell
+
+Found by reading `gh run list`, after three consecutive failed pushes. Both are
+fixed and both were invisible on a laptop, for reasons worth stating — a gate that
+is green locally and red on the runner is a gate that has been telling you
+something narrower than you think.
+
+### The setup step checked the roles instead of creating them
+
+```yaml
+- run: uv run python -m storage.postgres.roles --check
+```
+
+`--check` reports and changes nothing. On a fresh service container there is
+nothing to report *on*, so the step created no roles and then printed
+`all 2 roles are as declared` — **true, and empty**. Two minutes later the SQL
+course failed with `role "wwtp_gateway" does not exist`, and then with
+`password authentication failed` for a role that had never been created.
+
+A laptop never sees this because `init-db` does all three things — schema, group
+roles, login roles — and CI reproduced only the first two. The step is now
+**apply, then check**, and the check is a separate step so it is an assertion
+rather than the same command twice.
+
+### The lesson gate's port allocator only fails on Linux
+
+`82/87 snippets ran`, five failures, all `address already in use` on port 48500.
+`free_port()` asked the OS for port 0 and, when the answer came back below its own
+floor, returned the constant floor instead — so every such snippet got the same
+port. **macOS's ephemeral range starts at 49152 and Linux's at 32768**, so the
+branch cannot fire on a Mac. The fix for a constant was a constant behind a
+platform-dependent branch.
+
+It now walks up from the floor until a bind *succeeds*, and remembers every port
+it has handed out so a snippet that leaks its server cannot cause the next
+snippet's failure. `tests/test_lessons_gate_ports.py` reproduces the Linux
+ephemeral range on a Mac by substituting `socket.socket`, and asserts the premise
+— that macOS cannot take that branch — so the next reader of a green local run
+learns why it is not evidence.
+
 ## What CI does not cover, stated plainly
 
 * **The flows' JavaScript is not executed.** Their *SQL* is, against the same

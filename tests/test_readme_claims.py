@@ -739,13 +739,14 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 65,
+    "tests/test_readme_claims.py": 66,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
     "tests/test_alarm_engine.py": 17,
     "tests/test_seed.py": 5,
     "tests/test_makefile_env.py": 6,
+    "tests/test_lessons_gate_ports.py": 4,
 }
 
 

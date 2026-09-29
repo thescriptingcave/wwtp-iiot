@@ -257,15 +257,53 @@ jobs:
       - name: install the project
         run: uv sync --all-extras --frozen
 
-      - name: apply the schema, contract and roles
+      # **Apply, then check.** `--check` reports and changes nothing, and on a
+      # fresh container there is nothing to report *on* — so the step that was
+      # here created no roles at all and then said "all 2 roles are as declared",
+      # which is true and useless. The two login roles did not exist either, and
+      # the SQL course failed two minutes later with
+      #
+      #     ERROR:  role "wwtp_gateway" does not exist
+      #     STATEMENT:  SET LOCAL ROLE wwtp_gateway
+      #
+      # and again, as an authentication failure for a role that had never been
+      # created. This step was a *check* where the compose file has an *apply*,
+      # and the job was missing the apply.
+      #
+      # The login roles come from `storage.postgres.login_role`, at run time and
+      # from the environment, because a role needs a password and a password in
+      # a migration is a password in a git history. `init-db` does this on a
+      # laptop; this job has to do it itself, because there is no compose here —
+      # the database is a service container.
+      - name: apply the schema, the group roles, and the login roles
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_DB: wwtp
+          GATEWAY_DB_ROLE: wwtp_gateway
+          WEB_DB_ROLE: wwtp_ui
+          GATEWAY_DB_PASSWORD: gatewaytestpass
+          WEB_DB_PASSWORD: uitestpass
+        run: |
+          uv run python -m storage.postgres.schema --log-level INFO
+          uv run python -m storage.postgres.roles --log-level INFO
+          uv run python -m storage.postgres.login_role --name wwtp_gateway
+          uv run python -m storage.postgres.login_role --name wwtp_ui
+
+      - name: and then check them
+        # The apply above is the fix; this is the assertion that it took. Without
+        # it a step that created nothing would report success, which is exactly
+        # what happened here.
         env:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
           POSTGRES_DB: wwtp
         run: |
-          uv run python -m storage.postgres.schema --log-level INFO
           uv run python -m storage.postgres.roles --check
+          uv run python -m storage.postgres.login_role --name wwtp_gateway --verify
+          uv run python -m storage.postgres.login_role --name wwtp_ui --verify
 
       - name: create the test database
         env:

@@ -3787,3 +3787,62 @@ skipped in every CI run, was not marked `integration`, and **had never been
 checked once**. Same shape, third face: a `try`/`skip` around a connection is a
 claim that the test needs one, and the marker is where that claim has to be
 recorded.
+
+## CI had been failing on every push, on two gates, for three runs
+
+Found by reading `gh run list` rather than by being told. Both failures were
+invisible locally, which is the part worth writing down.
+
+### `--check` where the compose file has an apply
+
+The `integration` job's setup step was
+
+    uv run python -m storage.postgres.roles --check
+
+and it reported `all 2 roles are as declared` on a **fresh container with no
+roles in it**. True, and empty: `--check` reports and changes nothing, so the
+step created nothing and then observed the nothing it had not created. Two
+minutes later the SQL course failed 583 times with
+
+    ERROR:  role "wwtp_gateway" does not exist
+    STATEMENT:  SET LOCAL ROLE wwtp_gateway
+    FATAL:  password authentication failed for user "wwtp_gateway"
+
+A check where an apply belongs, reading as a check. `init-db` on a laptop does
+schema → group roles → **login roles**, and the job reproduced only the first two
+and then *verified* instead of applying. Both roles now applied, then verified —
+separately, so the verification is an assertion rather than the same command a
+second time.
+
+### `free_port()` was green on macOS and red on Linux
+
+`82/87 snippets ran` on every CI run, five failures, all
+`address already in use ('127.0.0.1', 48500)`. The allocator asked the OS for port
+0 and, if the port came back **below** its own floor of 48500, returned the
+constant 48500 anyway:
+
+    chosen = <port from the OS>
+    if chosen < FIRST_SNIPPET_PORT:
+        return FIRST_SNIPPET_PORT        # every snippet gets the same port
+
+macOS's ephemeral range starts at 49152, so the branch **cannot fire on a Mac**.
+Linux's starts at 32768, so it fires for roughly half of all calls. The
+replacement for a constant had kept the constant, behind a branch that only the
+machine I do not use takes.
+
+It is now: bind port 0, and if the answer is below the floor or already handed
+out, **walk up from the floor until a bind succeeds** — so the port returned is
+known free rather than believed free — and remember every port handed out in this
+process, so a snippet that leaks its server cannot have its port reused and the
+failure land on the wrong lesson.
+
+The test file is the interesting part. It substitutes `socket.socket` so that
+`bind(("127.0.0.1", 0))` lands below the floor, which reproduces the CI failure
+on a Mac; a mock of `free_port` would have been asserting against the shape of
+the fix rather than its behaviour. And it asserts the premise too — that macOS
+*cannot* take the branch — so the next reader of a green local run learns why
+that is not evidence.
+
+> A gate that passes on the machine you are standing on and fails on the runner
+> has told you the gate is portable and the *assertions* are not. The bug was
+> never a port; it was an operating-system default, and I tested one of them.

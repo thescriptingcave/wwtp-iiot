@@ -91,6 +91,10 @@ PORT = 48400
 #: services in this project occupy, so a lesson can never take one of them.
 FIRST_SNIPPET_PORT = 48500
 
+#: Ports this process has already handed to a snippet. See `free_port` — a
+#: snippet that leaks its server must not cause the *next* snippet's failure.
+_HANDED_OUT: set[int] = set()
+
 
 @dataclass(frozen=True)
 class Snippet:
@@ -144,17 +148,54 @@ def free_port() -> int:
     ran second, which reads like a bug in the lesson rather than a clash in the
     authoring.
 
-    A constant was the original mistake. Asking the OS for a free port is two
-    lines and cannot collide, and the race window between asking and binding is
-    not one that a lesson's own snippet is going to lose.
+    A constant was the original mistake, and then the *replacement* was wrong in
+    a way that only showed up in CI. Asking the OS for port 0 gets a free port
+    from the **ephemeral range**, and the ephemeral range is platform-specific:
+    macOS hands out 49152+, Linux hands out 32768+. The first version treated a
+    port below `FIRST_SNIPPET_PORT` as unusable and returned the constant
+    instead — so on Linux, where roughly half the ephemeral range is below it,
+    every such snippet was given **the same 48500**, and the gate died with
+
+        OSError: [Errno 98] address already in use ('127.0.0.1', 48500)
+
+    on five snippets. On a Mac the branch never fired, so `make lessons` was
+    green locally and the job failed on every push. **The port is not a constant
+    problem, it is an operating-system-default problem**, and only one of the two
+    was tested.
+
+    Two fixes, because one is not enough. If the OS hands back a port below our
+    floor, walk up from the floor until a bind succeeds — every candidate is
+    verified by actually binding it, so the value returned is known free rather
+    than believed free. **And** remember every port handed out, so two calls in
+    one process never get the same one: a snippet that starts a server and does
+    not stop it would otherwise be handed its own port back by the next snippet,
+    and the failure would be reported against that *next* snippet rather than
+    against the one that leaked.
+
+    The race window between the probe closing and the snippet binding is
+    unchanged, and is not one that a lesson's own snippet is going to lose.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         chosen: int = probe.getsockname()[1]
-    if chosen < FIRST_SNIPPET_PORT:
-        # Keep clear of the project's real ports even if the OS hands one back.
-        return FIRST_SNIPPET_PORT
-    return chosen
+    if chosen >= FIRST_SNIPPET_PORT and chosen not in _HANDED_OUT:
+        _HANDED_OUT.add(chosen)
+        return chosen
+
+    for candidate in range(FIRST_SNIPPET_PORT, FIRST_SNIPPET_PORT + 200):
+        if candidate in _HANDED_OUT:
+            continue
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as walker:
+                walker.bind(("127.0.0.1", candidate))
+        except OSError:
+            continue
+        _HANDED_OUT.add(candidate)
+        return candidate
+    raise RuntimeError(
+        f"no free port in {FIRST_SNIPPET_PORT}-{FIRST_SNIPPET_PORT + 199}; "
+        f"the OS offered {chosen} and every port above the floor was taken"
+    )
 
 
 async def run_snippet(sn: Snippet) -> None:

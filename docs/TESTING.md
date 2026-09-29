@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 713 | no |
+| Unit, no database | 718 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -45,7 +45,7 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 65 |
+| `test_readme_claims.py` | 66 |
 | `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
@@ -53,6 +53,7 @@ Per file, for the ones worth naming:
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 | `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
 | `test_makefile_env.py` | 6 | that make's fast path cannot strip `.env` from a recipe again |
+| `test_lessons_gate_ports.py` | 4 | that the lesson gate's port allocation is not an OS default |
 
 **Every number in both tables is asserted by
 `tests/test_readme_claims.py`** — each per-file count by `pytest --co`, the
