@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 __all__ = [
+    "FIGURES",
     "apply_style",
     "describe",
     "figure",
@@ -339,12 +340,30 @@ def stamp(
     return ax
 
 
-def save(fig: Figure, name: str, *, directory: str = "notebooks/figures") -> Figure:
+#: Where `save` writes, anchored to the repository root rather than to the
+#: process's working directory.
+#:
+#: The default used to be the string `"notebooks/figures"`, which is correct only
+#: when the notebook is launched from the repository root. Launched from inside
+#: `notebooks/` — which is what a kernel does when you open the file from the
+#: Jupyter server in that directory — it writes `notebooks/notebooks/figures/`.
+#: That happened, and the duplicate tree was committed by accident. A path that
+#: depends on where you happen to be standing is not a path.
+FIGURES = Path(__file__).resolve().parent / "figures"
+
+
+def save(fig: Figure, name: str, *, directory: Path | None = None) -> Figure:
     """Write a figure to `notebooks/figures/`, creating the directory.
 
     Returns the figure rather than a path, so a notebook can `save(fig, "x")` and
     carry on without the call being a statement about control flow.
+
+    The directory is absolute and derived from this file, so the result does not
+    depend on the kernel's working directory. Figures are git-ignored: they are
+    derived from the data, and a committed PNG is a picture of a database that no
+    longer exists.
     """
-    Path(directory).mkdir(parents=True, exist_ok=True)
-    fig.savefig(Path(directory) / f"{name}.png")
+    target = FIGURES if directory is None else Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    fig.savefig(target / f"{name}.png")
     return fig

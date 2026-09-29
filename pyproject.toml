@@ -136,6 +136,11 @@ ignore = [
 # smaller scale. The alternative is a module whose import costs a second and
 # whose purpose is to be cheap.
 "notebooks/_style.py" = ["PLC0415"]
+# The notebook tooling imports nbformat/nbclient inside `main()` and the storage
+# helpers inside a function, on purpose: `check_notebooks` is imported by the test
+# suite for its claim parser, and paying a notebook stack's import cost to check a
+# string is the wrong trade.
+"tools/check_notebooks.py" = ["PLC0415", "BLE001"]
 # Lazy imports are a design decision in these files, not an oversight. The psycopg
 # driver must stay optional so the protocol code, the process model and the
 # deadband/spool logic all remain importable and testable without the storage

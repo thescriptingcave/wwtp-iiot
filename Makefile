@@ -32,7 +32,8 @@ TEST_PORT  ?= 55432
 .PHONY: help check lint lint-all lint-debt types test integration sql sql-check \
         up seed wait down clean logs \
         scada scada-flows scada-check dashboards dashboards-check grafana \
-        coverage coverage-json alarms browse watch psql query roles contract
+        coverage coverage-json alarms browse watch psql query roles contract \
+        lessons tableplus notebooks notebooks-build
 
 help:
 	@grep -E '^[a-z][a-zA-Z-]*:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -103,6 +104,14 @@ lessons:  ## every python snippet in courses/, against a live OPC UA server
 	$(PY) tools/check_lessons.py
 
 sql-check: seed sql  ## the one gate that needs a seeded week
+
+notebooks:  ## build, execute, and verify the claimed output of every notebook
+	@echo "── the analyst notebooks ──"
+	$(PY) -m tools.build_notebooks
+	$(PY) -m tools.check_notebooks
+
+notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
+	$(PY) -m tools.build_notebooks
 
 # ── the stack ────────────────────────────────────────────────────────────────
 

@@ -230,7 +230,7 @@ the questions the plant exists to answer.
 | [01](sql/01-beginner/) | `SELECT`, `WHERE`, aggregation, `time_bucket`, `CASE`, `HAVING` |
 | [02](sql/02-intermediate/) | CTEs, joins, window functions, and telling a quiet signal from a dead one |
 | [03](sql/03-advanced/) | Continuous aggregates and why a policy cannot refresh a backfill; chunks and chunk exclusion; retention; `EXPLAIN` and reading a plan |
-| `04-expert/` | Unwritten — time-weighted averages, change detection, query planning |
+| [04](sql/04-expert/) | Time-weighted averages, change detection, reading a plan, and the query behind the shipped Grafana panel |
 
 Every ````sql` block is executed against a live server:
 
@@ -249,6 +249,32 @@ float aggregate can change the *order* of a result and not just its value.
 note rather than a constraint: it records the six things the previous dialect could
 not do, and the design rule that was reverse-engineered from a write rejection and
 then written down as though it were a principle.
+
+## The analyst notebooks
+
+[`notebooks/`](notebooks/README.md) is a third track, and it is the one for people
+who already write pandas and SQL. It does not teach either. It is about **what
+the plant is telling you and what it is not** — a question the two courses set up
+but neither can answer, because both are about how to ask.
+
+Eleven notebooks. The pilot,
+[`02 — Three kinds of nothing`](notebooks/02-three-kinds-of-nothing.ipynb),
+establishes the vocabulary the rest of the series uses: *no data*, *bad data* and
+*no change* are three different facts, and `dropna` collapses all three into one
+indistinguishable hole.
+
+They are authored as markdown and generated as `.ipynb`, and the generated files
+are executed in CI. `make notebooks` rebuilds them, runs every one against the
+live database, and fails if a number in the prose no longer matches:
+
+```bash
+make notebooks
+```
+
+A number in the prose is a claim the gate checks against what the notebook
+actually printed. That is the discipline the SQL course already follows, applied
+to notebooks: `sql/00-foundations/00-03` drifted for months because its expected
+output described a dataset that no longer existed.
 
 ## Phase status
 

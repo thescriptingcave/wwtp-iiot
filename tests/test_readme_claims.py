@@ -212,34 +212,38 @@ def test_the_query_count_matches_what_the_runner_reports() -> None:
     )
 
 
-def test_03_advanced_is_not_described_as_unwritten() -> None:
+def test_no_course_stage_is_described_as_unwritten() -> None:
     """The worst of the five, because it says a *delivered* thing does not exist.
 
     `sql/03-advanced/` has four lessons — continuous aggregates, chunks,
     retention, `EXPLAIN` — and the course table still listed it as "Unwritten"
     after it was written and checked. A reader would have concluded the project
-    stopped at `02-intermediate`.
+    stopped at `02-intermediate`. It then said `04-expert/` was unwritten, which
+    was true for a while and then was not, and nobody noticed for the same reason
+    nobody noticed the first time: the table is prose, so it drifts silently.
 
-    `04-expert/` **is** unwritten, and saying so is correct, so the test asserts
-    both: the table has to be right in each direction, or it is not a table.
+    **So this test now asserts the absence of the word.** The original asserted
+    its *presence*, on the reasoning that a table has to be right in each
+    direction. That is true in general and false in practice: an unwritten stage
+    is transient, and a test that requires the word outlives the stage it was
+    written for. The requirement that survives is narrower and is the one that
+    matters — the table must never claim a delivered stage is missing.
+
+    If a stage is genuinely unwritten, describing it as unwritten is good practice
+    and is checked by review. What is not acceptable is the failure this guard
+    exists for: shipping the word next to something that exists.
     """
-    text = _readme()
-    assert "Unwritten" in text, (
-        "no stage is described as unwritten any more — if 04-expert has been "
-        "written, the table needs a description for it too"
-    )
-    assert "04-expert/` | Unwritten" in text or "`04-expert/` | Unwritten" in text
-
-    # `03-advanced/README.md` is the stage's index, not a lesson.
-    advanced = sorted(
-        p.name for p in Path("sql/03-advanced").glob("*.md")
-        if p.name != "README.md"
-    )
-    assert len(advanced) == 4, f"expected four lessons in 03-advanced, got {advanced}"
-    row = [ln for ln in text.splitlines() if "03-advanced" in ln and "|" in ln]
-    assert row, "the course table has no row for 03-advanced"
-    assert "Unwritten" not in row[0], (
-        f"03-advanced is described as unwritten: {row[0].strip()!r}"
+    # Only the course table's rows, not the prose. The README *discusses* this
+    # failure in a paragraph about counts in prose going stale, and a guard that
+    # matched the bare word anywhere would fail on its own explanation — which is
+    # how a guard gets deleted instead of fixed.
+    offenders = [
+        line.strip() for line in _readme().split("\n")
+        if line.lstrip().startswith("|") and "unwritten" in line.lower()
+    ]
+    assert not offenders, (
+        "the course table describes something as unwritten that exists:\n"
+        + "\n".join(f"    {line}" for line in offenders)
     )
 
 
@@ -532,7 +536,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 52,
+    "tests/test_readme_claims.py": 55,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
@@ -1228,4 +1232,154 @@ def test_the_reproducibility_prerequisite_names_the_writer() -> None:
     ).read_text(encoding="utf-8"), (
         "scada/build_flows.py now writes readings, so stopping the gateway is no "
         "longer sufficient to make the data static"
+    )
+
+
+# ── the notebook gate ────────────────────────────────────────────────────────
+
+
+def test_notebook_sources_are_built_and_tagged() -> None:
+    """Every notebook source builds, and no fence is left untagged.
+
+    The tag on a fence is not cosmetic. ```python runs, ```output is a claim the
+    gate checks against a live run, and an untagged block is neither — which is
+    how the first version of notebook 02 came to have *zero* checkable output
+    claims while the gate reported it green. `build_notebooks` raises on an
+    untagged opening fence; this asserts that path still raises, so the
+    protection is tested rather than assumed.
+    """
+    from tools import build_notebooks  # noqa: PLC0415
+
+    sources = sorted((Path("notebooks") / "src").glob("*.md"))
+    assert sources, (
+        "notebooks/src is empty; the series is authored as markdown there and "
+        "generated into notebooks/*.ipynb"
+    )
+    for src in sources:
+        built = build_notebooks.build_one(src)
+        code = [c for c in built["cells"] if c["cell_type"] == "code"]
+        assert code, f"{src} has no executable cell; it is prose, not a notebook"
+        # Every claim must be in an `output` fence, which the builder renders as
+        # a markdown cell. A `check: skip` code block is *not* a claim.
+        text = src.read_text(encoding="utf-8")
+        assert "```output" in text or "```sql" in text, (
+            f"{src} states no expected output and shows no query. A notebook "
+            "that claims nothing is a notebook nothing checks."
+        )
+
+
+def test_the_output_checker_would_catch_a_wrong_number(tmp_path) -> None:
+    """`check_notebooks` must fail on a claim anywhere in a block, not just line 1.
+
+    The first version of the checker compared only the **first** line of each
+    `output` block, so a number altered four rows into a table passed. That was
+    found by mutation rather than by reading: a row count was changed from 30,718
+    to 99,999 and the gate stayed green.
+
+    This calls the real `check_outputs` with a doctored notebook, rather than
+    re-implementing the comparison. The earlier version of this test did the
+    latter — it called `_normalise` and did its own `in` check — so it passed
+    happily while the real checker was broken. A guard that tests a copy of the
+    logic is a guard that tests nothing.
+
+    `tmp_path` supplies the real source file, because `check_outputs` reads the
+    claims from the markdown and compares them against the executed notebook.
+    """
+    from tools.check_notebooks import check_outputs  # noqa: PLC0415
+
+    claimed = (
+        "# 02\n\n```output\n"
+        "signal_id    rows  distinct\n"
+        "UNDERFLOW    30718         4\n"
+        "```\n"
+    )
+    source = tmp_path / "02.md"
+    source.write_text(claimed, encoding="utf-8")
+
+    def executed(underflow_rows: int) -> dict:
+        return {
+            "cells": [{
+                "cell_type": "code",
+                "source": "print()",
+                "outputs": [{"output_type": "stream", "text": [
+                    "signal_id    rows  distinct\n",
+                    f"UNDERFLOW    {underflow_rows}         4\n",
+                ]}],
+            }],
+        }
+
+    # The claim agrees with the run: no problems.
+    assert check_outputs(Path("nb.ipynb"), source, executed(30718)) == []
+
+    # The first row is altered: caught.
+    assert check_outputs(Path("nb.ipynb"), source, executed(99999)), (
+        "a wrong number in the first row of a claim was not caught"
+    )
+
+    # The SECOND row is altered, which is the case the first-line-only version
+    # missed.
+    source.write_text(
+        claimed.replace("UNDERFLOW    30718         4",
+                        "UNDERFLOW    30718         4\nFLOW          2570       912"),
+        encoding="utf-8",
+    )
+    deep = {
+        "cells": [{
+            "cell_type": "code",
+            "source": "print()",
+            "outputs": [{"output_type": "stream", "text": [
+                "signal_id    rows  distinct\n",
+                "UNDERFLOW    30718         4\n",
+                "FLOW          9999       912\n",   # wrong, and it is the third line
+            ]}],
+        }],
+    }
+    problems = check_outputs(Path("nb.ipynb"), source, deep)
+    assert problems, (
+        "a wrong number on the third line of a claim was not caught; the "
+        "checker is comparing only the first line of each block"
+    )
+    # The message names the line the *lesson* claims, not the line the notebook
+    # printed — the lesson is what is wrong, so that is what the reader has to go
+    # and fix. Getting this backwards would send them to edit the query.
+    assert any("FLOW 2570 912" in problem for problem in problems), (
+        f"the problem does not name the claimed line the reader must fix: "
+        f"{problems}"
+    )
+
+
+def test_an_untagged_fence_is_rejected(tmp_path) -> None:
+    """A fence with no language tag must fail the build, not pass quietly.
+
+    This is the bug the whole mechanism exists to prevent: notebook 02 was first
+    written with untagged fences, so `check_notebooks` found **zero** output
+    claims and reported the notebook green. It was checking nothing, and looking
+    like verification.
+
+    `tmp_path` is used rather than a file in the tree so the test can assert the
+    failure without leaving an unbuildable lesson behind.
+    """
+    from tools import build_notebooks  # noqa: PLC0415
+
+    bad = tmp_path / "bad.md"
+    bad.write_text(
+        "# A lesson\n\n```\nsome output that nothing checks\n```\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as caught:
+        build_notebooks.build_one(bad)
+    assert "no language tag" in str(caught.value), (
+        f"an untagged fence was rejected for the wrong reason: {caught.value}"
+    )
+
+    # And the same content *is* buildable once tagged, so the test is not just
+    # asserting that any input fails.
+    good = tmp_path / "good.md"
+    good.write_text(
+        "# A lesson\n\n```output\nsome output that gets checked\n```\n",
+        encoding="utf-8",
+    )
+    built = build_notebooks.build_one(good)
+    assert all(c["cell_type"] == "markdown" for c in built["cells"]), (
+        "an output fence became a code cell; it would execute instead of claim"
     )

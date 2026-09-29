@@ -3099,3 +3099,188 @@ Dropped from the list, and why:
   per occurrence — is answered and pinned by a test.
 * **`.github/workflows/gates.yml`** — and the two gates that had been failing, and
   the compose service that could not start at all. See `docs/CI.md`.
+
+---
+
+## The notebook series, part one: a gate that was green and checking nothing
+
+Building `notebooks/02-three-kinds-of-nothing.ipynb` took four attempts and
+produced six bugs, four of which are worth writing down because **none of them
+failed loudly**. The pattern across all four is the same, and it is the reason this
+file exists.
+
+### The gate found zero claims and reported success
+
+The lesson's expected output was written in bare fences:
+
+    ```
+    4,287,657 readings across 57 signals, one week
+    ```
+
+`tools/check_notebooks.py` looked for ` ```output `. It found **nothing**, and
+returned success. The notebook had eleven executable cells, ran clean against a
+live database, and had **no checkable claim in it at all**.
+
+This is worse than having no gate, because it looked like verification. A gate that
+finds zero problems because it found zero problems is indistinguishable, from the
+outside, from a gate that found zero problems because the work is correct.
+
+Fixed two ways, because the first fix was not enough:
+
+* an **untagged opening fence is now a build error**, naming the line and the two
+  tags to use;
+* `tests/test_readme_claims.py` asserts that `build_one` raises on one, and that
+  the tagged version is buildable — so the guard cannot pass vacuously the way the
+  gate did.
+
+And the untagged check itself had a bug: matching `^```$` finds closing fences too,
+so a correctly tagged lesson still failed the build. `untagged_openings()` now
+alternates open/closed the way a markdown parser does. **A bare regex cannot count
+fences.** That was learned by a build error pointing at a correctly tagged file,
+which is the only way anyone learns it.
+
+### The checker compared only the first line of each block
+
+Fixed the zero-claims bug, wrote `17` where the lesson said `13`, ran the gate, and
+it passed.
+
+```output
+signals with 5 or fewer rows in a week: 13
+```
+
+was the first line of the block, and it still matched, so the altered line below it
+was never examined. Then the mutation that found it was a **row count four lines
+into a table** — `30718` → `99999` — because that is the case a reader would never
+write by hand and I therefore would never have noticed by reading.
+
+Now every line of every `output` block is checked, with elision markers (`...`,
+`|---`) skipped. And the error names **the line the lesson claims**, not the line
+the notebook printed, because the lesson is what is wrong and that is what the
+reader has to go and fix.
+
+### My own guards tested a copy of the logic and passed while it was broken
+
+Two tests, both green, both meaningless:
+
+```python
+def test_the_output_checker_would_catch_a_wrong_number():
+    printed = _normalise(...)          # the test's own variable
+    assert all(line in printed for line in good.split("\n"))
+```
+
+It called `_normalise`, re-implemented the `in` check, and asserted against its own
+list. Reverting the real checker to first-line-only left it passing. **A guard that
+tests a copy of the logic is a guard that tests nothing** — and the way it was
+found was to revert the production code and watch the test stay green, which is the
+only test of a test that is worth running.
+
+Rewritten to call `check_outputs` and `build_one` directly, with `tmp_path`
+supplying a real source file. Both mutations now fail the test.
+
+### The pandas unit trap that a ratio hides
+
+`np.diff(index.view("int64")) / 1e9` is the standard idiom for converting a
+`DatetimeIndex` to seconds. On pandas 3.x, `.view("int64")` returns
+**microseconds**.
+
+It did not raise. It reported `typical_s = 0.06` for a one-minute series and
+`span = 0.0 h` for twelve hours — and `coverage` came out at a confident
+**100.0 %**, because the same wrong divisor cancelled between numerator and
+denominator.
+
+> **A ratio that survives a unit error is the dangerous kind.** Absolute quantities
+> fail loudly and get fixed; a ratio that comes out plausible-looking is the one
+> that ships.
+
+`describe()` now uses `Timedelta.total_seconds()`, and the unit is written down
+once.
+
+### Coverage measured against itself is always 100 %
+
+The first `describe()` inferred the expected sampling interval from the data. A
+series decimated to every seventh point reported **full coverage**, because after
+decimation the gaps *are* regular. The metric was measuring the data against itself
+and could not fail.
+
+`expected_s` is now required for a coverage figure — the contract's `sample_ms`, or
+a rate the question implies — and without it the field is **omitted from the
+stamp** rather than invented. Verified: 99.9 % against a declared 60 s, **14.1 %**
+when decimated.
+
+> A qualifier that cannot fail is decoration. `stamp()` omits `coverage` rather
+> than printing `nan`, because a field that is always present is a field nobody
+> reads.
+
+### The skip marker was decorative
+
+`<!-- check: skip -->` skipped the marker *line* and then processed the following
+fence normally. The block it was meant to suppress — `df.dropna()`, the first thing
+notebook 02 argues against — ran, and failed on `NameError: df is not defined`.
+
+A marker that does not set state is a comment. It has to be state, or "skip" means
+"delete the comment".
+
+### Seven wrong numbers in my own prose, all caught by the gate
+
+Once the gate worked, it found seven claims I had written and that were false:
+
+| claimed | actual | why it was wrong |
+|---|---|---|
+| `1 of 168` hourly buckets | **1 of 1** | `resample` spans the data it is given, not the week |
+| `118` invented hours | **115** | the underflow signal's own span is 165 h, not 168 |
+| `9` buckets with >4 readings | **49** | I wrote what the pattern suggested, not the run |
+| a `0`-indexed table row | no index | `to_string(index=False)` |
+| `3000.00 mg/L` | `2999.99999769` | conflating the formatted print with the value |
+| `underflow_m`, 1 Hz | `underflow_solids_pct`, 5 s | I had the signal from the pre-injection seeder |
+| `168 hours` | **165** | the signal does not span the dataset |
+
+**Every one of them would have survived review.** Not one was a typo I would catch
+reading — they were plausible numbers I had written from a model of the data rather
+than from the data. That is the whole argument for making claims machine-checkable,
+and it took a working gate to prove it rather than assert it.
+
+### The lesson's central claim was also wrong, and the data was better
+
+I opened notebook 02 asserting that `resample().mean()` forward-fills a quiet
+signal, turning thirteen one-row signals into a fabricated flat line. **It does
+not.** `resample` leaves a single-row signal with one bucket and `ffill` cannot
+fill forward from a reading at the very start of the dataset.
+
+The real fabrication case is `PRIMARY:PRI-CL-1:UNDERFLOW`: **30,718 readings, 4
+distinct values**, 50 hourly buckets with data, and `ffill` producing **165** — one
+of the four values held for **23 consecutive hours**. And the contrast signal is
+better than the fake one: `INFLUENT:LIFT:FLOW` has 169 of 169 buckets before and
+after, longest flat run 8 hours, so `ffill` is harmless on a signal that reports.
+
+> A lesson built on a mechanism that does not fire is worse than no lesson: it
+> teaches a true-sounding rule for a false reason, and the reader cannot tell the
+> difference. Two of the three findings here came from the data refusing the story.
+
+### `uv sync --extra X` replaces the environment
+
+The first `uv sync --extra analysis` installed pandas and matplotlib and **removed**
+`asyncua`, `pymodbus` and `fastapi`. Extras are additive per-invocation, not
+cumulative, and the plant's own protocol stack vanished without a message about it.
+
+`make sync` should list them all. **Not done** — a loose end, recorded here so it is
+not mistaken for a decision.
+
+### Two guards that outlived what they were written for
+
+`test_03_advanced_is_not_described_as_unwritten` asserted that the word
+**"Unwritten"** appeared in the README, on the reasoning that a table has to be
+right in each direction. `04-expert/` then got written, the row was fixed, and the
+guard failed.
+
+An unwritten stage is transient; a test that *requires* the word outlives the stage
+it was written for. The requirement that survives is narrower and is the one that
+matters: **the table must never claim a delivered stage is missing.** It now asserts
+the absence — scoped to table rows, because the README discusses this exact failure
+in prose, and a guard matching the bare word would fail on its own explanation.
+
+> How a guard gets deleted instead of fixed: make it match something it was never
+> about.
+
+Also: `make notebooks     # a comment` in a fenced bash block failed
+`test_no_command_line_carries_a_trailing_comment`, correctly. In some contexts that
+`#` reaches the shell as an argument.

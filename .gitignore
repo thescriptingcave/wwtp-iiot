@@ -127,3 +127,8 @@ tmp/
 temp/
 *.pid
 *.seed
+
+# Notebook figures. Derived from the data on every run, and a committed PNG is a
+# picture of a database that no longer exists — the same failure mode as a pasted
+# output block, which is why `notebooks/src/*.md` carries the claims instead.
+notebooks/figures/
