@@ -46,6 +46,27 @@ storage = [
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
 ]
+analysis = [
+    # The analyst-notebook series (`notebooks/`). Separate from `storage` and
+    # from the runtime: nothing in the plant imports these, and the plant's image
+    # must not grow by 60 MB because a notebook needs a plotting library.
+    #
+    # pandas is here because the audience is fluent in it, not because anything
+    # here teaches it. numpy arrives with it.
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    # seaborn for distributions and heatmaps only. `notebooks/_style.py`
+    # documents the hard rule that `sns.lineplot` is never used on this data: it
+    # aggregates repeated x-values into a mean and a CI band, which erases the
+    # irregular sampling structure these notebooks exist to examine.
+    "seaborn>=0.13",
+    # Executing the notebooks in CI. `nbmake` rather than `nbval` on purpose:
+    # these notebooks assert inside themselves (plain `assert`, in prose and code
+    # cells) rather than against stored output, because the database is re-seeded
+    # and any pinned output would be stale on arrival.
+    "nbmake>=1.5",
+    "ipykernel>=6.29",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -108,6 +129,13 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "PLR2004"]
+# The notebook style module imports inside functions on purpose. Every notebook
+# imports it, and `signal_meta()` must not pull matplotlib into a process that
+# only wants a unit string — so the heavy imports are deferred to the call that
+# needs them. `numpy`/`pandas` inside `describe()` are the same argument at a
+# smaller scale. The alternative is a module whose import costs a second and
+# whose purpose is to be cheap.
+"notebooks/_style.py" = ["PLC0415"]
 # Lazy imports are a design decision in these files, not an oversight. The psycopg
 # driver must stay optional so the protocol code, the process model and the
 # deadband/spool logic all remain importable and testable without the storage
