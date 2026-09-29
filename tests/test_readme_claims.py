@@ -597,6 +597,70 @@ def test_the_documented_notebook_row_matches_the_series() -> None:
     )
 
 
+def test_the_portability_check_is_wired_into_the_gate() -> None:
+    """`check_portable_numbers` has to be *called*, or it is a function.
+
+    A rule that is written, documented, discussed in two files and never invoked is
+    the shape this project has been repeatedly bitten by — the first notebook gate
+    found zero claims and reported success, which is exactly what a gate nobody
+    calls looks like from the outside.
+
+    It is not counted in the "checks each" row above, and should not be: it scans
+    every source once rather than being per-notebook, so adding it there would
+    make a different number wrong in a different way.
+    """
+    from tools import check_notebooks  # noqa: PLC0415
+
+    assert "check_portable_numbers" in check_notebooks.main.__code__.co_names, (
+        "check_notebooks.main does not call check_portable_numbers, so a "
+        "notebook may state a number that depends on the disk or the clock and "
+        "every other check will pass on the machine that wrote it"
+    )
+
+
+def test_the_portability_check_fires_on_a_call_and_not_on_a_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rule stricter than the thing it rules makes itself `# noqa`ed.
+
+    Notebook 03 has to name `hypertable_size()` in a comment to explain why the
+    cost column is gone. Scanning the whole file — prose included — would have
+    flagged that comment, and the only way to make it green would have been to
+    delete the explanation or silence the line. Both are worse than the rule.
+
+    So: a `` ```python `` block is scanned, a ``#`` comment is not, and markdown
+    prose is not. All three are asserted here rather than trusted, because a rule
+    that cannot be explained where it applies is a rule that gets disabled where it
+    hurts.
+    """
+    from tools import check_notebooks  # noqa: PLC0415
+
+    monkeypatch.setattr(check_notebooks, "NB", tmp_path / "notebooks")
+    (tmp_path / "notebooks" / "src").mkdir(parents=True)
+
+    def write(body: str) -> list[str]:
+        (tmp_path / "notebooks" / "src" / "01-a.md").write_text(
+            body, encoding="utf-8"
+        )
+        return check_notebooks.check_portable_numbers()
+
+    caught = write("```python\nb = 1043 * hypertable_size('reading')\n```\n")
+    assert caught, "a hypertable_size() call in a python fence was not caught"
+    assert "01-a.md:2" in caught[0], caught[0]
+
+    assert not write(
+        "```python\n# hypertable_size() is why there is no MB column\nb = 1\n```\n"
+    ), "a comment naming the rule was treated as a use of it"
+
+    assert not write(
+        "hypertable_size() measures compressed chunks, so it is not portable.\n"
+    ), "prose about the rule was treated as a use of it"
+
+    assert not write("```output\nreading  4239284\n```\n"), (
+        "an output block is a claim, not code, and must not be scanned for calls"
+    )
+
+
 def test_no_document_quotes_a_stale_test_count() -> None:
     """"31 tests" on the Node-RED flows; it is 37."""
     offenders = [
@@ -739,13 +803,13 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 66,
+    "tests/test_readme_claims.py": 68,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
     "tests/test_alarm_engine.py": 17,
     "tests/test_seed.py": 5,
-    "tests/test_makefile_env.py": 6,
+    "tests/test_makefile_env.py": 7,
     "tests/test_lessons_gate_ports.py": 4,
 }
 
@@ -1731,8 +1795,16 @@ def test_the_makefile_loads_env_for_every_recipe() -> None:
 
     # The script must auto-export: a sourced assignment is a *shell* variable and
     # never reaches the `python` a recipe launches.
+    #
+    # **Indented `set -a` counts.** The first version of this asserted
+    # `^set -a$`, and the script then grew an `if [ -f .env ]` around the load —
+    # because a checkout has no `.env` at all, and a gitignored file cannot be a
+    # hard dependency of every recipe. The assertion failed on correct code, which
+    # is the worst kind: the fix was to widen the regex, not to unindent the file.
+    # A guard that is stricter than the thing it guards teaches a reader to delete
+    # the guard.
     script = env_script.read_text(encoding="utf-8")
-    assert re.search(r"^set -a\s*$", script, re.MULTILINE), (
+    assert re.search(r"^\s*set -a\s*$", script, re.MULTILINE), (
         f"{env_script} does not `set -a`, so values sourced from .env stay in "
         "the shell and never reach child processes"
     )

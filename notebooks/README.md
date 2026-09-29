@@ -219,6 +219,30 @@ success. This is the SQL course's own rule, applied to the SQL embedded here.
 it, gates 1 to 3 are all perfectly happy against *the wrong week*, and a
 re-seed would turn eleven green notebooks into eleven quietly different ones.
 
+## The one that is not per-notebook
+
+Gates 1 to 4 all compare a number against a run **on the machine doing the
+running**, so none of them can catch a number that is true here and false
+elsewhere. `hypertable_size()` was notebook 03's cost column, beside its row
+counts; the rows matched on a CI runner to the digit and the megabytes did not,
+because a hypertable is measured in compressed chunks and the compression depends
+on the order the rows were written. The gate's own message said *re-run it and
+update the block*, and following that would have committed a number that is wrong
+on the laptop it was written on.
+
+So a fifth rule scans the **python fences of every source** for calls that cannot
+produce a portable number — `hypertable_size`, `pg_total_relation_size`,
+`time.time`, `pd.Timestamp.now`, `os.getpid`, `platform.uname` and the rest of
+`NOT_PORTABLE` in `tools/check_notebooks.py`. Comments and prose are not scanned:
+notebook 03 has to *name* `hypertable_size()` to explain why the column is gone,
+and a rule that cannot be explained at the site it applies to gets disabled where
+it hurts.
+
+It catches the call, not the effect. A notebook that hardcodes `1043` with no call
+in it passes this and fails gate 1 on a runner — which is the honest limit of a
+source-level rule, and the reason the list exists rather than the reason it is
+sufficient.
+
 ## Related
 
 - [`docs/DESIGN.md`](../docs/DESIGN.md) — why the schema looks like this

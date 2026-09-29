@@ -3846,3 +3846,68 @@ that is not evidence.
 > A gate that passes on the machine you are standing on and fails on the runner
 > has told you the gate is portable and the *assertions* are not. The bug was
 > never a port; it was an operating-system default, and I tested one of them.
+
+## Two of my own gates were about one machine, and a gitignored file was fatal
+
+Pushed the fix above; the very next run failed again, in the two jobs that had
+just been given something to do. Neither failure was a mistake of logic. Both
+were **a number or a file that is true here and not there**, which is the theme
+of this whole commit arriving from a third direction.
+
+### A rollup's size on disk is a fact about a disk
+
+Notebook 03's opening table is "what each tier costs", and the cost column
+beside `rows` was `hypertable_size()` — 1 043 MB, 57 MB, 2 MB. Every other
+number in the series is derived from a pinned seed, and this one was not, because
+a hypertable is measured in *compressed chunks* and the compression is a
+per-chunk, write-order-dependent result. The row counts matched to the digit on
+the runner and the byte counts did not:
+
+    03-choosing-a-tier.ipynb: the notebook does not print
+      reading_1h 5882 2 721 24
+      claimed in 03-choosing-a-tier.md. Re-run it and update the block.
+
+Which is the sentence the gate exists to make impossible to ignore, and which
+would have been *fixed* by pasting the runner's number in — a number that is then
+wrong on the laptop it was written on.
+
+So the column is gone, and the cell says why in the place a reader reaches it. The
+prose needed no change, which is the test of the change: it had been arguing from
+rows all along (23×, 721×, 34 978 / 1 038 / 24), and the bytes were decoration
+next to an argument that did not use them.
+
+> "Re-run it and update the block" is the right instruction for a stale number and
+> the wrong one for a number that was never portable. A gate cannot tell them
+> apart, so the discipline has to be at the point of writing: **if it is a
+> property of the disk, the machine, or the clock, it is not a number this series
+> states.**
+
+### `.env` is gitignored, so CI had never had one
+
+`tools/env.sh` is sourced by bash at the top of *every* recipe, via `BASH_ENV`.
+It ended in a bare `. .env`, and CI — a checkout, with no credentials and no
+local configuration — therefore failed **every target** with
+
+    tools/env.sh: line 43: /…/.env: No such file or directory
+    make: *** [Makefile:NNN: some-target] Error 1
+
+including `make lint`, which has nothing to do with the environment. It cost a CI
+run as well: `tests/test_makefile_env.py` invokes the real `$(PY)` wrapper, so
+four of its tests failed on a runner that was doing nothing wrong.
+
+The fix is to warn and continue, with the message naming the fix. And the second
+half of it is the interesting part: the guard test
+`test_the_makefile_loads_env_for_every_recipe` asserted `^set -a$`, and failed on
+**correct code** the moment `set -a` was indented inside an `if [ -f .env ]`. The
+assertion had been written to match the file's *shape* rather than its meaning, so
+the correct repair — widen it to `^\s*set -a\s*$` — and the tempting one —
+unindent the file so the old regex matches — look identical from a distance.
+
+> A guard stricter than the thing it guards is a guard that will be deleted, and
+> it is always deleted in the moment somebody does the right thing.
+
+This is the third appearance in this commit of the same asymmetry. `free_port()`
+was a Linux-only constant. `hypertable_size()` is a disk-only number. `.env` is a
+file only the developer has. **All three were checked by running them on the
+machine they were written on**, which is the one machine where all three are
+correct.

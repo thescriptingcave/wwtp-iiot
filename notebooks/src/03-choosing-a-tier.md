@@ -41,24 +41,25 @@ The cheap thing to measure is the thing that does not change between runs: how m
 rows a tier holds, and how many a question has to read.
 
 ```python
-sizes = pd.read_sql(
-    """
-    SELECT 'reading' AS tier, hypertable_size('reading') AS bytes
-    UNION ALL
-    SELECT view_name, hypertable_size(format('%I.%I',
-           materialization_hypertable_schema,
-           materialization_hypertable_name)::regclass)
-    FROM timescaledb_information.continuous_aggregates
-    """,
-    conn,
-).set_index("tier")
-
+# **No on-disk size.** `hypertable_size()` is the obvious thing to put in the
+# column next to `rows`, and it was the first version of this cell. It is also
+# the one number here that is *not* the same on your machine as on mine, so it
+# cannot be stated in a lesson that has to be true on both:
+#
+# * a hypertable's size is measured in compressed chunks, and compression is a
+#   per-chunk, write-order-dependent result — a different order of inserts gives
+#   a different total;
+# * it is measured in 8 kB pages, so the last partial page is counted whole.
+#
+# The first point cost a CI failure: the table is checked against what the
+# notebook printed, and the notebook printed 1 043 MB here and something else on
+# a runner. **A number that depends on the disk is a fact about one machine**, and
+# this series claims only the kind that is not.
 cost = pd.DataFrame(
     {
         "rows": {
             t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in TIERS
         },
-        "MB": (sizes.bytes / 2**20).round(0).astype(int),
     }
 )
 cost["times smaller"] = (cost.rows["reading"] / cost.rows).round(0).astype(int)
@@ -75,10 +76,10 @@ print(cost.to_string())
 ```
 
 ```output
-               rows    MB  times smaller  rows for one signal-day
-reading     4239284  1043              1                    34978
-reading_1h     5882     2            721                       24
-reading_1m   185455    57             23                     1038
+               rows  times smaller  rows for one signal-day
+reading     4239284              1                    34978
+reading_1h     5882            721                       24
+reading_1m   185455             23                     1038
 ```
 
 **The minute tier is 23 times smaller than the raw table and the hour tier is 721

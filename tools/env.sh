@@ -38,7 +38,40 @@
 #
 # The repo root is derived from this file's own location rather than assumed, so
 # BASH_ENV works from any directory and needs no make variable.
-set -a
-# shellcheck disable=SC1091
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
-set +a
+#
+# ## Why a missing `.env` is a warning and not an error
+#
+# `.env` is gitignored, so **it does not exist in CI at all** — the workflow
+# supplies the environment directly, and a checkout has nothing to source. This
+# file is sourced by bash at the top of *every* recipe, so the first version's
+# bare `.` made the failure total:
+#
+#     tools/env.sh: line 43: /…/.env: No such file or directory
+#     make: *** [Makefile:NNN: some-target] Error 1
+#
+# and it did so for every target, including the ones that have nothing to do with
+# the environment. It also cost a CI run: `tests/test_makefile_env.py` invokes
+# the real `$(PY)` wrapper, so four tests failed on a runner that was doing
+# nothing wrong and had no `.env` by design.
+#
+# So: warn, on stderr, once per shell, and carry on. A recipe that genuinely needs
+# a variable reports that itself, and the message says where to get the file
+# rather than leaving the reader to work out that a *sourced* file was absent.
+# Failing here instead would mean `make` could not run at all in the one
+# environment where it is supposed to be reproducible.
+
+# Where the repository is, from this file's own location rather than assumed.
+# `BASH_ENV` is sourced before any recipe runs, so there is no make variable yet
+# and nothing has `cd`-ed anywhere useful.
+_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -f "$_ENV_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "${_ENV_ROOT}/.env"
+  set +a
+elif [ -z "${_ENV_WARNED:-}" ]; then
+  echo "warning: no ${_ENV_ROOT}/.env — 'cp .env.example .env' is the usual fix;" >&2
+  echo "         continuing with this shell's own variables" >&2
+  _ENV_WARNED=1
+fi

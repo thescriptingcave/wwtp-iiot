@@ -152,6 +152,14 @@ states a number must state the number the database actually produced.* A cell's
 claim, which is why the notebooks are generated from markdown rather than
 authored as `.ipynb`.
 
+A fifth rule scans every source once and is **not** one of the four, because it
+cannot be checked by running anything: all four compare a number against a run on
+the machine doing the running, so a number derived from the disk or the clock
+passes them and is still wrong on the runner. `hypertable_size()` did exactly
+that, in notebook 03's cost table, and CI is how it was found. `NOT_PORTABLE` in
+`tools/check_notebooks.py` is the list, and `notebooks/README.md` explains why it
+scans code and not prose.
+
 ### Why the coverage matrix is nightly
 
 Eighteen minutes, because every scenario settles for 9 h 15 m before measurement
@@ -215,6 +223,32 @@ snippet's failure. `tests/test_lessons_gate_ports.py` reproduces the Linux
 ephemeral range on a Mac by substituting `socket.socket`, and asserts the premise
 — that macOS cannot take that branch — so the next reader of a green local run
 learns why it is not evidence.
+
+## A gitignored file, and a gitignored file's assumptions
+
+`tools/env.sh` is sourced by bash at the top of **every** recipe, and it ended in
+a bare `. .env`. `.env` is gitignored, so CI — a checkout, with no credentials and
+no local configuration — has never had one, and *every* target failed with
+
+```
+tools/env.sh: line 43: /…/.env: No such file or directory
+make: *** [Makefile:NNN: some-target] Error 1
+```
+
+`make lint` failed too, which has nothing to do with the environment. It also
+failed four of `tests/test_makefile_env.py`, because that file invokes the real
+`$(PY)` wrapper and so is a genuine user of `env.sh` on a machine without `.env`.
+
+`env.sh` now warns on stderr and carries on. **A gitignored file cannot be a hard
+dependency of every recipe**, and a warning that names `cp .env.example .env` is
+more use than a shell error about a file the reader has never heard of.
+
+The second half is the part worth keeping. `test_the_makefile_loads_env_for_every_recipe`
+asserted `^set -a$` at the top of `env.sh`, and failed on the corrected file the
+moment `set -a` moved inside an `if [ -f … ]`. The guard was matching the file's
+*shape*. The correct repair — widen it to `^\s*set -a\s*$` — and the tempting one
+— unindent the file until the old regex matches again — look the same from a
+distance, and only one of them leaves the behaviour intact.
 
 ## What CI does not cover, stated plainly
 

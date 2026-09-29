@@ -316,6 +316,112 @@ def check_sql_fences(source_path: Path) -> list[str]:
     return problems
 
 
+#: Things whose *value* is a property of the machine, the disk or the clock rather
+#: than of the seed. See `check_portable_numbers` for why this list exists and for
+#: the two ways the first version of it was too narrow.
+NOT_PORTABLE = re.compile(
+    r"""
+      \bhypertable_size\b          # compressed chunks; write-order dependent
+    | \bpg_total_relation_size\b
+    | \bpg_relation_size\b
+    | \bpg_size_pretty\b
+    | \bpg_database_size\b
+    | \btime\.(?:time|time_ns|monotonic|perf_counter)\b
+    | \bdatetime\.datetime\.(?:now|today|utcnow)\b
+    | \bpd\.Timestamp\.now\b
+    | \bpd\.Timestamp\.utcnow\b
+    | \bpd\.to_datetime\(['\"]now
+    | \bdatetime\.date\.today\b
+    | \bos\.getpid\b
+    | \bplatform\.(?:uname|node|platform|machine)\b
+    | \bsocket\.gethostname\b
+    | \bsecrets\.
+    | \bgetpass\.
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def check_portable_numbers() -> list[str]:
+    """No notebook may state a number that is a fact about this machine.
+
+    **The existing checks cannot catch this, and that is not a gap in them.** Every
+    other gate compares a number against a run *on the same machine*: the seed
+    fingerprint, the `output` blocks, the prose. A number derived from the disk or
+    the clock passes all of them and is still wrong somewhere else.
+
+    It was found the hard way, by CI. Notebook 03 printed a cost table beside its
+    row counts:
+
+    .. code-block:: text
+
+        reading     4239284  1043  ...
+        reading_1m   185455    57  ...
+
+    and the row counts matched on the runner to the digit while the megabytes did
+    not — `hypertable_size()` measures *compressed chunks*, and compression
+    depends on the order the rows were written. The gate's own message said
+    `the notebook does not print … Re-run it and update the block`, and following
+    that instruction would have committed a number that is wrong on the laptop it
+    was written on.
+
+    So this is a rule about the *source*, checked before anything runs: a name that
+    cannot produce a portable number cannot appear in a notebook that has to be
+    true on a laptop and on a runner.
+
+    ## What it does and does not catch
+
+    It catches the call, not the effect. A notebook that hardcodes
+    ``measured = 1043`` with no call in it passes this and fails the output check
+    on a runner, which is the honest limit of a source-level rule. What it buys is
+    that the *next* one of these is caught on a Mac, by the person who wrote it,
+    rather than a week later on a runner.
+
+    Two things that looked like portable numbers and are not, added after a second
+    look:
+
+    * ``pd.to_timedelta`` of a *duration the data spans* is fine — that is a
+      property of the rows. This list is about the machine, not about the data, so
+      nothing derived from a column is caught, and that is intended.
+    * `uuid`, and anything else that is unique per run, is not in the list because
+      nothing in the series generates one. Adding it speculatively would be a rule
+      with no example behind it.
+
+    The list is checked against the **python fences in the source markdown**, not
+    the generated notebook, so a finding names a line an author can edit.
+
+    Only code is scanned, and a `#` comment is not code. Both because that is
+    where the rule belongs — a call is what produces the number — and because
+    notebook 03 has to *name* `hypertable_size()` in a comment to explain why the
+    column is gone. A rule that cannot be explained at the site it applies to
+    produces a `# noqa` comment, and from there every line is one.
+    """
+    problems: list[str] = []
+    for source in sorted((NB / "src").glob("*.md")):
+        in_python = False
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if line.startswith("```python"):
+                in_python = True
+                continue
+            if line.startswith("```"):
+                in_python = False
+                continue
+            if not in_python or line.lstrip().startswith("#"):
+                continue
+            found = NOT_PORTABLE.search(line)
+            if found:
+                problems.append(
+                    f"{os.path.relpath(source, ROOT)}:{number}: "
+                    f"{found.group(0)} is a "
+                    "property of the disk, the clock or the host, not of the "
+                    "pinned seed. A number this series states has to be the same "
+                    "on a laptop and on a runner."
+                )
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     from tools import build_notebooks
 
@@ -397,6 +503,8 @@ def main(argv: list[str] | None = None) -> int:
             NB / "src" / (path.stem + ".md"), notebook,
         ))
         problems.extend(check_sql_fences(NB / "src" / (path.stem + ".md")))
+
+    problems.extend(check_portable_numbers())
 
     if problems:
         for problem in problems:

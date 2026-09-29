@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -180,4 +181,53 @@ def test_bash_env_reaches_a_shell_recipe(probe: tuple[Path, Path]) -> None:
     out = _run(["-C", str(ROOT), "-f", str(makefile), "slow-path-probe"])
     assert _env_value("POSTGRES_PORT") in out, (
         f"BASH_ENV did not reach a shell recipe: {out.strip()!r}"
+    )
+
+
+def test_a_missing_env_is_a_warning_and_not_a_failure(
+    tmp_path: Path,
+) -> None:
+    """`.env` is gitignored, so a checkout has none — and CI is a checkout.
+
+    `env.sh` is sourced at the top of *every* recipe, so a bare `. .env` made the
+    absence total: every target failed with `No such file or directory`, including
+    the ones with nothing to do with the environment. It cost a CI run as well —
+    four tests in this file invoke the real `$(PY)`, and the runner has no `.env`
+    by design.
+
+    Reproduced by pointing the wrapper at a root with no `.env`, rather than by
+    deleting the developer's: the file under test reads its own location, so
+    `tools/env.sh` copied next to a temporary `tools/py.sh` is a self-contained
+    instance of the same two files.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        (root / "tools").mkdir()
+        (root / ".venv" / "bin").mkdir(parents=True)
+        for name in ("env.sh", "py.sh"):
+            (root / "tools" / name).write_text(
+                (ROOT / "tools" / name).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        (root / "tools" / "py.sh").chmod(0o755)
+        # A stand-in for the interpreter, so the assertion is about the
+        # environment reaching *something*, not about which python is installed.
+        (root / ".venv" / "bin" / "python").write_text(
+            "#!/bin/sh\nexec /usr/bin/env python3 \"$@\"\n", encoding="utf-8",
+        )
+        (root / ".venv" / "bin" / "python").chmod(0o755)
+        assert not (root / ".env").exists()
+
+        result = subprocess.run(
+            [str(root / "tools" / "py.sh"), "-c", "print('ran')"],
+            capture_output=True, text=True, env=CLEAN_ENV, check=False, timeout=120,
+        )
+
+    assert result.returncode == 0, (
+        f"no .env and the wrapper failed anyway: {result.stderr.strip()!r}. "
+        "A gitignored file cannot be a hard dependency of every recipe."
+    )
+    assert "ran" in result.stdout, result.stdout
+    assert "no" in result.stderr and ".env" in result.stderr, (
+        f"a missing .env has to say so: stderr was {result.stderr.strip()!r}"
     )

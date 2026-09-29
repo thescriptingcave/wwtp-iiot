@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 718 | no |
+| Unit, no database | 721 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -29,6 +29,13 @@ is what it reports, so it moves whenever a module is added. The notebook row
 counts the *checks* rather than the tests: `make notebooks` runs four gates per
 notebook (output fences, prose numbers, SQL fences, seed fingerprint) and 11
 notebooks, which is 44 assertions a reader can name.
+
+A fifth notebook gate — **no number that depends on the disk, the clock or the
+host** — scans every source once rather than being per-notebook, so it is not in
+that count. It is worth naming here because it is the only one of the five that
+cannot be settled by running the notebooks: the other four compare a number
+against a run *on the same machine*, and `hypertable_size()` passed all four on
+the laptop that wrote notebook 03 and failed on a runner.
 
 Per file, for the ones worth naming:
 
@@ -45,14 +52,14 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 66 |
+| `test_readme_claims.py` | 68 |
 | `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 | `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
-| `test_makefile_env.py` | 6 | that make's fast path cannot strip `.env` from a recipe again |
+| `test_makefile_env.py` | 7 | that make's fast path cannot strip `.env` from a recipe again |
 | `test_lessons_gate_ports.py` | 4 | that the lesson gate's port allocation is not an OS default |
 
 **Every number in both tables is asserted by
