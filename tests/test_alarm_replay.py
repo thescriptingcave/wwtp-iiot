@@ -367,10 +367,21 @@ def test_the_query_reads_the_rule_out_of_detail() -> None:
         assert kind in QUERY, kind
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("hours", [0.5, 24, 168])
 def test_the_lookback_accepts_fractional_hours(hours: float) -> None:
-    from storage.postgres.schema import connect
+    """The `lookback_h=0.5` case exists because a caller asked for it.
+
+    An integer-only column would truncate 0.5 to 0 and query the whole retention
+    window, so the test asserts the *converted* seconds rather than the query
+    text. It needs a database, and until this marker was added it did not say so:
+    the `try`/`skip` below caught the connection error and the test reported
+    `skipped` in **every CI run** — the `unit` job has no database, and the
+    `integration` job does not run this file, so the assertion had never been
+    checked once. A test that has only ever skipped is a test that has never run.
+    """
     from alarms.replay import load
+    from storage.postgres.schema import connect
 
     try:
         with connect() as conn:

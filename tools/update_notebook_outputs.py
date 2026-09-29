@@ -111,14 +111,28 @@ def _strip_noise(text: str) -> str:
     return "\n".join(kept).strip("\n")
 
 
-def _fences(source: str) -> list[tuple[str, int, str]]:
-    """Every fence in the markdown as ``(language, line_index, body)``."""
-    from tools.build_notebooks import FENCE  # noqa: PLC0415
+def _fences(source: str) -> list[tuple[str, int, str, bool]]:
+    """Every fence as ``(language, line_index, body, skipped)``.
 
-    out: list[tuple[str, int, str]] = []
+    `skipped` is true for a fence preceded by `<!-- check: skip -->`. Such a fence
+    is **not a code cell** — the builder renders it as markdown — so it must not be
+    counted when pairing claims with cells. The first version did count it, which
+    shifted every later pairing by one: each `output` block was overwritten with the
+    *previous* cell's output, the skipped block itself became an `output` fence
+    containing `df.dropna()`, and `check_notebooks` passed anyway, because each
+    pasted line did appear *somewhere* in the run.
+    """
+    from tools.build_notebooks import FENCE, SKIP_MARKER  # noqa: PLC0415
+
+    out: list[tuple[str, int, str, bool]] = []
     lines = source.split("\n")
     i = 0
+    skip_next = False
     while i < len(lines):
+        if lines[i].strip() == SKIP_MARKER:
+            skip_next = True
+            i += 1
+            continue
         match = FENCE.match(lines[i])
         if match is None:
             i += 1
@@ -131,7 +145,8 @@ def _fences(source: str) -> list[tuple[str, int, str]]:
             body.append(lines[i])
             i += 1
         i += 1
-        out.append((language, start, "\n".join(body).strip("\n")))
+        out.append((language, start, "\n".join(body).strip("\n"), skip_next))
+        skip_next = False
     return out
 
 
@@ -151,8 +166,10 @@ def _claim_positions(source: str) -> list[tuple[int, int, int, str]]:
     claims: list[tuple[int, int, int, str]] = []
     last_python_index: int | None = None
     code_cells = 0
-    for language, line_no, body in fences:
+    for language, line_no, body, skipped in fences:
         if language in ("python", "py", "python3"):
+            if skipped:
+                continue
             code_cells += 1
             last_python_index = code_cells
         elif language == "output":

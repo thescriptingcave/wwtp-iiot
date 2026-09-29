@@ -1,13 +1,15 @@
 # CI
 
-`.github/workflows/gates.yml`. **Six jobs.** This document says what each one is
+`.github/workflows/gates.yml`. **Seven jobs.** This document says what each one is
 for, what it deliberately does **not** cover, and why the exclusions are
 exclusions rather than oversights.
 
 It said "five jobs" until a test caught it: `lint-debt` was added after this
 sentence was written, which is the ordinary way a number goes stale — the change
-was real, the prose was simply not revisited. `tests/test_readme_claims.py` now
-asserts it.
+was real, the prose was simply not revisited. It then said "six" until
+`notebooks` was added. The test now reads the job count out of the workflow
+itself rather than naming it, so there is no number here for the next one to
+catch.
 
 `make check` runs the fast gates locally in the order that fails fastest. The
 workflow is the thin YAML that runs them on a machine that is not mine.
@@ -39,8 +41,9 @@ and the gate covers every Python file in the project.
 ### `make lint` had been failing the whole time
 
 Worse, and the same mistake. `ruff check .` reported **159 findings** when this
-was written; it is **158** now, the difference being a `ruff --fix` pass over
-`softplc/servers/opcua.py` that took that file from 27 findings to 6.
+was written; it is **157** now — a `ruff --fix` pass over
+`softplc/servers/opcua.py` that took that file from 27 findings to 6, and the
+notebook work clearing the sixteen findings it had added.
 Almost all of them are `E501` (long lines) and `PLC0415` (function-local imports)
 in `softplc/process/units.py`, `softplc/servers/opcua.py` and the Phase 1–2 test
 files — debt this project has tracked openly as an open thread since Phase 1
@@ -54,7 +57,7 @@ as passing because it was run over the wrong subset is worse than no gate — an
 this project has now produced that mistake twice in one day.
 
 The ratchet (`make lint-debt`, and the `lint-debt` job) fails if the finding
-count goes **up** and does not fail if it goes down. A hard gate at 159 would
+count goes **up** and does not fail if it goes down. A hard gate at 157 would
 block every commit, and deleting the debt in one sweeping commit is the thing
 this project has deliberately not done five times. The baseline lives in
 `lint-debt-baseline.txt`, so lowering it is a deliberate act with a diff that
@@ -83,14 +86,17 @@ from them, because a named volume over `/data` silently shadows the image's
 |---|---|---|
 | `unit` | every push | ruff (scoped), mypy (everything), pytest without a database, **the lesson courses** |
 | `integration` | every push | a real seeded TimescaleDB, the integration suite, the SQL course, the flow SQL, the dashboard queries, the replay |
+| `notebooks` | every push | the analysts' database, the eleven notebooks, and every number in their prose |
 | `drift` | every push | generated files vs the contract, and `docker compose config` |
 | `images` | every push | the three images build, and the two non-core node types resolve |
-| `lint-debt` | every push | 158 findings is the baseline; going up fails |
+| `lint-debt` | every push | 157 findings is the baseline; going up fails |
 | `nightly` | 04:17 UTC | the fault × rule coverage matrix and the four slow tests |
 
-That is five on every push and one on a schedule, and the count is asserted by
-`tests/test_readme_claims.py::test_no_document_says_the_ci_workflow_has_five_jobs`
-— which found the wrong number in *this file* the day it was written.
+That is six on every push and one on a schedule. The count is checked by
+`tests/test_readme_claims.py::test_no_document_miscounts_the_ci_workflow_jobs`,
+which reads it out of `gates.yml` rather than against a number written down here
+— and which found the wrong number in *this file* the day it was written, then
+found it wrong a second time when the `notebooks` job was added.
 
 ### Why the lesson courses run in the `unit` job
 
@@ -122,6 +128,29 @@ suite was the half nobody ran.
 The `integration` job therefore seeds **a real week** — about two minutes —
 because every query against an empty database returns nothing, and nothing
 returning nothing is a pass.
+
+### Why the notebooks get a database of their own
+
+The eleven notebooks in `notebooks/` state numbers — `29.36 %`, `4 239 284
+readings` — and a gate checks each one against a real run. That only works if the
+rows are the same rows every time, and `wwtp` cannot promise that: it is seeded
+relative to *now*, so every re-seed slides every timestamp. The SQL course
+depends on exactly that, in 28 places, so pinning it would break the course.
+
+So the `notebooks` job seeds a second database, `wwtp_notebooks`, at a fixed
+instant, and the job's two steps are that seeding and then
+`python -m tools.check_notebooks`. This is **not** redundancy, and the comment in
+the workflow says so: the two audiences need opposite properties from their data
+and cannot share it.
+
+The gate is four checks per notebook — the generated `.ipynb` is in step with its
+`src/*.md`, the notebook runs top to bottom, every `output` block matches what it
+printed, and the seed fingerprint is the pinned one. The third is the one that
+matters, and it is the SQL course's rule applied to notebooks: *a lesson that
+states a number must state the number the database actually produced.* A cell's
+`outputs` array is a record of the last run; an `output` block in markdown is a
+claim, which is why the notebooks are generated from markdown rather than
+authored as `.ipynb`.
 
 ### Why the coverage matrix is nightly
 
@@ -159,7 +188,7 @@ and that is the assertion which would have caught it.
   ever been run by hand.
 * **`ui/web` has no tests at all** — the least verified part of the project, and
   `docs/LEARNING-LOG.md` has it as an open thread.
-* **The pre-existing lint debt** is measured, not fixed. 158 findings, tracked
+* **The pre-existing lint debt** is measured, not fixed. 157 findings, tracked
   in `lint-debt-baseline.txt`.
 * **`tests/test_scanloop.py::test_pace_divides_by_speed_so_a_backfill_is_not_throttled`**
   fails in a full run and passes alone. It is a wall-clock flake and it is not

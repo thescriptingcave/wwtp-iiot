@@ -173,7 +173,7 @@ Full walkthrough, including troubleshooting, in
 | [`scada/README.md`](scada/README.md) | The Node-RED operator flows, and how they are kept in step with the contract |
 | [`courses/opcua/`](courses/opcua/README.md) | The OPC UA course — **9 of 9 lessons** — and the **fourteen** things this implementation gets wrong |
 | [`ui/web/README.md`](ui/web/README.md) | The custom dashboard, its four decisions, and what is *not* verified |
-| [`docs/CI.md`](docs/CI.md) | The six CI jobs, and the three broken things writing the file found |
+| [`docs/CI.md`](docs/CI.md) | The seven CI jobs, and the three broken things writing the file found |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
 
@@ -257,32 +257,53 @@ who already write pandas and SQL. It does not teach either. It is about **what
 the plant is telling you and what it is not** — a question the two courses set up
 but neither can answer, because both are about how to ask.
 
-Eleven notebooks. Two are written.
+All eleven are written. They run against a **separately seeded database pinned to
+a fixed week** — `2026-09-22 00:00` to `2026-09-28 23:59` UTC, 4,239,284 readings
+— because their numbers are checked claims and a claim checked against data that
+moves every time it is re-seeded is not a claim. An integer fingerprint of that
+table is in the gate, and two independent seeds produce the identical one.
 
-[`01 — Meet the plant`](notebooks/01-meet-the-plant.ipynb) is the orientation, and
-it ends with two findings that only appear when you compute them: **nine pairs of
-the 57 tags are one measurement under two names** — the four water temperatures
-are 1,943 identical readings — and **after removing those duplicates, 18 of 491
-independent signal pairs still correlate above 0.99**, because one daily cycle
-drives nearly everything in the plant.
+The findings are the point, and they are the ones an analyst would otherwise
+argue about:
 
-[`02 — Three kinds of nothing`](notebooks/02-three-kinds-of-nothing.ipynb)
-establishes the vocabulary the other nine use: *no data*, *bad data* and *no
-change* are three different facts, and `dropna` collapses all three into one
-indistinguishable hole.
+- **Nine of the 57 tags are one measurement under two names**, and after removing
+  them **18 of 491 independent signal pairs still correlate above 0.99** — one
+  daily cycle drives nearly the whole plant. (01)
+- **`AVG(value)` and an hourly rollup do not disagree; they answer different
+  questions**, and on the storm day they are **27 % apart** on the flow meter.
+  `AVG` is the count-weighted mean, exactly, and a bucket with one reading gets
+  the same vote as one with a thousand. (04)
+- **A stationarity test is not a seasonality test.** The raw hourly plant power
+  scores −4.96 on a Dickey-Fuller, past the 1 % line, with a lag-24
+  autocorrelation of **0.998** — and **99.7 %** of its variance is the clock.
+  (06)
+- **A random split lies about time.** Rolling-origin validation moves the
+  neighbour-in-time model from second to last and its error from **61.7** to
+  **494.1** m³/h, while the *yesterday* baseline beats everything on all five
+  test days. (08)
+- **The contract's band is not a detector.** It missed all three injected
+  instrument faults and raised **1,441** alarm-minutes on four signals when
+  nothing was wrong; a per-signal baseline gets the same faults to **4**
+  alarm-minutes. (09)
+- **Mean concentration × volume is not a load**: **4,973** kg against a real
+  **5,421**. And the averaging window can decide whether an event was a problem
+  at all — **44.90** mg/L over the storm, **22.08** over its day, against a
+  30 mg/L reference. (07)
 
 They are authored as markdown and generated as `.ipynb`, and the generated files
 are executed in CI. `make notebooks` rebuilds them, runs every one against the
-live database, and fails if a number in the prose no longer matches:
+pinned database, and fails if a number in the prose no longer matches:
 
 ```bash
 make notebooks
 ```
 
-A number in the prose is a claim the gate checks against what the notebook
-actually printed. That is the discipline the SQL course already follows, applied
-to notebooks: `sql/00-foundations/00-03` drifted for months because its expected
-output described a dataset that no longer existed.
+That gate is four checks, not one: the `output` fences, every **bold** number in
+the prose, every ` ```sql ` block executed for rows, and the seed fingerprint.
+A number in the prose is a claim checked against what the notebook actually
+printed — the discipline the SQL course already follows, and
+`sql/00-foundations/00-03` is the reason: it drifted for months because its
+expected output described a dataset that no longer existed.
 
 ## Phase status
 
@@ -308,7 +329,7 @@ output described a dataset that no longer existed.
   pages, server-rendered, **no credential in the browser**, generated read model,
   a read-only Postgres role, and a read-only container. 22 tests from Python; the
   rendering verified by building and running it. [`ui/web/README.md`](ui/web/README.md)
-- [x] **Phase 6** — CI: six jobs, and writing the file found that **three of the
+- [x] **Phase 6** — CI: seven jobs, and writing the file found that **three of the
   four local gates had been failing, or not doing what their labels said, the
   whole time** — `make lint`, `make types` and `make test`. I had been reporting
   the subsets that pass. [`docs/CI.md`](docs/CI.md)

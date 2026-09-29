@@ -14,14 +14,21 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 699 | no |
-| Integration | 46 | yes, and refuses to truncate a seeded one |
-| Slow (`-m slow`) | 4 | no — they run the plant model, ~18 min |
-| SQL course | 64 queries in 17 lessons | yes |
+| Unit, no database | 713 | no |
+| Integration | 48 | yes, and refuses to truncate a seeded one |
+| Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
+| SQL course | 78 queries in 26 files | yes |
 | OPC UA course | 87 snippets in 18 lessons — **all 9 teaching lessons written** | no — the gate starts its own server |
-| Extracted queries (`sql/TablePlus/`) | 64 files, run against a live database | yes |
-| `mypy` | clean across 57 source files | no |
-| `ruff` | clean on the gated packages; 158 tracked findings elsewhere | no |
+| Extracted queries (`sql/TablePlus/`) | 78 files, run against a live database | yes |
+| Analyst notebooks | 11 notebooks, 4 checks each | yes — and their own pinned database |
+| `mypy` | clean across 64 source files | no |
+| `ruff` | clean on the gated packages; 157 tracked findings elsewhere | no |
+
+`mypy` runs over `softplc gateway storage alarms scada tools ui` and the count
+is what it reports, so it moves whenever a module is added. The notebook row
+counts the *checks* rather than the tests: `make notebooks` runs four gates per
+notebook (output fences, prose numbers, SQL fences, seed fingerprint) and 11
+notebooks, which is 44 assertions a reader can name.
 
 Per file, for the ones worth naming:
 
@@ -36,14 +43,16 @@ Per file, for the ones worth naming:
 | `test_faults.py` | 28 | the eleven faults and what each one does to the plant |
 | `test_control.py` | 26 | DO control, chlorine dose, SRT |
 | `test_spool.py` | 23 | durability across rotation and restart |
-| `test_alarm_replay.py` | 22 | rebuilding alarm state from the event log |
+| `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 59 |
+| `test_readme_claims.py` | 65 |
 | `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
+| `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
+| `test_makefile_env.py` | 6 | that make's fast path cannot strip `.env` from a recipe again |
 
 **Every number in both tables is asserted by
 `tests/test_readme_claims.py`** — each per-file count by `pytest --co`, the
@@ -62,7 +71,7 @@ one.
 ## The gates run in CI, and what each one is
 
 `make check` runs the fast gates locally. `.github/workflows/gates.yml` runs them
-on a machine that is not mine, in six jobs — see [`docs/CI.md`](CI.md) for what
+on a machine that is not mine, in seven jobs — see [`docs/CI.md`](CI.md) for what
 each covers and, more usefully, what it deliberately does not.
 
 The line that was here before said "The repository has no CI configuration and no

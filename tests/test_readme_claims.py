@@ -285,21 +285,6 @@ def test_the_per_area_test_counts(path: str, claimed: int) -> None:
     )
 
 
-def test_the_ci_job_count() -> None:
-    """Six jobs, not five.
-
-    `lint-debt` was added after the README line was written, which is the
-    ordinary way a number goes stale: the change was real, the prose was simply
-    not revisited.
-    """
-    workflow = yaml.safe_load(
-        Path(".github/workflows/gates.yml").read_text(encoding="utf-8")
-    )
-    jobs = workflow["jobs"]
-    assert len(jobs) == 6, f"the workflow has {len(jobs)} jobs: {sorted(jobs)}"
-    assert "CI: six jobs" in _readme()
-
-
 def test_the_reading_count_is_about_right() -> None:
     """"4.3 M readings" for a seeded week.
 
@@ -362,7 +347,7 @@ def _claims_only(path: Path) -> list[str]:
     This rule was arrived at the hard way, three times in one review, because
     three separate sweep tests each caught their own correction note:
 
-    * `test_no_document_says_the_ci_workflow_has_five_jobs` failed on
+    * `test_no_document_miscounts_the_ci_workflow_jobs` failed on
       `docs/CI.md` saying *"It said 'five jobs' until a test caught it"*;
     * `test_no_document_quotes_a_stale_query_count` failed on this file's own
       Phase 6b entry quoting "57 queries";
@@ -390,6 +375,51 @@ def _claims_only(path: Path) -> list[str]:
         if line.strip():
             out.append(line)
     return out
+
+
+def _claims_only_line(raw: str) -> list[str]:
+    """`_claims_only` for a line that was read without its document.
+
+    The document-level version strips quoted spans *across* the whole file first,
+    which is right for the sweep tests and wrong here: `docs/LEARNING-LOG.md` has
+    a quotation that spans a hundred lines, and stripping it takes the words
+    "A CI workflow" with it — so a test that used the document-level helper to
+    decide whether a line is *about* CI would decide that it is not, and pass
+    over a claim that is.
+    """
+    line = re.sub(r"[*_>#]", "", raw)
+    line = re.sub(r"`[^`]*`", " ", line)
+    line = re.sub(r"\"[^\"]*\"", " ", line)
+    return [line] if line.strip() else []
+
+
+#: A markdown fence, opening or closing. ``` or ~~~ with up to three indent.
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def _is_prose(path: Path) -> list[bool]:
+    """One flag per line of `path`: True where the line is prose, not quoted.
+
+    A fenced block in these documents is a *transcript* — a tool's output, a
+    stack trace, a previous test failure — and a transcript is somebody else
+    asserting something, not this document. `docs/LEARNING-LOG.md` is full of
+    them by design, and it quotes two stale "five CI jobs" lines inside one
+    precisely because finding them was the point of the entry. Asserting on them
+    would make the sweep fail on the evidence it is about, which is a check that
+    can never be made green except by deleting the record.
+
+    The document-level `_claims_only` gets this right by accident — the long
+    quotation that swallowed the phrase also swallowed the fence markers — which
+    is the worst way for a rule to be right, and the reason this one is explicit.
+    """
+    flags, in_fence = [], False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if _FENCE.match(raw):
+            in_fence = not in_fence
+            flags.append(False)
+        else:
+            flags.append(not in_fence)
+    return flags
 
 
 def test_no_document_quotes_a_stale_query_count() -> None:
@@ -454,6 +484,119 @@ def test_the_documented_lesson_snippet_count_matches() -> None:
     )
 
 
+def test_the_documented_mypy_file_count_matches() -> None:
+    """`docs/TESTING.md` says how many files `mypy` covers. It was wrong by 7.
+
+    The sentence above the tables claims every number in them is asserted here,
+    "and `mypy`'s file count" included. It was not, and the count it was supposed
+    to be checking was seven files out of date. A claim about a check, made
+    before the check exists, reads as a control and is not one — the same failure
+    as a stale number, one level of indirection further out.
+
+    Counted the way `make types` counts it: the packages the Makefile names.
+    """
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    claimed = re.search(r"mypy` \| clean across (\d+) source files", doc)
+    assert claimed, "docs/TESTING.md has no mypy row"
+
+    result = subprocess.run(
+        ["uv", "run", "--no-sync", "mypy", "softplc", "gateway", "storage",
+         "alarms", "scada", "tools", "ui"],
+        capture_output=True, text=True, check=False,
+    )
+    m = re.search(r"(\d+) source files", result.stdout + result.stderr)
+    assert m, f"could not read mypy's count:\n{result.stdout[-300:]}"
+    assert int(claimed.group(1)) == int(m.group(1)), (
+        f"docs/TESTING.md says {claimed.group(1)} source files; "
+        f"mypy reports {m.group(1)}"
+    )
+
+
+def test_the_documented_extracted_query_count_matches() -> None:
+    """`docs/TESTING.md`'s `sql/TablePlus/` row, against the directory.
+
+    The row said 64 for a long time. There are 78 files, because the course grew
+    and this number is prose. It is cheap to check, so it is checked.
+    """
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    row = re.search(r"Extracted queries \(`sql/TablePlus/`\) \| (\d+) files", doc)
+    assert row, "docs/TESTING.md has no extracted-queries row"
+    actual = len(list(Path("sql/TablePlus").rglob("*.sql")))
+    assert actual == int(row.group(1)), (
+        f"docs/TESTING.md says {row.group(1)} extracted queries; "
+        f"sql/TablePlus holds {actual}"
+    )
+
+
+def test_the_documented_integration_count_matches() -> None:
+    """The integration row, by collection. Two tests were added and it said 46."""
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    row = re.search(r"Integration \| (\d+) \|", doc)
+    assert row, "docs/TESTING.md has no integration row"
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/integration", "-q",
+         "-p", "no:cacheprovider", "--collect-only"],
+        capture_output=True, text=True, check=False,
+    )
+    m = re.search(r"(\d+) tests collected", out.stdout)
+    assert m, f"could not count the integration suite:\n{out.stdout[-300:]}"
+    assert int(m.group(1)) == int(row.group(1)), (
+        f"docs/TESTING.md says {row.group(1)} integration tests; "
+        f"pytest collects {m.group(1)}"
+    )
+
+
+def test_the_documented_slow_count_matches() -> None:
+    """The slow row, by marker. Cheap, and it was off by one as well."""
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    row = re.search(r"Slow \(`-m slow`\) \| (\d+) \|", doc)
+    assert row, "docs/TESTING.md has no slow row"
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
+         "--ignore=tests/integration", "-m", "slow", "--collect-only"],
+        capture_output=True, text=True, check=False,
+    )
+    m = re.search(r"(\d+)/(\d+) tests collected", out.stdout)
+    assert m, f"could not count the slow tests:\n{out.stdout[-300:]}"
+    assert int(m.group(1)) == int(row.group(1)), (
+        f"docs/TESTING.md says {row.group(1)} slow tests; "
+        f"pytest selects {m.group(1)}"
+    )
+
+
+def test_the_documented_notebook_row_matches_the_series() -> None:
+    """`11 notebooks, 4 checks each` — both halves counted, not remembered.
+
+    The notebook count is a directory listing and the check count is the number of
+    per-notebook checks `check_notebooks.main` runs, so neither needs a database.
+    The arithmetic in the prose below the table (11 x 4 = 44) is stated rather
+    than left for the reader, and this is what keeps it true.
+    """
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    row = re.search(r"Analyst notebooks \| (\d+) notebooks, (\d+) checks each", doc)
+    assert row, "docs/TESTING.md has no notebooks row"
+
+    notebooks = len(list(Path("notebooks/src").glob("*.md")))
+    assert notebooks == int(row.group(1)), (
+        f"docs/TESTING.md says {row.group(1)} notebooks; "
+        f"notebooks/src holds {notebooks}"
+    )
+
+    from tools import check_notebooks  # noqa: PLC0415
+
+    per_notebook = ("check_outputs", "check_prose_numbers", "check_sql_fences")
+    checks = sum(
+        name in check_notebooks.main.__code__.co_names for name in per_notebook
+    ) + 1  # the seed fingerprint, a gate with no per-notebook function
+    assert checks == int(row.group(2)), (
+        f"docs/TESTING.md says {row.group(2)} checks per notebook; "
+        f"check_notebooks runs {checks}"
+    )
+    assert f"{notebooks * checks} assertions" in doc, (
+        f"the prose claims {notebooks * checks} assertions and does not say so"
+    )
+
+
 def test_no_document_quotes_a_stale_test_count() -> None:
     """"31 tests" on the Node-RED flows; it is 37."""
     offenders = [
@@ -468,27 +611,87 @@ def test_no_document_quotes_a_stale_test_count() -> None:
     )
 
 
-def test_no_document_says_the_ci_workflow_has_five_jobs() -> None:
-    """Six, including the lint-debt ratchet added after the prose was written.
+#: English for a small count, because a claim is written in words in these
+#: documents ("Six jobs", "six on every push") and the pattern below has to see
+#: both. The workflow is at seven now, which is what makes the list grow rather
+#: than a special case: the first version of this test named only "five", so a
+#: document that went stale at six passed it.
+_NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+                 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+
+#: A line has to be *about* CI before its number of jobs is a CI claim. Matched
+#: against the raw line, before `_claims_only` strips the code spans — two of the
+#: lines this test has to catch say "CI" only inside a backticked `docs/CI.md`.
+_CI_TOPIC = re.compile(r"\bci\b|workflow|gates|nightly|lint.debt", re.I)
+
+
+def _ci_job_count() -> int:
+    """The number of jobs in `gates.yml`, counted rather than remembered.
+
+    A guard that hardcodes the number it is guarding is a second number to keep
+    current, and it has already been wrong: this test said "five" and the
+    workflow had six, which is the failure it was written to catch. So the count
+    comes from the file. Parsed with `yaml` because the file is YAML and a
+    hand-rolled scan of it is a second thing to be wrong about the first.
+    """
+    workflow = yaml.safe_load(
+        Path(".github/workflows/gates.yml").read_text(encoding="utf-8")
+    )
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict) and jobs, "gates.yml has no jobs"
+    return len(jobs)
+
+
+def test_no_document_miscounts_the_ci_workflow_jobs() -> None:
+    """Every number a document attaches to "CI jobs", against `gates.yml`.
+
+    This replaces a test that asserted `len(jobs) == 6`, which is the same
+    failure wearing a different hat: the number it checked was written down
+    somewhere else and went stale the moment a job was added, and it could only
+    be made green by editing the test rather than the workflow. The count is
+    read out of the file, and the file is the claim.
 
     Uses the shared `_claims_only` rule, which is where the reasoning lives: a
     number in quotation marks is somebody being cited, not this document
     asserting something.
 
-    The pattern allows an adjective between the number and the noun, because the
-    first version of this test did not — and so **passed against a README that
-    said "five CI jobs" while the workflow had six.** A guard with a regex
-    narrower than the prose it guards is worse than no guard, because it is
-    green. Caught by reading the failure mode rather than the pass.
+    Two narrownesses were found by being wrong, and both are load-bearing:
+
+    * The pattern allows an adjective between the number and the noun, because
+      the first version did not — and so **passed against a README that said
+      "five CI jobs" while the workflow had six.** A guard with a regex
+      narrower than the prose it guards is worse than no guard, because it is
+      green.
+    * The line must also be *about* CI, and *outside* a fence. Matching any
+      number before "jobs" flags `Signal.equipment` "doing two jobs at once" and
+      a note that `POSTGRES_PASSWORD` "was set on seven of eight jobs" — both
+      true, neither a claim about this workflow, and a check that fails on them
+      gets deleted. The fence rule is the same disagreement with a different
+      pair of lines: `docs/LEARNING-LOG.md` quotes two stale "five CI jobs"
+      lines inside a code block *because finding them was the point of the
+      entry*, and a check that fails on the evidence it is about can only be
+      made green by deleting the record.
     """
+    actual = _ci_job_count()
+    word = _NUMBER_WORDS[actual]
+    others = "|".join(
+        w for n, w in sorted(_NUMBER_WORDS.items(), reverse=True) if w != word
+    )
     offenders = [
-        f"{path}: {line.strip()}"
+        f"{path}:{number}: {stripped.strip()}"
         for path in DOCS
-        for line in _claims_only(path)
-        if re.search(r"\b(?:five|5)\s+(?:\w+\s+){0,2}?jobs\b", line, re.I)
+        for number, (raw, prose) in enumerate(
+            zip(path.read_text(encoding="utf-8").splitlines(),
+                _is_prose(path), strict=True), start=1,
+        )
+        if prose
+        and _CI_TOPIC.search(raw)
+        for stripped in _claims_only_line(raw)
+        if re.search(r"\b\d+\s+(?:\w+\s+){0,2}?jobs\b", stripped, re.I)
+        or re.search(rf"\b(?:{others})\s+(?:\w+\s+){{0,2}}?jobs\b", stripped, re.I)
     ]
     assert not offenders, (
-        "the workflow has six jobs; these lines claim five:\n  "
+        f"the workflow has {actual} jobs ({word}); these lines say otherwise:\n  "
         + "\n  ".join(offenders)
     )
 
@@ -536,11 +739,13 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 59,
+    "tests/test_readme_claims.py": 65,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
     "tests/test_alarm_engine.py": 17,
+    "tests/test_seed.py": 5,
+    "tests/test_makefile_env.py": 6,
 }
 
 
@@ -551,16 +756,30 @@ def test_the_documented_test_counts_match_the_suite(path: str) -> None:
     Collect-only, so it costs nothing and needs no database: a count is a
     property of the files, not of whether they pass.
 
-    Note the self-reference: this file's own row says 17, and it will be wrong
-    the moment a test is added here. Which is the point — the failure is
-    announced rather than discovered, and a stale row in a table about staleness
-    would be a poor joke.
+    **Both halves are checked, and the copy in this dict used to be a second
+    number to keep current.** `DOCUMENTED_SUITE_COUNTS` was the expected value
+    while the table in the document was only ever read by a human, so the two
+    could disagree and the test would report the dict as the truth. The number is
+    now parsed out of `docs/TESTING.md` as well, which means a stale row in a
+    table about staleness fails rather than informing nobody.
+
+    Note the self-reference: this file's own row is read from the document, so
+    adding a test here is a two-place edit. Which is the point — the failure is
+    announced rather than discovered.
     """
     documented = DOCUMENTED_SUITE_COUNTS[path]
     actual = _count_tests(path)
     assert actual == documented, (
         f"{path} collects {actual} tests; docs/TESTING.md says {documented}."
         f" Update the table in the same commit as the test."
+    )
+
+    doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
+    row = re.search(rf"\| `{re.escape(Path(path).name)}` \| (\d+)", doc)
+    assert row, f"docs/TESTING.md has no per-file row for {path}"
+    assert int(row.group(1)) == documented, (
+        f"docs/TESTING.md's row for {path} says {row.group(1)}; the table in this "
+        f"file says {documented}. Two copies of one number, and they have drifted."
     )
 
 

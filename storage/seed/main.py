@@ -138,8 +138,11 @@ class Seeder:
     def __init__(self, contract: Contract, execute: ExecuteFn, *,
                  sample_interval_s: float = SAMPLE_INTERVAL_S,
                  speed: float = 600.0, storm_after_h: float | None = 2.0,
-                 instrument_faults: list[dict[str, Any]] | None = None) -> None:
+                 instrument_faults: list[dict[str, Any]] | None = None,
+                 end_ts: float | None = None) -> None:
         self.c = contract
+        #: Epoch seconds the window ends at; `None` means "now".
+        self.end_ts = end_ts
         self._execute = execute
         self.sample_interval_s = sample_interval_s
         self.speed = speed
@@ -219,7 +222,16 @@ class Seeder:
         # at 50 Hz and the historian records at 1 Hz, and conflating them is how
         # a dataset ends up claiming 1 Hz resolution it does not have.
         dt = self.sample_interval_s
-        sim_now = time.time()
+        # The window's *end*. Wall-clock by default; pinned by `--end`.
+        #
+        # Unpinned, every re-seed re-anchors every timestamp, and everything
+        # written down from a previous seed — a pasted number, an hour of the
+        # day a cycle peaks in — is stale on arrival. The plant model itself is
+        # deterministic and does not read `ts`, so the *shape* of the week was
+        # always reproducible; only the dates were not. Pinning the end makes the
+        # whole database byte-for-byte repeatable, which is what lets a notebook
+        # state a number and a gate check it.
+        sim_now = self.end_ts if self.end_ts is not None else time.time()
         start = sim_now - total_s
 
         if self.storm_after_h is not None:
@@ -234,9 +246,23 @@ class Seeder:
             self.faults.arm_scenario("wet_weather")
             for fault in self.faults.active:
                 delay = total_s - self.storm_after_h * 3600.0
-                fault.start_s = delay
+                # The duration has to be read **before** `start_s` is moved.
+                #
+                # This used to overwrite `start_s` first and then compute
+                # `end_s = delay + (end_s - start_s)` — by which point `start_s`
+                # was already `delay`, so the expression collapsed to the
+                # original `end_s`: seven thousand two hundred seconds after the
+                # *arming* time, which is hours before the storm was moved to.
+                # The storm ended before it began, no signal ever moved, and
+                # `INFLUENT:FLOW:CONDUCTIVITY` — the scenario's own tracer —
+                # had one row all week. Nothing failed: a fault whose window is
+                # empty is a fault that simply never happens.
                 if fault.end_s is not None:
-                    fault.end_s = delay + (fault.end_s - fault.start_s)
+                    duration = fault.end_s - fault.start_s
+                    fault.start_s = delay
+                    fault.end_s = delay + duration
+                else:
+                    fault.start_s = delay
 
         if self.instrument_faults:
             # Instrument faults are the *point* of this dataset being teachable.
@@ -289,6 +315,14 @@ def build_parser() -> argparse.ArgumentParser:
                    default=_env_float("DEMO_STORM_AT_HOURS", 2.0),
                    help="hours before the end of the run to arm the storm; "
                         "negative to skip")
+    p.add_argument("--end", default=os.environ.get("SEED_END"),
+                   help="ISO-8601 instant the window ends at (default: now, or "
+                        "$SEED_END). Pin it and a re-seed reproduces the same "
+                        "database, timestamps included")
+    p.add_argument("--reset", action="store_true",
+                   help="empty `reading` first. Without it a second seed into a "
+                        "different window ADDS a week; with a pinned --end it "
+                        "fails on the primary key instead")
     p.add_argument("--speed", type=float, default=600.0,
                    help="simulated seconds per real second")
     p.add_argument("--no-instrument-faults", action="store_true",
@@ -325,6 +359,25 @@ def _seed_bounds() -> tuple[datetime, datetime] | None:
     return row[0] - timedelta(minutes=90), row[1] + timedelta(minutes=90)
 
 
+def _reset_readings(dsn_str: str) -> None:
+    """Empty `reading` and its aggregates, so the next seed is the only data.
+
+    `make seed` used to append. Running it twice produced two overlapping weeks
+    with different sub-second timestamps — so no primary-key collision, no error,
+    and every count exactly doubled. A seed that is not idempotent is a seed
+    whose output depends on how many times somebody ran it.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn_str, autocommit=True) as conn:
+        conn.execute("TRUNCATE reading")
+        for aggregate in ("reading_1m", "reading_1h"):
+            conn.execute(
+                f"CALL refresh_continuous_aggregate('{aggregate}', NULL, NULL)"
+            )
+    log.info("reading emptied; aggregates refreshed over nothing")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -347,10 +400,18 @@ def main(argv: list[str] | None = None) -> int:
     apply_schema()
     log.info("metadata: %s", seed_metadata(contract))
 
+    end_ts = None
+    if args.end:
+        end_ts = datetime.fromisoformat(args.end.replace("Z", "+00:00")).timestamp()
+
+    if args.reset:
+        _reset_readings(dsn_str)
+
     seeder = Seeder(
         contract, execute, speed=args.speed,
         storm_after_h=None if args.storm_after < 0 else args.storm_after,
         instrument_faults=[] if args.no_instrument_faults else None,
+        end_ts=end_ts,
     )
     if args.no_deadband:
         seeder.deadband = Deadband({})

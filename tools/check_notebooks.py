@@ -93,10 +93,12 @@ def _printed(cell: dict) -> str:
     for out in cell.get("outputs", []):
         if out.get("output_type") == "stream":
             parts.append("".join(out.get("text", [])))
-        elif out.get("output_type") == "execute_result":
+        elif out.get("output_type") in ("execute_result", "display_data"):
             data = out.get("data", {})
-            if "text/plain" in data:
-                parts.append("".join(data["text/plain"]))
+            for mime in ("text/markdown", "text/plain"):
+                if mime in data:
+                    parts.append("".join(data[mime]))
+                    break
     return "".join(parts)
 
 
@@ -178,8 +180,146 @@ def check_outputs(notebook_path: Path, source_path: Path, executed: dict) -> lis
     return problems
 
 
-def main() -> int:
+#: A number as prose writes it: `5,985`, `-21.4`, `1.78`, `64`.
+NUMBER = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+
+#: A bold span, which is how these notebooks mark a claim. Not every number in a
+#: paragraph — narration says "three notebooks" and "a week" — but every number a
+#: reader is meant to *take away* is bold, so that is the set worth verifying.
+BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+
+
+def _numbers(text: str) -> list[tuple[float, int]]:
+    """`(value, decimals)` for every number in `text`, commas removed."""
+    found: list[tuple[float, int]] = []
+    for token in NUMBER.findall(text):
+        clean = token.replace(",", "")
+        decimals = len(clean.split(".")[1]) if "." in clean else 0
+        try:
+            found.append((abs(float(clean)), decimals))
+        except ValueError:
+            continue
+    return found
+
+
+def _prose_bold_numbers(source: str) -> list[tuple[int, str, float, int]]:
+    """`(line, span, value, decimals)` for each number inside bold prose.
+
+    Code fences and HTML comments are removed first, and a paragraph carrying
+    `<!-- num-ok -->` is skipped: some bold numbers are arithmetic on the reader's
+    part ("three notebooks") and not readings from the database.
+    """
+    out: list[tuple[int, str, float, int]] = []
+    without_code = re.sub(
+        r"^```.*?^```\s*$", lambda m: "\n" * m.group(0).count("\n"),
+        source, flags=re.MULTILINE | re.DOTALL,
+    )
+    offset = 0
+    for paragraph in re.split(r"(\n\s*\n)", without_code):
+        start_line = source[: source.find(paragraph, offset)].count("\n") + 1 \
+            if paragraph.strip() else 0
+        offset += len(paragraph)
+        if not paragraph.strip() or "<!-- num-ok -->" in paragraph:
+            continue
+        cleaned = re.sub(r"<!--.*?-->", "", paragraph, flags=re.DOTALL)
+        for span in BOLD.finditer(cleaned):
+            body = span.group(1)
+            line = start_line + cleaned[: span.start()].count("\n")
+            for value, decimals in _numbers(body):
+                out.append((line, body, value, decimals))
+    return out
+
+
+def check_prose_numbers(
+    source_path: Path, executed: dict[str, Any],
+) -> list[str]:
+    """Every bold number in the prose must appear in something the notebook printed.
+
+    The `output` fences are checked line by line, but prose is not, and prose is
+    where the numbers go stale: a re-seed moved 86 claims in three notebooks and
+    the *paragraphs* around them (`64 % removed`, `a 1.77x swing`, `peaking at
+    08:00`) were wrong for a day before anyone looked. The pinned seed makes that
+    much rarer; this makes the remainder a failure and not a surprise.
+
+    Compared at the precision the prose states. `64 %` matches a printed `63.9`
+    because that is what rounding to zero places gives, and `1.78x` matches
+    `1.7791`. A percentage the notebook prints as a fraction (`0.639`) matches
+    too, since prose rounds and converts freely and a checker that could not would
+    be switched off within the week.
+    """
+    printed = [v for cell in _cells(executed) for v in _numbers(_printed(cell))]
+    if not printed:
+        return []
+
+    def matches(value: float, decimals: int) -> bool:
+        tolerance = 0.5 * 10 ** (-decimals) + 1e-9
+        return any(
+            abs(p - value) <= tolerance or abs(p * 100 - value) <= tolerance
+            for p, _ in printed
+        )
+
+    source = source_path.read_text(encoding="utf-8")
+    problems: list[str] = []
+    for line, span, value, decimals in _prose_bold_numbers(source):
+        if not matches(value, decimals):
+            problems.append(
+                f"{source_path.name}:{line}: the prose claims **{span.strip()}** "
+                f"but no number the notebook printed rounds to {value:g}. "
+                "Re-run it and correct the sentence, or mark the paragraph "
+                "`<!-- num-ok -->` if it is not a reading."
+            )
+    return problems
+
+
+SQL_FENCE = re.compile(
+    r"(<!-- check: skip -->\s*\n)?^```sql\s*\n(.*?)^```\s*$",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def check_sql_fences(source_path: Path) -> list[str]:
+    """Every ```sql block must run, against the notebook database, and return rows.
+
+    A `sql` fence is shown and never executed by the notebook, so before this it was
+    the one kind of claim in the series nothing checked: a query could rot when a
+    column was renamed and the notebook would go on recommending it. They are run
+    here in a read-only transaction that is always rolled back, so a block cannot
+    change the data the other notebooks describe.
+
+    Zero rows fails, as in the SQL course: a query that returns nothing is
+    indistinguishable from a query that is wrong, and "nothing" reads as success.
+    """
+    from notebooks._data import connect
+
+    source = source_path.read_text(encoding="utf-8")
+    problems: list[str] = []
+    with connect() as conn:
+        for match in SQL_FENCE.finditer(source):
+            if match.group(1):
+                continue
+            body = match.group(2)
+            line = source[: match.start(2)].count("\n") + 1
+            try:
+                with conn.transaction(force_rollback=True):
+                    conn.execute("SET TRANSACTION READ ONLY")
+                    rows = conn.execute(body).fetchall()
+            except Exception as exc:
+                problems.append(
+                    f"{source_path.name}:{line}: the sql block does not run: "
+                    f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+                )
+                continue
+            if not rows:
+                problems.append(
+                    f"{source_path.name}:{line}: the sql block returns no rows"
+                )
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
     from tools import build_notebooks
+
+    only = list(argv if argv is not None else sys.argv[1:])
 
     # Probe the connection rather than reading an environment variable. The
     # seeder checks `POSTGRES_HOST` because it runs *in a container* where
@@ -188,20 +328,32 @@ def main() -> int:
     # the seeder's check would have refused to run here, which is the one place
     # this gate actually gets used.
     try:
-        from storage.postgres.schema import connect
+        from notebooks._data import connect
 
         with connect() as probe:
             probe.execute("SELECT 1")
     except Exception as exc:
-        print(f"  no database: {type(exc).__name__}. Seed one first:", file=sys.stderr)
-        print("    docker compose up -d db && docker compose run --rm init-db",
+        print(f"  no notebook database: {type(exc).__name__}. Create and seed it:",
               file=sys.stderr)
-        print("    docker compose --profile demo run --rm seed", file=sys.stderr)
+        print("    python -m tools.notebook_data    (or: make notebooks-data)",
+              file=sys.stderr)
+        return 2
+
+    from tools.notebook_data import status
+
+    current = status()
+    print(f"  data: {current}")
+    if "the pinned seed" not in current:
+        print("  the notebooks' prose was written for the pinned seed and this is "
+              "not it.\n  Re-seed: python -m tools.notebook_data", file=sys.stderr)
         return 2
 
     problems: list[str] = []
 
     built = build_notebooks.build()
+    # A name fragment selects notebooks (`... 05 06`); drift is still checked for all.
+    selected = {path: nb for path, nb in built.items()
+                if not only or any(o in path.name for o in only)}
     for path, notebook in built.items():
         encoded = json.dumps(notebook, indent=1, ensure_ascii=False) + "\n"
         if not path.exists():
@@ -223,7 +375,7 @@ def main() -> int:
     from nbclient import NotebookClient
 
     os.environ.setdefault("MPLBACKEND", "Agg")
-    for path in sorted(built):
+    for path in sorted(selected):
         notebook = nbformat.read(path, as_version=4)
         print(f"  running {path.name} ...", flush=True)
         try:
@@ -241,12 +393,19 @@ def main() -> int:
         problems.extend(check_outputs(
             path, NB / "src" / (path.stem + ".md"), notebook,
         ))
+        problems.extend(check_prose_numbers(
+            NB / "src" / (path.stem + ".md"), notebook,
+        ))
+        problems.extend(check_sql_fences(NB / "src" / (path.stem + ".md")))
 
     if problems:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
         return 1
-    print(f"  {len(built)} notebook(s): built, executed, outputs agree")
+    print(
+        f"  {len(selected)} notebook(s): built, executed, "
+        "outputs and prose numbers agree"
+    )
     return 0
 
 

@@ -14,7 +14,7 @@ The obvious answer is one: *no data*. And the obvious handling is one line:
 
 <!-- illustrative: the line this notebook is about, not a step -->
 <!-- check: skip -->
-```output
+```python
 df.dropna()
 ```
 
@@ -33,15 +33,14 @@ because the metadata is stored 57 times instead of four million, and because
 %matplotlib inline
 import matplotlib.pyplot as plt
 import pandas as pd
-import psycopg
-from storage.postgres.schema import dsn
 
+from notebooks._data import connect
 from notebooks._style import apply_style, save, signal_meta, stamp, trend
 
 apply_style()
 pd.set_option("display.width", 130)
 
-conn = psycopg.connect(dsn())
+conn = connect()
 
 signals = pd.read_sql("SELECT * FROM signal ORDER BY area, id", conn)
 readings = pd.read_sql(
@@ -53,18 +52,21 @@ readings = pd.read_sql(
     conn,
 )
 
-print(f"{len(readings):,} readings across "
-      f"{readings.signal_id.nunique()} signals, one week")
+print(
+    f"{len(readings):,} readings across "
+    f"{readings.signal_id.nunique()} signals, one week"
+)
 print(f"quality counts: {readings.quality.value_counts().to_dict()}")
 ```
 
 ```output
-4,287,657 readings across 57 signals, one week
-quality counts: {0: 4287620, 1: 36, 2: 1}
+4,239,284 readings across 57 signals, one week
+quality counts: {0: 4239247, 1: 36, 2: 1}
 ```
 
-**A week, 4.29 million rows, and exactly one of them is `Bad`.** Hold that
-number. Everything in this notebook is about the other 4,287,656.
+**4,239,284 readings in a week, and exactly one of them is `Bad`.** Another 36 are
+`Uncertain`. Hold those numbers: everything in this notebook is about the other
+4,239,247.
 
 ## The three kinds
 
@@ -82,7 +84,7 @@ historian is **change-triggered**: a row is written when a value *differs* from 
 last one, not on a schedule. So a signal that is behaving perfectly is a signal
 that is mostly absent.
 
-## Kind one: no data, thirteen times over
+## Kind one: no data, ten times over
 
 Count the quiet signals:
 
@@ -102,39 +104,53 @@ print(quiet.join(signals.set_index("id")[["field", "unit", "sample_ms"]]).to_str
 ```
 
 ```output
-signals with 5 or fewer rows in a week: 13
+signals with 5 or fewer rows in a week: 10
 
-                        rows  with_value  distinct  worst_quality no_value              field       unit  sample_ms
-AERATION:AHU-1:MLSS         1           1         1              0        0       mlss_mg_l       mg/L       60000
-AERATION:AHU-1:SETPOINT_DO  1           1         1              0        0  setpoint_do_mg_l       mg/L        5000
-AERATION:AHU-1:SRT          1           1         1              0        0             srt_d          d     3600000
-EFFLUENT:FLOW:CONDUCTIVITY  1           1         1              0        0   conduct_uS_cm      uS/cm        5000
-INFLUENT:FLOW:CONDUCTIVITY  1           1         1              0        0   conduct_uS_cm      uS/cm        5000
-PRIMARY:PRI-CL-1:BLANKET    1           1         1              0        0        blanket_m         m        2000
-PRIMARY:PRI-CL-1:TEMP       1           1         1              0        0           temp_c       Cel       10000
-SECONDARY:SEC-CL-1:BLANKET  1           1         1              0        0        blanket_m         m        2000
-SITE:WEATHER:BARO           1           1         1              0        0         baro_hpa      hPa       60000
-SITE:WEATHER:RAIN           1           1         1              0        0       rain_mm_h     mm/h       60000
-SITE:WEATHER:STORM          1           1         1              0        0       storm_flag {Boolean}        1000
-SLUDGE:DIG-1:TEMP           1           1         1              0        0           temp_c       Cel       60000
-SLUDGE:THK-1:TS             1           1         1              0        0            ts_pct         %       10000
+                            rows  with_value  distinct  worst_quality  no_value             field       unit  sample_ms
+signal_id                                                                                                              
+AERATION:AHU-1:MLSS            1           1         1              0         0         mlss_mg_l       mg/L      60000
+AERATION:AHU-1:SETPOINT_DO     1           1         1              0         0  setpoint_do_mg_l       mg/L       5000
+AERATION:AHU-1:SRT             1           1         1              0         0             srt_d          d    3600000
+EFFLUENT:FLOW:CONDUCTIVITY     1           1         1              0         0     conduct_uS_cm      uS/cm       5000
+PRIMARY:PRI-CL-1:BLANKET       1           1         1              0         0         blanket_m          m       2000
+PRIMARY:PRI-CL-1:TEMP          1           1         1              0         0            temp_c        Cel      10000
+SECONDARY:SEC-CL-1:BLANKET     1           1         1              0         0         blanket_m          m       2000
+SITE:WEATHER:STORM             3           3         2              0         0        storm_flag  {Boolean}       1000
+SLUDGE:DIG-1:TEMP              1           1         1              0         0            temp_c        Cel      60000
+SLUDGE:THK-1:TS                1           1         1              0         0            ts_pct          %      10000
 ```
 
-**Thirteen of fifty-seven signals reported once in a week.** Not zero times, not
-twice — *once*, and all thirteen at the same instant:
+**Ten of fifty-seven signals wrote five rows or fewer in a week.** Nine of them
+wrote *once*, and all nine at the same instant. The tenth is the storm flag, which
+wrote three times:
 
 ```python
-q = readings[readings.signal_id.isin(quiet.index)]
-print(f"those 13 rows share {q.ts.nunique()} timestamp: {q.ts.iloc[0]}")
+once = quiet[quiet.rows == 1]
+q = readings[readings.signal_id.isin(once.index)]
+print(
+    f"{len(once)} signals wrote exactly once; their {len(q)} rows share "
+    f"{q.ts.nunique()} timestamp: {q.ts.iloc[0]}"
+)
 print(f"which is {q.ts.iloc[0] - readings.ts.min()} into the dataset")
+
+flag = readings[readings.signal_id == "SITE:WEATHER:STORM"].sort_values("ts")
+print()
+print("the tenth, SITE:WEATHER:STORM:")
+print(flag[["ts", "value"]].to_string(index=False))
 ```
 
 ```output
-those 13 rows share 1 timestamp: 2026-09-22 01:43:25.774697+00:00
+9 signals wrote exactly once; their 9 rows share 1 timestamp: 2026-09-22 00:00:00+00:00
 which is 0 days 00:00:00 into the dataset
+
+the tenth, SITE:WEATHER:STORM:
+                       ts  value
+2026-09-22 00:00:00+00:00    0.0
+2026-09-27 12:00:00+00:00    1.0
+2026-09-27 14:00:00+00:00    0.0
 ```
 
-The opening value, and nothing since. Look at the `sample_ms` column: the
+Nine of them: the opening value, and nothing since. Look at the `sample_ms` column: the
 contract declares a rate between 1 second and 1 hour for each of these tags, and
 `AERATION:AHU-1:SRT` — sludge retention time, declared at **3,600,000 ms**, one
 sample per hour — reported once in a week.
@@ -143,9 +159,15 @@ sample per hour — reported once in a week.
 seven days, or the instrument is dead and nobody noticed. Both are consistent with
 what is in the table. The table does not say.
 
+The tenth signal is the counter-example, and it is worth a second look. The storm
+flag wrote **0**, then **1** when the storm began, then **0** when it ended: three
+rows, and each one is an event. It is quiet for exactly the reason a healthy signal
+is quiet — nothing changed — and it is the only one of the ten whose silence you can
+explain from the plant. The other nine are silent for reasons the table cannot give.
+
 ## Kind two: bad data, exactly once
 
-One row in 4.29 million has a value that is genuinely absent, and it is flagged.
+One row in 4.24 million has a value that is genuinely absent, and it is flagged.
 That is the seeder's `sensor_dead` fault — an instrument that stopped answering,
 stored as `value = NULL, quality = 2`.
 
@@ -162,7 +184,7 @@ print(f"row    : value={dead.value.iloc[0]}  quality={dead.quality.iloc[0]}")
 
 ```output
             signal_id                        ts  value  quality
-INFLUENT:LIFT:CURRENT 2026-09-27 12:45:48.774697+00:00   NaN        2
+INFLUENT:LIFT:CURRENT 2026-09-27 11:02:23+00:00    NaN        2
 
 signal : INFLUENT:LIFT:CURRENT
 field  : current_a  [A]
@@ -183,8 +205,8 @@ print(f"difference   — instrument was dead : {len(row) - row.value.count()}")
 ```
 
 ```output
-count(*)     — rows that happened  : 31182
-count(value) — rows you can use    : 31181
+count(*)     — rows that happened  : 31598
+count(value) — rows you can use    : 31597
 difference   — instrument was dead : 1
 ```
 
@@ -195,7 +217,7 @@ failure.
 **And note what `dropna` would do to that row.** It would delete it — and with it
 the only evidence in the database that a lift stopped reporting.
 
-## Kind three: no change, 30,718 times
+## Kind three: no change, 30,792 times
 
 The third kind is not a gap at all, which is why it is the dangerous one. Find the
 signals that report often but vary hardly:
@@ -206,14 +228,15 @@ print(busy.join(signals.set_index("id")[["field", "unit", "sample_ms"]]).to_stri
 ```
 
 ```output
-                              rows  with_value  distinct  worst_quality  no_value                 field  unit  sample_ms
-PRIMARY:PRI-CL-1:UNDERFLOW   30718       30718         4              0         0  underflow_solids_pct     %        5000
-INFLUENT:LIFT:CURRENT        31182       31181       311              2         1             current_a     A        1000
-INFLUENT:FLOW:FLOW            2570        2570       912              0         0                 flow_m3h   m3/h        1000
-INFLUENT:LIFT:FLOW          131996      131996      1238              0         0                 flow_m3h   m3/h        1000
+                             rows  with_value  distinct  worst_quality  no_value                 field  unit  sample_ms
+signal_id                                                                                                              
+PRIMARY:PRI-CL-1:UNDERFLOW  30792       30792         4              0         0  underflow_solids_pct     %       5000
+INFLUENT:FLOW:NH4_IN         1094        1094       513              0         0              nh4_mg_l  mg/L       5000
+INFLUENT:LIFT:CURRENT       31598       31597       723              2         1             current_a     A       1000
+SITE:WEATHER:AIR_TEMP        1007        1007      1007              0         0            air_temp_c   Cel      60000
 ```
 
-**`PRIMARY:PRI-CL-1:UNDERFLOW`: 30,718 readings, and 4 distinct values.**
+**`PRIMARY:PRI-CL-1:UNDERFLOW`: 30,792 readings, and 4 distinct values.**
 
 That is a signal that reported every five seconds for seven days and moved four
 times. It is a primary clarifier underflow **solids percentage**, on a 0.5–4.0 %
@@ -233,7 +256,9 @@ trend(ax1, {"underflow": underflow_h}, "PRIMARY:PRI-CL-1:UNDERFLOW")
 stamp(ax1, underflow_h, window="1 h", source="reading (1 h buckets)", expected_s=1)
 ax1.set_title(
     f"PRIMARY:PRI-CL-1:UNDERFLOW — {len(underflow):,} rows, "
-    f"{underflow.value.nunique()} distinct values", loc="left")
+    f"{underflow.value.nunique()} distinct values",
+    loc="left",
+)
 
 flow = readings[readings.signal_id == "INFLUENT:FLOW:FLOW"]
 flow_h = flow.set_index("ts").resample("1h")["value"].mean()
@@ -250,7 +275,7 @@ the top panel says which it is.**
 
 ## The fabrication, done properly
 
-The thirteen quiet signals are *not* the interesting case, and it is worth seeing
+The nine single-row signals are *not* the interesting case, and it is worth seeing
 why before moving on. `ffill` cannot fabricate forward from a reading that sits at
 the very start of the dataset — there is nothing after it to fill:
 
@@ -270,7 +295,7 @@ with a real value:               1
 after ffill:                     1
 ```
 
-**The resample produced one bucket, not 168.** `resample` spans the data it is
+**The resample produced one bucket, not a week of them.** `resample` spans the data it is
 given, and this data is one reading — so there is no week-long grid here to fill
 at all. `ffill` leaves it alone, and a reader might reasonably conclude the danger
 is theoretical. It is not. It needs a signal that reports occasionally
@@ -290,15 +315,15 @@ print(f"longest run of one value, in hours: {runs.max()}")
 ```
 
 ```output
-raw readings          : 30,718 over 7 days
+raw readings          : 30,792 over 7 days
 distinct values       : 4
-1h buckets with data  : 50 of 165
+1h buckets with data  : 60 of 165
 after ffill           : 165 of 165
-longest run of one value, in hours: 23
+longest run of one value, in hours: 13
 ```
 
-**This is the whole notebook in one line.** Fifty measurements become 165 — every
-bucket in the signal's own span — and one of the four values is held for **23
+**This is the whole notebook in one line.** Sixty measurements become 165 — every
+bucket in the signal's own span — and one of the four values is held for **13
 consecutive hours**, which is a day of a chart showing a flat line that is one
 reading drawn forward. Nothing marks which hour is real.
 
@@ -316,17 +341,17 @@ print(f"  longest run          : {l_runs.max()} h")
 ```
 
 ```output
-INFLUENT:LIFT:FLOW — same code, same ffill
-  1h buckets with data : 169 of 169
-  after ffill          : 169 of 169
-  longest run          : 8 h
+INFLUENT:LIFT:FLOW - same code, same ffill
+  1h buckets with data : 168 of 168
+  after ffill          : 168 of 168
+  longest run          : 4 h
 ```
 
-**169 of 169 before and after.** On a signal that actually reports, `ffill` is
-harmless — it fills almost nothing, and the longest flat run is 8 hours, which is
-the signal being steady rather than stuck.
+**168 of 168 before and after.** On a signal that actually reports, `ffill` is
+harmless — it fills nothing, and the longest flat run is 4 hours, which is the
+signal being steady rather than stuck.
 
-Both charts look like a line. One is 115 fabricated hours and one is a
+Both charts look like a line. One is 105 fabricated hours and one is a
 measurement. **The two are indistinguishable after the fill, which is exactly why
 the fill has to record what it did.**
 
@@ -348,16 +373,16 @@ print(f"  buckets with more than 4 readings: {int((u_honest.rows > 4).sum())}")
 
 ```output
 the same 165 buckets, counted rather than filled:
-  buckets with at least one reading : 50
-  buckets ffill would have invented : 115
-  buckets with more than 4 readings: 49
+  buckets with at least one reading : 60
+  buckets ffill would have invented : 105
+  buckets with more than 4 readings: 58
 ```
 
-**115 invented hours, and the count says so.** The `mean` column alone cannot
-distinguish them from the 50 real ones; `rows` can, and it costs nothing.
+**105 invented hours, and the count says so.** The `mean` column alone cannot
+distinguish them from the 60 real ones; `rows` can, and it costs nothing.
 
-Note the third line too: 49 of the 50 buckets that *do* have data hold more than
-four readings. So the problem is not a thin sample — it is 115 buckets with no
+Note the third line too: 58 of the 60 buckets that *do* have data hold more than
+four readings. So the problem is not a thin sample — it is 105 buckets with no
 sample at all, sitting between them, indistinguishable in the `mean` column.
 
 That is the rule for the rest of this series: **carry the count next to every
@@ -365,15 +390,13 @@ aggregate.** `rows`, `distinct` and `bad` are three extra columns, and between
 them they answer the three questions this database can answer about its own
 completeness.
 
-## The count is the answer
+## The nine that never spoke
 
 Take the count *before* any filling, from the rows that exist:
 
 ```python
 rows_present = (
-    readings[readings.signal_id.isin(quiet.index)]
-    .groupby("signal_id")
-    .size()
+    readings[readings.signal_id.isin(quiet.index)].groupby("signal_id").size()
 )
 print("actual rows in the whole week:")
 print(rows_present.to_string())
@@ -381,23 +404,21 @@ print(rows_present.to_string())
 
 ```output
 actual rows in the whole week:
-AERATION:AHU-1:MLSS              1
-AERATION:AHU-1:SETPOINT_DO        1
-AERATION:AHU-1:SRT                1
-EFFLUENT:FLOW:CONDUCTIVITY        1
-INFLUENT:FLOW:CONDUCTIVITY        1
-PRIMARY:PRI-CL-1:BLANKET          1
-PRIMARY:PRI-CL-1:TEMP             1
-SECONDARY:SEC-CL-1:BLANKET        1
-SITE:WEATHER:BARO                 1
-SITE:WEATHER:RAIN                 1
-SITE:WEATHER:STORM                1
-SLUDGE:DIG-1:TEMP                 1
-SLUDGE:THK-1:TS                   1
+signal_id
+AERATION:AHU-1:MLSS           1
+AERATION:AHU-1:SETPOINT_DO    1
+AERATION:AHU-1:SRT            1
+EFFLUENT:FLOW:CONDUCTIVITY    1
+PRIMARY:PRI-CL-1:BLANKET      1
+PRIMARY:PRI-CL-1:TEMP         1
+SECONDARY:SEC-CL-1:BLANKET    1
+SITE:WEATHER:STORM            3
+SLUDGE:DIG-1:TEMP             1
+SLUDGE:THK-1:TS               1
 ```
 
-**One each.** And finding that required no values at all — only the count of rows
-that exist:
+**One each, and three for the storm flag.** And finding that required no values at
+all — only the count of rows that exist:
 
 | question | the column that answers it |
 |---|---|
@@ -416,9 +437,9 @@ bucket = (
     .resample("1h")
     .agg(
         mean=("value", "mean"),
-        rows=("value", "size"),                             # did anything happen
-        distinct=("value", "nunique"),                     # did it move
-        bad=("quality", lambda q: int((q >= 2).sum())),     # did it say it was broken
+        rows=("value", "size"),  # did anything happen
+        distinct=("value", "nunique"),  # did it move
+        bad=("quality", lambda q: int((q >= 2).sum())),  # did it say it was broken
     )
 )
 print(bucket.tail(3).to_string())
@@ -455,10 +476,11 @@ nothing in it — it is a row that says something.
 - **"No data" is three things**: the instrument did not answer, the instrument
   answered that it is broken, or the value did not move. `dropna` collapses all
   three into one indistinguishable hole.
-- **Thirteen signals reported once in a week**, all at the dataset's first
-  timestamp, all with a declared sample rate from 1 s to 1 h. The data cannot say
-  whether they are steady or dead.
-- **`PRIMARY:PRI-CL-1:UNDERFLOW` reported 30,718 times and moved 4 times.** By
+- **Nine signals reported once in a week**, all at the dataset's first timestamp,
+  all with a declared sample rate from 1 s to 1 h. The data cannot say whether they
+  are steady or dead. A tenth, the storm flag, wrote three rows — and each one is
+  the storm starting or stopping.
+- **`PRIMARY:PRI-CL-1:UNDERFLOW` reported 30,792 times and moved 4 times.** By
   every naive measure it is the healthiest signal in the plant.
 - **`resample().mean()` does not fabricate on this data, and `ffill` does.** The
   difference is one line, and after it there is nothing left to tell the two
@@ -474,8 +496,7 @@ nothing in it — it is a row that says something.
 1. **Find the boundary.** `signal.deadband` is per-signal. Find the deadband value
    at which a signal would stop being able to distinguish "steady" from "dead",
    and say what a monitoring system should do on the far side of it.
-2. **Prove the fabrication.** Take `INFLUENT:LIFT:FLOW` (131,996 rows, 1,238
-   distinct), resample to 1 h, and `ffill`. Count the buckets where the filled
+2. **Prove the fabrication.** Take `INFLUENT:LIFT:FLOW`, resample to 1 h, and `ffill`. Count the buckets where the filled
    value is more than 10 minutes stale. Do the same for the underflow signal. Which
    one is harder to catch, and why?
 3. **The chart that tells the truth.** Redraw notebook 04's figure with bucket

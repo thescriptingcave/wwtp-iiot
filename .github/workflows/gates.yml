@@ -137,7 +137,7 @@ jobs:
       - name: ruff, the gated packages
         # **Scoped, and the scoping is stated rather than hidden.**
         #
-        # `ruff check .` reports 162 findings today. The overwhelming majority is
+        # `ruff check .` reports 157 findings today. The overwhelming majority is
         # `E501` (long lines) and `PLC0415` (function-local imports) in
         # `softplc/process/units.py`, `softplc/servers/opcua.py` and the older
         # test files — a debt this project has tracked openly as an open thread
@@ -330,6 +330,104 @@ jobs:
           POSTGRES_DB: wwtp
         run: uv run python -m alarms.replay --log-level INFO
 
+      # The one file whose database tests were not being run anywhere.
+      # `test_the_lookback_accepts_fractional_hours` caught its own connection
+      # error and called `pytest.skip`, and was not marked `integration` — so the
+      # `unit` job skipped it (no database there) and this job never named the
+      # file. The assertion had never been checked, and reported as passing.
+      #
+      # **A `try`/`skip` around a connection is a claim that the test needs one.**
+      # The skip is right; forgetting to say so where the run happens is not.
+      - name: the replay's lookback conversion
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_DB: wwtp
+        run: >-
+          uv run pytest tests/test_alarm_replay.py -q -p no:cacheprovider
+          -m integration
+
+  # ── the notebooks: eleven lessons whose numbers are claims ─────────────────
+  notebooks:
+    name: analyst notebooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      timescale:
+        image: timescale/timescaledb:2.19.3-pg16
+        env:
+          POSTGRES_USER: wwtp
+          POSTGRES_DB: wwtp
+          # Repeated from the `integration` job rather than inherited, for the
+          # reason the comment there gives: `services:` entries do not see
+          # workflow-level `env`, and the message you get when you forget is
+          # "Database is uninitialized and superuser password is not specified",
+          # which blames the image.
+          POSTGRES_PASSWORD: itpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wwtp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: install the project
+        # `--all-extras` matters here for a second reason beyond imports: the
+        # `analysis` extra is what brings in pandas, matplotlib, seaborn and
+        # `ipykernel`. Eleven notebooks that each open a figure would otherwise
+        # fail on an import rather than on anything about the data, and a failure
+        # that is really a missing extra reads as a broken notebook.
+        run: uv sync --all-extras --frozen
+
+      - name: create and seed the notebooks' database
+        # **A second database, and it is not redundancy.** `wwtp` is seeded
+        # relative to `now`, so every re-seed slides every timestamp and the SQL
+        # course — which uses `now() - interval '6 hours'` in 28 places — cannot
+        # be pinned without breaking it. The notebooks instead state numbers that
+        # a gate compares against a real run, and that only means anything if the
+        # rows are the same rows every time. So they read `wwtp_notebooks`, seeded
+        # once at a fixed instant by this one command.
+        #
+        # `--reset` is not optional: the seeder appends by default, and
+        # `make seed` used to give two weeks for two runs. The pinned `--end`
+        # plus `--reset` means this is idempotent, which is what lets the job run
+        # without asking whether a previous run left anything behind.
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_DB: wwtp
+        run: uv run python -m tools.notebook_data
+
+      - name: build, execute, and check every number in the prose
+        # The gate is `tools/check_notebooks.py`, and it is four checks per
+        # notebook: the generated `.ipynb` is in step with its `src/*.md`, the
+        # notebook runs top to bottom, every `output` block in the source matches
+        # what the notebook printed, and the seed fingerprint is the pinned one.
+        #
+        # The first and third are the point. A notebook whose cell outputs are
+        # whatever the last run left there is a *record*; an `output` block in
+        # markdown is a *claim*, and this is the same rule the SQL course has
+        # always used. The last is what stops every number in every notebook from
+        # quietly becoming a description of different data.
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_DB: wwtp
+        run: uv run python -m tools.check_notebooks
+
   # ── generated files are in step with the contract ─────────────────────────
   drift:
     name: generated files vs the contract
@@ -449,9 +547,9 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --all-extras --frozen
 
-      # **A ratchet, not a gate.** 162 findings today. This job fails if the
+      # **A ratchet, not a gate.** 157 findings today. This job fails if the
       # number goes *up* and does not fail if it goes down, which is the only shape
-      # that works on an existing debt: a hard gate at 162 blocks every commit,
+      # that works on an existing debt: a hard gate at 157 blocks every commit,
       # and deleting the debt in one sweeping commit is the thing this project has
       # deliberately not done five times.
       #

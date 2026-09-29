@@ -242,10 +242,24 @@ def test_the_writer_role_does_not_grant_delete_anywhere() -> None:
     }
 
 
-def test_roles_are_created_nologin() -> None:
+def test_roles_are_created_nologin(db) -> None:
     """They are group roles. The *login* roles are environment-specific and are
     not created here — a login role needs a password, and a password in a
-    migration is a password in a git history."""
+    migration is a password in a git history.
+
+    **It takes `db` even though it never uses it**, and that is the whole
+    comment. Without the fixture this test called `connect()` itself, so it
+    missed `_use_test_port()` and missed the skip, and connected to **5432** —
+    the compose stack, the developer's real database — while every test beside it
+    connected to the throwaway instance at 55432 and skipped because it was
+    absent. So the one test in the file that did not depend on the fixture was
+    the one that could not be skipped, and it failed on every machine without a
+    scratch instance.
+
+    A fixture that is requested and unused looks like a mistake to a reader, and
+    a reviewer is right to remove it. **The dependency is the point**: it is what
+    puts the test in the right database and lets it decline to run.
+    """
     from storage.postgres.schema import connect
 
     with connect(autocommit=True) as conn, conn.cursor() as cur:

@@ -125,7 +125,21 @@ export BASH_ENV := $(CURDIR)/tools/env.sh
 # The venv's python, not `uv run` — which needs --no-sync or it strips the
 # optional extras and then everything that touches a database fails with an
 # ImportError that looks like a code problem.
-PY := .venv/bin/python
+#
+# A *wrapper*, not the interpreter, and the reason is make's fast path. When a
+# recipe line has no shell metacharacters, make execs it directly without ever
+# starting `$(SHELL)` — so `BASH_ENV` is never read, `tools/env.sh` never runs,
+# and `.env` never reaches the command. `$(PY) -m pytest tests/ -q` is exactly
+# such a line: no quotes, no metacharacters, no environment. It asked for port
+# 5432 and failed with what reads like a wrong password.
+#
+# The tell is the port: this project is on 55433 and nothing here runs on 5432.
+# `tools/py.sh` sources `env.sh` and execs the venv interpreter, so `.env`
+# arrives whether make took the fast path or not. Full account, including the
+# bisection that identified it, is in that file. It is one line here and it fixes
+# every `$(PY)` recipe at once, which no Makefile edit could: the fast path is
+# decided per line, from that line's own characters.
+PY := $(CURDIR)/tools/py.sh
 
 # Where the tests get a database. POSTGRES_TEST_PORT is deliberately *not* 5432:
 # that is where the compose stack lives, and a test that truncates the seeded
@@ -165,12 +179,22 @@ help:
 
 # ── the gates ────────────────────────────────────────────────────────────────
 
+# The notebooks are a **separate target from `check`**, deliberately, and the
+# reason is cost: `make notebooks` seeds its own seven-day database from nothing
+# on the first run, which is about two and a half minutes, plus six minutes of
+# execution. A person running `make check` to see whether the tree is healthy
+# should not pay that to learn that a notebook's prose number is stale, and a
+# target that is only sometimes run is a target that is sometimes true.
+#
+# It is in `gates.yml` as its own job on every push, so "only run manually" is
+# only true of the *local* convenience. `make notebooks` is the same command,
+# and is safe to re-run: the data is pinned and the gate is the comparison.
 check: lint lint-debt types test sql lessons  ## everything CI would run
 	@echo "── all gates green ──"
 
 # **Scoped, and the scoping is on the label.**
 #
-# `ruff check .` reports 160 findings, almost all `E501` and `PLC0415` in
+# `ruff check .` reports 157 findings, almost all `E501` and `PLC0415` in
 # `softplc/process/units.py`, `softplc/servers/opcua.py` and the Phase 1-2 test
 # files. That debt has been tracked as an open thread since Phase 1 rather than
 # swept into a commit claiming to be about something else, and
@@ -213,13 +237,28 @@ test:  ## unit tests: no database, no containers, about two minutes
 	$(PY) -m pytest tests/ -q -p no:cacheprovider --ignore=tests/integration \
 	    -m "not slow and not integration"
 
+# `POSTGRES_TEST_PASSWORD` is passed explicitly, and it is here rather than
+# defaulted in `conftest.py` because **`.env` sets `POSTGRES_PASSWORD` for the
+# plant's own database.** `$(PY)` sources `.env`, so the variable is always in the
+# environment by the time pytest starts, and a `setdefault` for the scratch
+# password could never fire. The result was 48 integration tests skipping on a
+# machine where the scratch database was running, reachable, and correct —
+# reported as `password authentication failed`, which is a true statement about
+# a password that was not the one being used.
 integration:  ## integration tests, against a throwaway database
 	@echo "── integration tests ──"
 	-docker exec wwtp-db createdb -U wwtp $(TEST_DB) 2>/dev/null || true
 	POSTGRES_TEST_PORT=$(TEST_PORT) POSTGRES_TEST_DB=$(TEST_DB) \
+	  POSTGRES_TEST_PASSWORD=$${POSTGRES_TEST_PASSWORD:-itpass} \
 	  $(PY) -m pytest tests/integration -q -p no:cacheprovider
 
-sql:  ## every SQL block in the course, against a real server
+# `db-still` first, and the reason is the one the notebooks already have: the
+# gateway writes. `sql/01-beginner/01-01_ask_a_question.md` counts rows, so a
+# server still ingesting answers a different number every few seconds and the
+# gate fails on the clock rather than on the query. `check_sql.py` detects that
+# and says so — "non-deterministic: run 3 differs from run 1" — which is the
+# checker being right and the target being wrong.
+sql: db-still  ## every SQL block in the course, against a real server
 	@echo "── the SQL course ──"
 	$(PY) tools/check_sql.py sql/
 
@@ -229,7 +268,7 @@ lessons:  ## every python snippet in courses/, against a live OPC UA server
 
 sql-check: seed sql  ## the one gate that needs a seeded week
 
-notebooks:  ## build, execute, and verify the claimed output of every notebook
+notebooks: notebooks-has-data  ## build, execute, and verify the claimed output of every notebook
 	@echo "── the analyst notebooks ──"
 	$(PY) -m tools.build_notebooks
 	$(PY) -m tools.check_notebooks
@@ -253,7 +292,7 @@ notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 # It goes through this Makefile on purpose. Invoking `python -m jupyter` by hand
 # does not load `.env`, so `dsn()` falls back to port 5432 and fails with a
 # message that names a password rather than the port.
-notebooks-read:  ## execute every notebook to notebooks/read/*.html, for reading
+notebooks-read: notebooks-has-data  ## execute every notebook to notebooks/read/*.html, for reading
 	@mkdir -p notebooks/read
 	@for nb in notebooks/*.ipynb; do \
 		echo "  $$nb"; \
@@ -280,31 +319,26 @@ notebooks-open: sync db-still notebooks-build notebooks-has-data
 		--ServerApp.token=$(NB_TOKEN) \
 		--no-browser
 
-# Refuse to open a notebook series against an empty database, and say how to fix
-# it, rather than letting every cell raise `relation "reading" does not exist`.
+# Seed the notebooks' own database if it is missing or empty; otherwise leave it.
 #
-# It deliberately does **not** re-seed. Seeding rewrites the week — `make seed`
-# deletes and reinserts — which is two minutes of work to destroy something the
-# user may have been reading numbers out of. A warning and a command is the right
-# trade here; an automatic destructive step behind a command that sounds like
-# "open the notebooks" is not.
+# This used to *refuse* on an empty database and say how to fix it, because the
+# database it checked was the plant's main one and seeding rewrites the week —
+# destroying something someone may be reading numbers from. That reasoning no
+# longer applies: the notebooks read `wwtp_notebooks` (see `notebooks/_data.py`),
+# which holds only synthetic data, nothing else reads, and which is seeded to a
+# pinned instant so the result is identical every time. Seeding it cannot destroy
+# anything that is not exactly reproducible, so `make` just does it — once, about
+# two and a half minutes, the first time.
 notebooks-has-data:
-	@n=$$($(PY) -c "from storage.postgres.schema import connect; \
-	c = connect(); \
-	print(c.execute('SELECT count(*) FROM reading').fetchone()[0]); c.close()" \
-	2>/dev/null | tr -d ' \n'); \
-	if [ "$$n" -gt 0 ] 2>/dev/null; then \
-	  echo "   $$n readings in the database"; \
-	else \
-	  echo ""; \
-	  echo "   no readings, so every notebook will fail on its first query."; \
-	  echo "   nothing has been changed. To load a week of history:"; \
-	  echo ""; \
-	  echo "       make up"; \
-	  echo ""; \
-	  echo "   that takes about two minutes and REPLACES any existing data."; \
-	  exit 1; \
-	fi
+	@s="$$($(PY) -m tools.notebook_data --status)"; echo "$$s"; \
+	case "$$s" in \
+	  *readings*) ;; \
+	  *) echo "   seeding it now (about two and a half minutes, once)"; \
+	     $(PY) -m tools.notebook_data ;; \
+	esac
+
+notebooks-data:  ## (re)create and seed wwtp_notebooks, the notebooks' own database
+	$(PY) -m tools.notebook_data
 
 # Every optional extra, in one place.
 #
@@ -381,7 +415,7 @@ db-up:
 # stopping a service the user started is its own surprise.
 db-still: db-up
 	@if [ "$$(docker compose ps --status running --services 2>/dev/null | grep -cx gateway)" = "1" ]; then \
-	  echo "   stopping gateway: it writes, and the notebooks read"; \
+	  echo "   stopping gateway: it writes, and the gates read"; \
 	  docker compose stop gateway; \
 	fi
 

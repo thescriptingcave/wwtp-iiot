@@ -566,6 +566,9 @@ services:
       - storage.seed.main
       - --days=${SEED_DAYS:-7}
       - --storm-after=${DEMO_STORM_AT_HOURS:-2}
+      # Replace, do not append: `make seed` twice used to give two weeks, with
+      # different sub-second timestamps and therefore no error, and doubled counts.
+      - --reset
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"

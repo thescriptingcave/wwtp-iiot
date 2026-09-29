@@ -13,18 +13,67 @@ SQL is used freely and explained inline. Everything else is used as a tool.
 ## Running them
 
 ```bash
-uv sync --extra protocols --extra storage --extra analysis
-docker compose up -d db
-docker compose run --rm init-db
-docker compose --profile demo run --rm seed
-docker compose stop gateway          # the gateway writes; stop it or the data moves
-
 make notebooks                        # build, execute, and verify every claim
 ```
 
-`make notebooks` is the whole contract: it regenerates the `.ipynb` files, runs
-every one against the live database, and fails if a number in the prose no longer
-matches what the database says.
+That is the whole thing, and it is one command because the first version of this
+section was five and every one of them was a thing you could get wrong in the
+order. `make notebooks` brings up the database, seeds **its own** database,
+executes all eleven, and fails if a number in the prose no longer matches what
+that database says. It takes about six minutes, most of it the first seed.
+
+**They read a separate database, `wwtp_notebooks`, and not `wwtp`.** This is the
+one design decision in the series that needs justifying, so here is the whole of
+it. The notebooks' numbers are checked claims, and a claim checked against data
+that moves is not a claim. `wwtp` is seeded relative to *now*, so re-seeding it
+moves every timestamp and every number derived from one — and the SQL course
+beside this one uses `now()` in 28 places for the same reason. So the notebooks
+get a database seeded to a **pinned** window:
+
+```
+4,239,284 readings across 57 signals and 22 pieces of equipment
+2026-09-22 00:00 UTC -> 2026-09-28 23:59 UTC
+```
+
+An integer fingerprint of that table lives in `notebooks/_data.py`, and the gate
+refuses to run if the database does not match it. Two independent seeds produce
+the identical fingerprint over all 4,239,284 rows, which is the evidence that the
+pin holds — see `docs/LEARNING-LOG.md`, where the first version of it did not.
+
+The cost is honest and worth stating: the fault events inside that window are
+*simulated*, deliberately, and the storm is a real one in the data rather than
+weather. Nine and ten date change points against ground truth the seeder injects,
+and the fact that a detector is scored against an answer rather than against an
+opinion is worth the two and a half minutes the seed costs.
+
+```bash
+make notebooks-data      # just (re)create and seed wwtp_notebooks
+```
+
+## Reading them in order
+
+| # | notebook | the question |
+|---|---|---|
+| 1 | [Meet the plant](01-meet-the-plant.ipynb) | what is here, and which tags are secretly the same measurement |
+| 2 | [Three kinds of nothing](02-three-kinds-of-nothing.ipynb) | no data, bad data, no change — `dropna` cannot tell them apart |
+| 3 | [Choosing your tier](03-choosing-a-tier.ipynb) | raw, 1-minute or 1-hour, and what each one costs |
+| 4 | [Resampling buys you nothing](04-resampling-buys-you-nothing.ipynb) | the rollups are a different estimator, not a faster one |
+| 5 | [Autocorrelation](05-autocorrelation.ipynb) | how many independent observations are in that hour |
+| 6 | [Detrending and differencing](06-detrending-and-differencing.ipynb) | stationarity before modelling |
+| 7 | [What are you estimating](07-what-are-you-estimating.ipynb) | time-weighted, flow-weighted, and which one you meant |
+| 8 | [Rolling-origin validation](08-rolling-origin-validation.ipynb) | why a random split lies |
+| 9 | [Anomaly detection](09-anomaly-detection.ipynb) | per-signal expectations, not global thresholds |
+| 10 | [Change points](10-change-points.ipynb) | when did the plant change, not just what |
+| 11 | [Dose or flow](11-dose-or-flow.ipynb) | attributing a change to an intervention |
+
+02 is second in the list and first in the *argument*: it establishes the
+vocabulary the other nine use, and 01 gives you the plant it applies to. 04 is
+where the series turns — it shows that `AVG(value)` and an hourly rollup do not
+disagree, they **answer different questions**, and that the two can be 27 % apart
+on one signal on one day.
+
+09 through 11 need the injected faults, and 11 needs 09's ground truth. If you
+read one, read 09 before 11.
 
 ## Instantiating them
 
@@ -35,7 +84,7 @@ have to execute a notebook before there is anything to look at.
 
 ```bash
 make notebooks-build   # regenerate notebooks/*.ipynb from notebooks/src/*.md
-make notebooks-read    # execute all three to notebooks/read/*.html, to read
+make notebooks-read    # execute all eleven to notebooks/read/*.html, to read
 make notebooks-open    # JupyterLab, to work in them
 ```
 
@@ -51,8 +100,9 @@ Read it, do not cite it. If a number in that HTML disagrees with the source
 markdown, the source markdown is right, because the markdown is what
 `make notebooks` checks.
 
-**All of these are `make` targets on purpose.** Running `python -m jupyter` or
-`pytest` by hand skips the `.env` the Makefile loads, and `dsn()` then falls back to
+**All of these are `make` targets on purpose**, and the reason is worth one
+sentence because it is the same bug this repository has now hit twice. Running
+`jupyter` by hand skips the `.env` the Makefile loads, and `dsn()` falls back to
 port 5432:
 
 ```
@@ -62,6 +112,10 @@ FATAL:  password authentication failed for user "wwtp"
 
 which names a *password* when the real fault is the *port*. This database is on
 **55433**. Use `make`, or `set -a && . ./.env && set +a` if you must go around it.
+
+For the same reason `make notebooks-open` stops the gateway before it starts
+Jupyter: the gateway writes, and a notebook that reads a moving target cannot
+have a checked number in it.
 
 ### Opening one in JupyterLab
 
@@ -82,19 +136,8 @@ environment by construction. If JupyterLab shows a kernel picker, pick
 `Python 3 (ipykernel)` and check the status bar says
 `/Users/dev/Developer/wwtp-iiot/.venv`.
 
-**The database port comes from `.env`,** which the `Makefile` reads and exports to
-every recipe. If you start Jupyter some other way — `uv run jupyter lab`, a
-notebook opened in an editor, a bare `jupyter` — load `.env` yourself first, or
-`dsn()` falls back to port 5432 and you get:
-
-```
-connection to server at "127.0.0.1", port 5432 failed:
-FATAL:  password authentication failed for user "wwtp"
-```
-
-which names a *password* when the real fault is the *port*. This project's database
-is on **55433**; nothing in the repository has ever run on 5432, so the port in
-that message is the tell.
+All three of these read `notebooks/_data.py` for the port, so the port in a
+connection error tells you which database you reached and nothing else.
 
 ## How they are authored
 
@@ -148,33 +191,33 @@ about **one** independent observation in that hour, not sixty.
 Use `ax.plot()`, and do the aggregation visibly. seaborn is here for `histplot`,
 `ecdfplot`, `boxplot` and `heatmap`.
 
-## The series
+## The four gates, and what each one catches
 
-| # | notebook | the question | |
-|---|---|---|---|
-| 1 | [Meet the plant](01-meet-the-plant.ipynb) | what is here, what it does, and which tags are secretly the same measurement | **done** |
-| 2 | [Three kinds of nothing](02-three-kinds-of-nothing.ipynb) | no data, bad data, no change — `dropna` cannot tell them apart | **done** |
-| 3 | Choosing your tier | raw, 1-minute, or 1-hour — and what each costs | |
-| 4 | [Resampling buys you nothing](04-resampling-buys-you-nothing.ipynb) | the rollups are a different estimator, not a faster one | **done** |
-| 5 | Autocorrelation | how many independent observations are in that hour | |
-| 6 | Detrending and differencing | stationarity before modelling | |
-| 7 | What are you estimating | time- versus flow-weighted | |
-| 8 | Rolling-origin validation | why a random split lies | |
-| 9 | Anomaly detection | per-signal expectations, not global thresholds | |
-| 10 | Change points | when did the plant change, not just what | |
-| 11 | Dose or flow | attributing a change to an intervention | |
+`make notebooks` runs all four. They are separate because they catch different
+classes of wrongness, and the first three were all written after being bitten by
+the thing they now catch.
 
-Notebooks 01, 02 and 04 exist so far, and the table does not pretend otherwise — a course
-index that links to unwritten lessons is the same failure as a count in prose, and
-this repository has already been bitten by both.
+**1. The output fence.** Every `output` block is compared against what the cell
+printed. This is the original claim and it is line-by-line, so it catches a
+number that moved.
 
-02 is second in the list and first in the *argument*: it establishes the
-vocabulary the other nine use. Read it after 01, not instead of it — 01 gives you
-the plant and 02 gives you the three ways a signal can fail to give you a number.
+**2. The prose number.** Every **bold** number in the prose must match something
+the notebook printed, at the precision the prose states — so `64 %` matches a
+printed `63.9` and `1.78x` matches `1.7791`. This exists because the output
+fences did not cover the paragraphs, and the paragraphs are where a re-seed did
+its damage: 86 claims moved in three notebooks while the prose around them
+stayed confidently wrong. `<!-- num-ok -->` is the escape hatch, for a number that
+is a rule rather than a measurement.
 
-04 is where the series turns: it shows that `AVG(value)` and an hourly rollup do not
-disagree, they **answer different questions**, and that the two can be 21 % apart
-on a control signal.
+**3. The SQL fence.** Every ` ```sql ` block is executed, in a rolled-back
+read-only transaction, and must return rows. Zero rows fails: a query that returns
+nothing is indistinguishable from a query that is wrong, and "nothing" reads as
+success. This is the SQL course's own rule, applied to the SQL embedded here.
+
+**4. The seed fingerprint.** `notebooks/_data.py` holds an integer fingerprint of
+`reading` and the gate refuses to run when the database does not match it. Without
+it, gates 1 to 3 are all perfectly happy against *the wrong week*, and a
+re-seed would turn eleven green notebooks into eleven quietly different ones.
 
 ## Related
 

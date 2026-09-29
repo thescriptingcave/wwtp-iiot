@@ -51,7 +51,26 @@ def _use_test_port() -> None:
     One DSN, assembled in one place, read by everybody.
     """
     os.environ["POSTGRES_PORT"] = os.environ.get("POSTGRES_TEST_PORT", "55432")
-    os.environ.setdefault("POSTGRES_PASSWORD", "itpass")
+    # `setdefault`, so an explicit password wins — and **that is the whole
+    # problem this line had**. `.env` sets `POSTGRES_PASSWORD=replace-me` for the
+    # plant's own database, `make` sources `.env` into every recipe, and
+    # `setdefault` therefore never reached its default. The scratch instance's
+    # password is `itpass`, so **all 48 integration tests skipped** on a machine
+    # where the scratch instance was running, correct and reachable, on the
+    # grounds that its password was wrong.
+    #
+    # The skip message was accurate — `password authentication failed` is what
+    # Postgres says — and entirely unhelpful, because the password was right and
+    # belonged to a *different database*. The port is again the only tell.
+    #
+    # So the test database gets its own variable, which is set by
+    # `make integration` from the same place the port is, and a scratch password
+    # is a *default* rather than a *fallback* only when nothing has been said.
+    # `POSTGRES_TEST_PASSWORD` is that somewhere to say it; `setdefault` remains
+    # for the case where nothing was set at all.
+    os.environ["POSTGRES_PASSWORD"] = os.environ.get(
+        "POSTGRES_TEST_PASSWORD", "itpass"
+    )
     # POSTGRES_TEST_DB has to become POSTGRES_DB, not merely coexist with it.
     # An earlier version of this file accepted `POSTGRES_TEST_DB` and then asked
     # `storage.postgres.schema.dsn()` for the connection string — and that reads
@@ -89,8 +108,11 @@ def db():
             f"no Postgres at {os.environ.get('POSTGRES_HOST', '127.0.0.1')}:"
             f"{os.environ.get('POSTGRES_PORT', '5432')}: {exc}\n"
             "  docker compose up -d db && docker compose run --rm init-db\n"
-            "  then set POSTGRES_PASSWORD (it defaults to 'itpass' for a local "
-            "scratch instance)"
+            "  the scratch instance's password is 'itpass', and it is set by\n"
+            "  POSTGRES_TEST_PASSWORD rather than POSTGRES_PASSWORD: the latter is\n"
+            "  the *plant's* password, and a .env that sets it would otherwise\n"
+            "  make every test here skip on a machine where the scratch database\n"
+            "  is running and reachable."
         )
     apply_schema()
     seed_metadata()

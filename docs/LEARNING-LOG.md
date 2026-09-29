@@ -3063,7 +3063,7 @@ finished now, so the list is short enough to actually mean something.
 
 Dropped from the list, and why:
 
-* ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, six jobs. And
+* ~~**A CI workflow.**~~ **Done** — `.github/workflows/gates.yml`, seven jobs. And
   writing it found that `make lint`, `make types` and `make test` **had all been
   failing, or not doing what their labels said**, the whole time: I had been
   reporting the subsets that pass. See `docs/CI.md`.
@@ -3648,3 +3648,142 @@ call: `SHELL := /bin/bash -euo pipefail` works on 3.81 by smuggling flags into
 `SHELL`, and breaks on 3.82+ where make appends its own. Recorded rather than
 patched, because guessing at this is how a Makefile stops working on somebody
 else's machine.
+
+## The gate that reported a password problem and the cause was a missing `;`
+
+`make notebooks-data` failed with:
+
+    psycopg.OperationalError: connection failed: connection to server at
+    "127.0.0.1", port 5432 failed: FATAL:  password authentication failed
+    for user "wwtp"
+
+and the password was right, the user existed, and the database was up.
+
+**The port is the tell.** This project's Postgres is on **55433** and nothing here
+has ever run on 5432. A tool asking for 5432 is not authenticating badly; it is
+asking a different server, and the server it reached had a different password
+configured. A connection error whose *endpoint* is wrong is a configuration
+error, and reading the authentication clause instead of the port is how this took
+an hour.
+
+Then the actual cause. GNU make has a **fast path**: a recipe line containing no
+shell metacharacters is forked and exec'd **directly**, without ever starting
+`$(SHELL)`. `$(SHELL)` is the only thing that reads `BASH_ENV`, so on that line
+`tools/env.sh` never ran, `.env` was never sourced, and the command inherited
+make's own environment — in which `POSTGRES_PORT` does not exist and the default
+is 5432.
+
+    make query SQL="select 1"      works   — the line has a quote
+    make notebooks-data            fails   — the line has no metacharacter
+
+Same Makefile, same moment, same database. Confirmed by bisection rather than by
+reading, because reading the Makefile explains nothing here — the two lines are
+identical apart from a character:
+
+    $(PY) -m tools.notebook_data --status      not available (OperationalError)
+    $(PY) -m tools.notebook_data --status ;    4,239,284 readings, the pinned seed
+
+`tests/test_makefile_env.py` pins the mechanism, and two mutations were tried: `PY
+:= .venv/bin/python` fails three tests, and `env.sh` losing its `set -a` fails
+three others. A comment is not a test.
+
+### Three gates were in this class, and the worst one passed
+
+`make test`, `make sql` and `make lessons` all ran without `.env`. **Only
+`make test` was affected in a way that could not be noticed**, because unit tests
+need no database and therefore succeeded in the wrong environment. That is the
+shape of the failure worth remembering: the gate that is *supposed* to be
+environment-sensitive is the one that hides it.
+
+The fix is `tools/py.sh` — sources `env.sh`, then `exec`s the venv interpreter —
+and it works on the fast path too, because the kernel honours the shebang.
+Sourcing `env.sh` rather than repeating `set -a; . .env` keeps exactly one place
+that knows how `.env` is loaded, which is the same reason `BASH_ENV` exists at
+all.
+
+> There is no switch to turn the fast path off. The only two ways out are a
+> metacharacter in every recipe, or making the *command* a shell. The second is
+> one file.
+
+## `make sql` was failing on the clock, and `check_sql.py` was right to
+
+`check_sql.py` reported a query as `non-deterministic: run 3 differs from run 1`
+and exited 1. Not a bug in the checker: the gateway was running, **writing**, and
+`sql/01-beginner/01-01_ask_a_question.md` counts rows. A server still ingesting
+answers a different number every few seconds, so the gate failed on the clock
+rather than on the query.
+
+This is the *same* reason the notebooks read a database of their own, arrived at
+from the other direction. There, the clock was pinned so the prose could be
+checked; here, the writer was stopped. `make sql` now depends on `db-still`,
+which stops `gateway` and **says so on stdout**, because silently stopping a
+service the user started is its own surprise.
+
+> A non-determinism report is a measurement about the *target*, not about the
+> measurement. The first instinct — trust the checker less — is backwards.
+
+## A guard that counted the thing it was guarding
+
+`test_no_document_says_the_ci_workflow_has_five_jobs` existed to catch a stale
+job count in prose. It hardcoded 5, the workflow had 6, and it still passed: the
+guard's own number was the second stale number, and the failure mode was a check
+that could only be made green by **editing the test rather than the workflow**.
+
+It now reads the count out of `gates.yml` with `yaml` and asserts that no
+document's number disagrees. Widening the pattern to *any* number before "jobs"
+then flagged four real claims and four false ones — `Signal.equipment` "doing two
+jobs at once", and `POSTGRES_PASSWORD` "set on seven of eight jobs". Both true,
+neither about CI. So the line must be *about* CI, matched against the raw line
+because two of the real claims say "CI" only inside a backticked `docs/CI.md`.
+
+And `docs/LEARNING-LOG.md` quotes two stale "five CI jobs" lines **inside a code
+fence**, because finding them was the point of the entry. A check that fails on
+its own evidence can only be silenced by deleting the record, so fenced lines are
+excluded — explicitly, with the reason, rather than by the accident that the
+document-level quote stripper happened to swallow the fence markers.
+
+> A guard that hardcodes its own expected value is a second value to keep
+> current, and it is wrong at exactly the moment the thing it watches changes.
+
+## Forty-eight tests that had been skipping, and a password that was not the one
+
+`make integration` reported `2 passed, 46 skipped` — on a machine where the
+scratch Postgres at 55432 was **running, correct and reachable**. The reason given
+in every skip was:
+
+    FATAL:  password authentication failed for user "wwtp"
+
+which is a true statement about a password, and not about the password being
+used. The scratch instance's password is `itpass`; the test was sending the
+compose stack's.
+
+The cause is that the fixture guarded the port and not the credential, which is
+backwards — a port is a decision and a password is a *default*, and only a
+decision can be wrong:
+
+    os.environ["POSTGRES_PORT"] = os.environ.get("POSTGRES_TEST_PORT", "55432")
+    os.environ.setdefault("POSTGRES_PASSWORD", "itpass")   # never reached
+
+`setdefault` never fired because **`.env` sets `POSTGRES_PASSWORD=replace-me`**,
+`make` sources `.env` into every recipe, and so the variable is always present
+before pytest starts. The default was unreachable on this project, and had been
+since the day the fixture was written.
+
+It is also the *third* instance of one shape in this file. The make fast path
+dropped the environment on some recipes; the CI job needed a service container's
+own `env`; the roles test reached past its fixture to 5432, the compose stack, and
+failed on a developer's real database while the tests beside it skipped politely.
+**In all three, the mistake was reaching past the thing that sets the environment
+and the thing that allows the test not to run.** `POSTGRES_TEST_PASSWORD` is
+passed by `make integration` and documented in `.env.example`; the roles test
+takes the `db` fixture and never uses it, because the dependency *is* the point.
+
+> A skip is a claim. A test that cannot say "not here" by design will say it
+> anyway, in a message about the wrong thing, and be believed.
+
+Also in this commit, found by reading rather than by a failure:
+`test_the_lookback_accepts_fractional_hours` caught its own connection error and
+skipped in every CI run, was not marked `integration`, and **had never been
+checked once**. Same shape, third face: a `try`/`skip` around a connection is a
+claim that the test needs one, and the marker is where that claim has to be
+recorded.

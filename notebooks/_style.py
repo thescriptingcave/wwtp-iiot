@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -114,6 +115,13 @@ def apply_style() -> None:
     global state the moment it is imported is a module that fights whatever else
     the notebook is doing, and the call is one line.
     """
+    # pandas warns on every `read_sql` against anything but SQLAlchemy. This project's
+    # driver is psycopg and adding SQLAlchemy to silence one line would trade a
+    # dependency for a warning, so that one message is filtered. Anything else pandas
+    # warns about is still shown.
+    warnings.filterwarnings(
+        "ignore", message="pandas only supports SQLAlchemy connectable"
+    )
     mpl.rcParams.update({
         "figure.figsize": (11, 4.5),
         "figure.dpi": 110,
@@ -174,7 +182,7 @@ def signal_meta(signal_id: str) -> dict[str, Any]:
     alternative is an exception in the middle of a notebook.
     """
     try:
-        from storage.postgres.schema import connect
+        from notebooks._data import connect
 
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -352,11 +360,12 @@ def stamp(
 FIGURES = Path(__file__).resolve().parent / "figures"
 
 
-def save(fig: Figure, name: str, *, directory: Path | None = None) -> Figure:
+def save(fig: Figure, name: str, *, directory: Path | None = None) -> None:
     """Write a figure to `notebooks/figures/`, creating the directory.
 
-    Returns the figure rather than a path, so a notebook can `save(fig, "x")` and
-    carry on without the call being a statement about control flow.
+    Returns `None`. It used to return the figure, so `save(fig, "x")` as the last
+    line of a cell left a `<Figure size 1210x418 with 1 Axes>` in the output — and,
+    under `%matplotlib inline`, drew the figure a second time as the cell's result.
 
     The directory is absolute and derived from this file, so the result does not
     depend on the kernel's working directory. Figures are git-ignored: they are
@@ -366,4 +375,3 @@ def save(fig: Figure, name: str, *, directory: Path | None = None) -> Figure:
     target = FIGURES if directory is None else Path(directory)
     target.mkdir(parents=True, exist_ok=True)
     fig.savefig(target / f"{name}.png")
-    return fig
