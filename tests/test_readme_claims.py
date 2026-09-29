@@ -536,7 +536,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 57,
+    "tests/test_readme_claims.py": 59,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
@@ -1438,9 +1438,9 @@ def test_every_env_line_is_a_plain_key_equals_value() -> None:
 
 
 def test_the_makefile_loads_env_for_every_recipe() -> None:
-    """`make` must hand `POSTGRES_PORT` to recipes, not only to `docker compose`.
+    """Every recipe must reach Postgres on this project's port, not 5432.
 
-    This was the cause of a failure that named the wrong thing entirely.
+    This is the guard for a failure that named the wrong thing entirely.
     `make notebooks-open` launched JupyterLab with no `POSTGRES_PORT` in its
     environment, so `dsn()` fell back to its defaults — port 5432 — and the first
     cell of notebook 01 died with::
@@ -1448,39 +1448,178 @@ def test_the_makefile_loads_env_for_every_recipe() -> None:
         connection to server at "127.0.0.1", port 5432 failed:
         FATAL:  password authentication failed for user "wwtp"
 
-    A reader reads that as a wrong password. The tell is the port: this project's
-    database is on 55433 and nothing in the repository has ever run on 5432.
+    A reader reads that as a wrong password. **The port is the tell**: this
+    project's database is on 55433 and nothing in the repository has ever run on
+    5432.
 
     `docker compose` loads `.env` itself, which is exactly why `make up` and
-    `make seed` always worked and hid the gap — compose was the only thing loading
-    it, and anything reaching Postgres directly was relying on its caller to export
-    the environment by hand.
+    `make seed` always worked and hid the gap — compose was the only thing
+    loading it, and anything reaching Postgres directly was relying on its caller
+    to export the environment by hand.
 
-    This asserts the Makefile contains the `include`/`export` pair and that they
-    are inside the `ifneq (,$(wildcard .env))` guard, rather than executing a
-    recipe, because a recipe that opens a database cannot run in this test.
+    ## Why it asserts by running bash, not by reading the Makefile
+
+    The first three versions of this test read the Makefile and asserted on its
+    text. All three passed while the thing they were guarding was broken, because
+    the text kept changing and the test kept being changed with it — most
+    recently, `include .env` plus a bare `export` *looked* like it exported the
+    values and did not, because `include` gives make variables and `.env` contains
+    shell syntax make cannot evaluate.
+
+    So this runs the mechanism instead. It reads the path out of the Makefile,
+    points a bash process at it the way a recipe does, and asserts a **child**
+    process sees the right port. A child, because sourcing alone is not enough —
+    bash sets shell variables, not environment variables, so a version of this
+    that only checked the parent shell would pass with the values stopping one
+    process short of the code that needed them.
     """
+    import subprocess  # noqa: PLC0415
+
     makefile = Path("Makefile").read_text(encoding="utf-8")
-
-    assert "include .env" in makefile, (
-        "the Makefile no longer includes .env, so every recipe that reaches "
-        "Postgres directly gets dsn()'s defaults instead of this project's port"
-    )
-    assert re.search(r"^\s*export\s*$", makefile, re.MULTILINE), (
-        "the Makefile includes .env but does not export it, so the values are "
-        "make variables and never reach a recipe's environment"
+    match = re.search(r"^export BASH_ENV\s*:=\s*(\S+)\s*$", makefile, re.MULTILINE)
+    assert match, (
+        "the Makefile does not export BASH_ENV, so no recipe sources .env and "
+        "every target that reaches Postgres gets dsn()'s default port"
     )
 
-    guarded = re.search(
-        r"ifneq\s*\(\s*,\s*\$\(wildcard \.env\)\)\s*\n"
-        r"(?:.*\n)*?include \.env\s*\n"
-        r"(?:.*\n)*?export\s*\n"
-        r"endif",
-        makefile,
+    env_script = Path(match.group(1).replace("$(CURDIR)", str(Path.cwd())))
+    assert env_script.is_file(), (
+        f"the Makefile points BASH_ENV at {env_script}, which does not exist"
     )
-    assert guarded, (
-        "`include .env` and `export` are present but not inside a "
-        "`ifneq (,$(wildcard .env))` guard. Without the guard a fresh clone with "
-        "no .env fails at parse time instead of telling the reader to copy "
-        ".env.example"
+
+    # The script must auto-export: a sourced assignment is a *shell* variable and
+    # never reaches the `python` a recipe launches.
+    script = env_script.read_text(encoding="utf-8")
+    assert re.search(r"^set -a\s*$", script, re.MULTILINE), (
+        f"{env_script} does not `set -a`, so values sourced from .env stay in "
+        "the shell and never reach child processes"
+    )
+
+    child = subprocess.run(
+        ["/bin/bash", "-c", 'env | grep "^POSTGRES_PORT=" || true'],
+        capture_output=True, text=True, env={
+            "PATH": "/usr/bin:/bin",
+            "BASH_ENV": str(env_script),
+        }, check=False,
+    )
+    inherited = child.stdout.strip()
+    assert inherited, (
+        "a child process does not see POSTGRES_PORT at all; every recipe that "
+        "opens a database connection would fall back to port 5432"
+    )
+
+    port = inherited.split("=", 1)[1]
+    assert port != "5432", (
+        f"POSTGRES_PORT resolves to {port} — the PostgreSQL default, which is "
+        "what the notebooks were failing to reach. This project is not on 5432."
+    )
+
+
+def test_no_source_file_is_hidden_from_git_by_ignore_rules() -> None:
+    """Every `.py` file on disk must be tracked. Ignored means invisible.
+
+    This is the guard for the failure that made CI red for two days and was
+    nobody's fault in particular:
+
+    ```
+    .gitignore:36:spool/    gateway/spool/__init__.py
+    ```
+
+    An **unanchored** `spool/` matches a directory called `spool` at any depth.
+    `gateway/spool/` is not a runtime directory — it is the source package, with
+    `__init__.py` and an 19 kB `store.py`, imported by `gateway/main.py` and by
+    `test_gateway_cycle`, `test_gateway_clients`, `test_spool` and others. The
+    three rules above it (`gateway/spool/*.jsonl`, `*.db`, `*.wal`) already cover
+    the runtime data, so the bare `spool/` bought nothing and cost the package.
+
+    Nothing local noticed, because **an ignored file is still on disk**. Every
+    test passed, every lesson ran, and `make lint` — which lints the `gateway`
+    package — reported nothing about a package it could not see. The evidence was
+    only ever in CI:
+
+    ```
+    E   ModuleNotFoundError: No module named 'gateway.spool'
+    ```
+
+    and CI had failed on **every one of its 22 runs** for that reason, so the
+    signal was there and continuous. What was missing was anyone reading it.
+
+    Two things make this check worth having rather than trusting review:
+
+    * it asks git, not the filesystem, because the filesystem is what lied;
+    * it looks for *ignored* files specifically. A file that is merely untracked
+      is work in progress. A file that git is *actively told to discard* is a
+      source file the project cannot build.
+    """
+    import subprocess  # noqa: PLC0415
+
+    def _sources(text: str) -> list[str]:
+        return [
+            line for line in text.split("\n")
+            if line.endswith(".py")
+            and not line.startswith((".venv/", "node_modules/", "ui/web/"))
+            and "__pycache__" not in line
+        ]
+
+    # Two queries, because git reports the two cases differently and the first
+    # one alone was not enough.
+    #
+    # `--others --ignored` lists files git is told to discard and nobody has
+    # staged. That is the original incident: `gateway/spool/` was created, the
+    # rule matched, and it was never staged.
+    #
+    # But `--others` says nothing once a file *is* staged, and the rule then sits
+    # there looking harmless. Adding `spool/` back while `gateway/spool/` is
+    # tracked produced **no failure at all** under this query — verified by
+    # mutation. So `--ignored` alone (without `--others`) is asked as well, which
+    # lists tracked files that an ignore rule claims. That combination is a
+    # contradiction: git is tracking something it is also told to discard, which
+    # usually means somebody reached for `git add -f` and the rule is still wrong.
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard"],
+        capture_output=True, text=True, check=True,
+        cwd=str(Path.cwd()),
+    ).stdout
+    tracked_but_ignored = subprocess.run(
+        ["git", "ls-files", "--cached", "--ignored", "--exclude-standard"],
+        capture_output=True, text=True, check=True,
+        cwd=str(Path.cwd()),
+    ).stdout
+
+    offenders = [f"{line}  (untracked, and ignored)"
+                 for line in _sources(untracked)]
+    offenders += [f"{line}  (tracked, but an ignore rule claims it)"
+                  for line in _sources(tracked_but_ignored)]
+
+    assert not offenders, (
+        "these Python files exist on disk and are excluded from the repository "
+        "by a .gitignore rule. They are invisible to everyone else — CI, a "
+        "fresh clone, a reviewer — while remaining readable here:\\n"
+        + "\\n".join(f"    {line}" for line in offenders)
+        + "\\n\\n  If the rule is meant to cover runtime data, anchor it to the "
+        "repository root (`/spool/`, not `spool/`) or name the files it applies "
+        "to. An unanchored directory name matches at every depth."
+    )
+
+
+def test_the_spool_package_is_tracked() -> None:
+    """`gateway/spool/` is a source package, not a runtime directory.
+
+    A narrow pin on the specific incident, kept alongside the general guard above
+    because the general one is about a *pattern* and this is about a *package*
+    that imports at runtime. If a future ignore rule hides it again, the failure
+    is `ModuleNotFoundError` in five test modules and nothing else — a symptom
+    that does not obviously point at a `.gitignore` line.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "gateway/spool/"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+
+    assert "gateway/spool/__init__.py" in tracked, (
+        "gateway/spool/__init__.py is not tracked; `gateway.spool` is a source "
+        "package imported by gateway/main.py and five test modules"
+    )
+    assert "gateway/spool/store.py" in tracked, (
+        "gateway/spool/store.py is not tracked; it is the spool's storage layer"
     )

@@ -71,6 +71,22 @@ env:
   # 50 000 rows. Pointing this at a seeded database destroys a week of history,
   # which has happened in this project twice.
   POSTGRES_TEST_DB: wwtp_test
+  # The CI database's password, set once here instead of in eight jobs.
+  #
+  # This was a job-level `POSTGRES_PASSWORD: itpass` on every job that runs
+  # compose, and `generated files vs the contract` was missed — so its
+  # `docker compose config` step failed on
+  #
+  #     error while interpolating services.db.environment.POSTGRES_PASSWORD:
+  #     required variable POSTGRES_PASSWORD is missing a value
+  #
+  # and the job that exists to check the *generated files* was the one failing on
+  # the environment. CI had never been green, so this was not a regression
+  # anyone introduced; it was a rule applied by hand to seven of eight jobs.
+  #
+  # Not a secret. It is a throwaway password for a database created and destroyed
+  # inside the runner, and it was already committed in the job-level copies.
+  # `.env` is the developer's; CI's own credential belongs to CI.
 
 jobs:
   # ── the fast gate: no database, no containers ──────────────────────────────
@@ -161,7 +177,6 @@ jobs:
         # thing anyone can debug.
         env:
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         ports:
           - 5432:5432
@@ -188,7 +203,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         run: |
           uv run python -m storage.postgres.schema --log-level INFO
@@ -211,7 +225,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         run: uv run python -m storage.seed.main --days 7
 
@@ -220,7 +233,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_TEST_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_TEST_DB: wwtp_test
         run: uv run pytest tests/integration -q -p no:cacheprovider
 
@@ -229,7 +241,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         run: uv run python tools/check_sql.py sql/
 
@@ -241,7 +252,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         run: uv run pytest tests/test_scada_contract.py -q -p no:cacheprovider
 
@@ -250,7 +260,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         run: uv run pytest tests/test_grafana_dashboards.py -q -p no:cacheprovider
 
@@ -259,7 +268,6 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
           POSTGRES_USER: wwtp
-          POSTGRES_PASSWORD: itpass
           POSTGRES_DB: wwtp
         run: uv run python -m alarms.replay --log-level INFO
 
