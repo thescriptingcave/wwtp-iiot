@@ -26,8 +26,44 @@ make notebooks                        # build, execute, and verify every claim
 every one against the live database, and fails if a number in the prose no longer
 matches what the database says.
 
-To **read** one rather than run the gate, open JupyterLab in the project's own
-environment:
+## Instantiating them
+
+The committed `.ipynb` files carry **no outputs** — that is deliberate. They are
+generated from `notebooks/src/*.md`, and the claims live in the markdown, so an
+`outputs` array would be a record of one run rather than something checked. You
+have to execute a notebook before there is anything to look at.
+
+```bash
+make notebooks-build   # regenerate notebooks/*.ipynb from notebooks/src/*.md
+make notebooks-read    # execute all three to notebooks/read/*.html, to read
+make notebooks-open    # JupyterLab, to work in them
+```
+
+`make notebooks-read` is the one to use for a manual check. It writes self-contained
+HTML — text output and figures inline — into `notebooks/read/`, and you can open it
+with `open notebooks/read/`:
+
+```bash
+open notebooks/read/
+```
+
+Read it, do not cite it. If a number in that HTML disagrees with the source
+markdown, the source markdown is right, because the markdown is what
+`make notebooks` checks.
+
+**All of these are `make` targets on purpose.** Running `python -m jupyter` or
+`pytest` by hand skips the `.env` the Makefile loads, and `dsn()` then falls back to
+port 5432:
+
+```
+connection to server at "127.0.0.1", port 5432 failed:
+FATAL:  password authentication failed for user "wwtp"
+```
+
+which names a *password* when the real fault is the *port*. This database is on
+**55433**. Use `make`, or `set -a && . ./.env && set +a` if you must go around it.
+
+### Opening one in JupyterLab
 
 ```bash
 uv sync --extra protocols --extra storage --extra analysis --extra serve

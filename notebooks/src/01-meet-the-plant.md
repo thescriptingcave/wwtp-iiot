@@ -21,6 +21,7 @@ full signal list is not the model you think it is.
 ## Setup
 
 ```python
+%matplotlib inline
 import matplotlib.pyplot as plt
 import pandas as pd
 import psycopg

@@ -30,6 +30,7 @@ because the metadata is stored 57 times instead of four million, and because
 `value` can be NULL, which a flat tag table could not express.
 
 ```python
+%matplotlib inline
 import matplotlib.pyplot as plt
 import pandas as pd
 import psycopg

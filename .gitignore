@@ -138,3 +138,6 @@ notebooks/figures/
 # file that is generated from `notebooks/src/*.md` anyway — so it is drift with a
 # timestamp on it, and committing one puts a half-written notebook in the history.
 notebooks/.ipynb_checkpoints/
+
+# Executed HTML from `make notebooks-read`. Derived from the data, like figures.
+notebooks/read/

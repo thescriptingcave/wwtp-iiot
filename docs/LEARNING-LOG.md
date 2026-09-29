@@ -3513,3 +3513,48 @@ the target mints the token and prints the URL itself. And the port is pinned at
 8899 rather than left to Jupyter, which had silently moved to 8889 because 8888 was
 in use — a failure that would have shown up as a connection refused against the
 documented URL.
+
+### The port trap, three more times, and the one that was mine to expect
+
+I fixed the Makefile so every recipe gets `.env`, and then immediately reproduced
+the original failure myself by running `python -m jupyter` under `env -i` to test
+something unrelated. Port 5432, "password authentication failed", the whole thing.
+
+Which is the real lesson, and it is not the one in the commit message:
+
+> **Fixing an environment bug at one layer does not stop it at another.** The
+> Makefile now exports `.env`, which makes every `make` target safe. It does
+> nothing for `pytest` run bare, for an editor's kernel, or for a script. In the
+> same session `tests/test_grafana_dashboards.py` **skipped itself** on the identical
+> error while every `make` target passed.
+
+So the fix is layered deliberately, not universally:
+* `Makefile` exports `.env`, so every documented target is safe from a fresh shell;
+* the error message names the **port**, because the port is the tell and the
+  password is not;
+* the README says *use `make`, or source `.env` yourself*, rather than pretending
+  the trap has been removed.
+
+`env -i` is how I test that the Makefile fix works at all, so I hit the
+complementary failure every time I used it. A test for the fix is also a test for
+the thing the fix does not cover.
+
+### `%matplotlib inline` was missing, so `make notebooks-read` showed no figures
+
+The HTML export produced 72 output areas and **zero images**. `save()` writes PNGs
+to `notebooks/figures/` correctly — they were on disk the whole time — but nothing
+told the kernel to render figures *inline*, so the HTML had text and no plots.
+
+The fix is one line at the top of each notebook's first cell, and it is a line a
+notebook should have had from the start:
+
+    %matplotlib inline
+
+It has to be the first statement, above the imports, because it selects the
+backend the whole session renders with. Now 3, 2 and 2 images respectively, and
+`make notebooks-read` is genuinely readable rather than a wall of `print` output.
+
+Worth noting what the gate said: **green throughout**. `make notebooks` executes
+every notebook, verifies every claim, and never once noticed that no figure was
+being rendered. Every check in this repository verifies something it was written to
+verify, and "does the figure appear" had never been one of them.

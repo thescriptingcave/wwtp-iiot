@@ -154,6 +154,32 @@ notebooks:  ## build, execute, and verify the claimed output of every notebook
 notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 	$(PY) -m tools.build_notebooks
 
+# Executed HTML, for reading a notebook without Jupyter in the loop.
+#
+# The committed `.ipynb` files carry **no outputs** — that is deliberate, and it
+# is the whole reason they are generated: an `outputs` array is a record of the
+# last run and goes stale silently, whereas an `output` fence in
+# `notebooks/src/*.md` is a claim that `tools/check_notebooks.py` verifies. So a
+# freshly built notebook has empty cells and a reader has to execute it.
+#
+# This target executes each one and writes the result to `notebooks/read/`, which
+# is git-ignored for the same reason `figures/` is: it is derived from the data.
+# Read it, do not cite it — if a number here disagrees with the source markdown,
+# the source markdown is right.
+#
+# It goes through this Makefile on purpose. Invoking `python -m jupyter` by hand
+# does not load `.env`, so `dsn()` falls back to port 5432 and fails with a
+# message that names a password rather than the port.
+notebooks-read:  ## execute every notebook to notebooks/read/*.html, for reading
+	@mkdir -p notebooks/read
+	@for nb in notebooks/*.ipynb; do \
+		echo "  $$nb"; \
+		MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyter nbconvert \
+			--to html --execute --no-prompt "$$nb" \
+			--output-dir notebooks/read || exit 1; \
+	done
+	@echo "  open: notebooks/read/  ($$(ls notebooks/read/*.html 2>/dev/null | wc -l | tr -d ' ') file(s))"
+
 notebooks-open:  ## open JupyterLab on the notebooks, in this project's venv
 	@echo "  kernel : Python 3 (ipykernel) - check the status bar says .venv"
 	@echo "  open   : http://127.0.0.1:$(NB_PORT)/lab?token=$(NB_TOKEN)"
