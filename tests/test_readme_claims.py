@@ -76,11 +76,11 @@ def test_the_fault_and_scenario_counts_come_from_the_other_file() -> None:
     the wrong source is how a reader ends up editing the wrong YAML.
     """
     text = _readme()
-    assert "eleven\nfaults" in text or "eleven faults" in text
+    assert "twelve\nfaults" in text or "twelve faults" in text
     assert "six scenarios" in text
 
     other = yaml.safe_load(Path("contracts/fault-scenarios.yaml").read_text())
-    assert len(other["faults"]) == 11
+    assert len(other["faults"]) == 12
     assert len(other["scenarios"]) == 6
 
     # And the *wrong* attribution must stay wrong-looking: `tags.yaml` has no
@@ -311,10 +311,10 @@ def test_the_reading_count_is_about_right() -> None:
 
 
 def test_the_detector_and_rule_counts() -> None:
-    """"ten detectors, fifteen rules"."""
-    assert len(REGISTRY) == 10, f"{len(REGISTRY)} detectors, the README says ten"
-    assert len(rules()) == 15, f"{len(rules())} rules, the README says fifteen"
-    assert "ten detectors, fifteen rules" in _readme()
+    """"eleven detectors, sixteen rules"."""
+    assert len(REGISTRY) == 11, f"{len(REGISTRY)} detectors, the README says eleven"
+    assert len(rules()) == 16, f"{len(rules())} rules, the README says sixteen"
+    assert "eleven detectors, sixteen rules" in _readme()
 
 
 # ── the thing this file is really about ─────────────────────────────────────
@@ -522,7 +522,7 @@ def test_the_lint_debt_baseline_matches_the_files() -> None:
 #: failure as a stale number** — it reads as a control and is not one.
 DOCUMENTED_SUITE_COUNTS = {
     "tests/test_contract.py": 63,
-    "tests/test_alarm_detectors.py": 61,
+    "tests/test_alarm_detectors.py": 63,
     "tests/test_modbus.py": 63,
     "tests/test_process.py": 40,
     "tests/test_scada_contract.py": 37,

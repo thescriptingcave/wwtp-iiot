@@ -204,9 +204,15 @@ class SoftPlc:
         self.loop.image.set_output(
             "_blower_capacity", self.plant.aeration.blower_capacity_m3h
         )
-        self.loop.image.set_output(
-            "AERATION:AHU-1:DO", snapshot.get("AERATION:AHU-1:DO")
-        )
+        # A dead analog input does not become a zero. A PLC holds the last good
+        # value in its input image and raises the fault bit beside it, so that
+        # is what happens here: the image keeps the last good reading and the
+        # *quality* is what travels to the protocols. Substituting 0.0 would put
+        # a number into the control loop that no instrument ever measured, which
+        # is the same laundering the quality channel exists to prevent.
+        do_value = snapshot.get("AERATION:AHU-1:DO")
+        if do_value is not None:
+            self.loop.image.set_output("AERATION:AHU-1:DO", do_value)
 
         # Run the control program **through** the scan loop, not alongside it.
         # Calling the blocks directly would leave them out of the phase metrics,

@@ -180,7 +180,7 @@ class RegisterModel:
 
     # ─── publishing plant state ──────────────────────────────────────────────
 
-    def publish(self, values: dict[str, float], states: dict[str, int],
+    def publish(self, values: dict[str, float | None], states: dict[str, int],
                 heartbeat: int) -> None:
         """Copy current plant state into the register image.
 
@@ -216,6 +216,18 @@ class RegisterModel:
 
             value = values.get(reg.signal)
             if value is None:
+                # A dead instrument, and the one place this server cannot tell
+                # the client. Modbus has no null: a register holds a number or
+                # it holds a stale number, and there is no third option. The
+                # register is left as it was, which means a Modbus client
+                # reading it sees the last good value with no indication that the
+                # instrument has since died.
+                #
+                # That is a real limitation of the protocol, not a bug, and it is
+                # why the OPC UA path in the same plant does the opposite — a
+                # `Bad` StatusCode *can* travel with the node, so it travels.
+                # A Modbus consumer has to fall back on the heartbeat and the
+                # fault-code register instead.
                 continue
             self.values[reg.name] = value
             if reg.type == UDT_FLOAT32:
@@ -227,7 +239,8 @@ class RegisterModel:
 
         # 32-bit runtime across a register pair. Modbus has no 32-bit type, so
         # this is the usual convention: high word first, unsigned.
-        runtime_h = int(values.get("INFLUENT:LIFT:RUNTIME", 0.0)) & 0xFFFFFFFF
+        _runtime = values.get("INFLUENT:LIFT:RUNTIME")
+        runtime_h = int(_runtime if _runtime is not None else 0.0) & 0xFFFFFFFF
         hi_reg = self.c.register("PUMP1_RUNTIME_HI")
         lo_reg = self.c.register("PUMP1_RUNTIME_LO")
         self.holding[self._offset(hi_reg.address)] = (runtime_h >> 16) & 0xFFFF

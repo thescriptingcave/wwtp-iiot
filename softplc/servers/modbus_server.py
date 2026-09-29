@@ -124,7 +124,7 @@ class ModbusTcpServer:
 
     # ─── publishing ──────────────────────────────────────────────────────────
 
-    def publish(self, values: dict[str, float], states: dict[str, int],
+    def publish(self, values: dict[str, float | None], states: dict[str, int],
                 heartbeat: int) -> None:
         self.model.publish(values, states, heartbeat)
         self._flush()

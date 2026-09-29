@@ -6,7 +6,7 @@ which *claim* to catch them do.
 
 ## Why only two faults, and why they are marked slow
 
-A full run over all eleven faults takes about eight minutes, which is too long
+A full run over all twelve faults takes about eight minutes, which is too long
 for the unit suite and is available as `make coverage`. Two faults is the
 interesting pair:
 
@@ -374,7 +374,7 @@ def test_a_healthy_plant_raises_almost_nothing() -> None:
     the panel within a shift. So this is the number to hold down.
 
     **It is currently six.** One of the fifteen rules was fixed during this phase
-    — `aeration_do_sagging` fired on ten of eleven faults and on the healthy
+    — `aeration_do_sagging` fired on ten of twelve faults and on the healthy
     plant, because its 0.15 mg/L per hour threshold sat *inside* the diurnal
     distribution whose steepest healthy fall is 0.427. Re-measuring and setting
     the threshold at 0.6 took it from the worst offender to clean.
@@ -453,7 +453,7 @@ def test_coverage_json_round_trips() -> None:
 
     report = audit(AlarmEngine(rules()), {"blower_failure": []})
     payload = json.loads(json.dumps(report.as_dict(), default=str))
-    assert payload["faults"] == 11
+    assert payload["faults"] == 12
     assert payload["evaluated"] == 1
     assert "contract_explained" in payload
     # Every fault row carries the renamed field, so a consumer reading the old

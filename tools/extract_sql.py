@@ -88,22 +88,38 @@ def _context(text: str, offset: int) -> str:
     The *nearest* one above, searched in a bounded window so a query fifty lines
     into a long section is not named after a heading from the previous section.
     """
-    window = text[:offset]
-    # The last 1200 characters is roughly one screen of a lesson.
-    window = window[-1200:]
-
     # **Nearest above, by position.** The first version of this compared titles
     # with `>` and kept the alphabetically greatest, which is not "nearest" by any
     # definition — it named two queries in a row after whichever heading happened
     # to sort last, so `01-02_filtering` produced
     # `01-the-question.sql` *and* `02-the-question.sql` for two different queries.
     # Offsets are the only thing that means "nearest".
-    best_pos, best_title = -1, ""
-    for pattern in (HEADING, LEAD_IN):
-        for match in pattern.finditer(window):
-            if match.start() > best_pos:
-                best_pos, best_title = match.start(), match.group("title").strip()
-    return best_title
+    #
+    # The window is 1200 characters — roughly one screen — so a query deep in a
+    # long section is not named after a heading from the section before it. But a
+    # fixed window is also a **cliff**: grow the prose above a query by half a
+    # screen and its heading falls out of the window, `_context` returns `""`, and
+    # the file is named `04-query.sql`, which describes nothing. Five lessons did
+    # exactly that when `sql/README.md` gained a section, and the generated tree
+    # filled with `NN-query.sql` files whose names had drifted away from their
+    # contents without anything failing.
+    #
+    # So the window widens until a heading is found, bounded so a query at the top
+    # of a lesson cannot be named after the *previous* file's last heading. The
+    # bound is generous on purpose: a real lesson has a heading or a bold
+    # lead-in within a few hundred characters of any query, and 4000 is well past
+    # the longest run in this course.
+    for width in (1200, 4000):
+        window = text[:offset][-width:]
+        best_pos, best_title = -1, ""
+        for pattern in (HEADING, LEAD_IN):
+            for match in pattern.finditer(window):
+                if match.start() > best_pos:
+                    best_pos = match.start()
+                    best_title = match.group("title").strip()
+        if best_title:
+            return best_title
+    return ""
 
 
 def header(lesson: str, section: str, line: int, index: int, total: int) -> str:

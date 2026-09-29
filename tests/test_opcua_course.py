@@ -210,36 +210,75 @@ def test_the_lesson_claims_every_signal_starts_at_its_normal_low() -> None:
     )
 
 
-def test_the_lesson_claims_publish_collapses_bad_into_uncertain() -> None:
-    """`Good if quality == 0 else Uncertain` — one branch for two states."""
-    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
-    body = src.split("status = (", 1)[1].split("await entry.node.write_value", 1)[0]
-    assert "StatusCodes.Good" in body and "StatusCodes.Uncertain" in body
-    assert "StatusCodes.Bad" not in body, (
-        "publish() now has a Bad branch; lesson 03's round-trip table is stale"
-    )
+def test_publish_maps_three_qualities_to_three_status_codes() -> None:
+    """The three-way mapping, scoped to `publish()` rather than the whole file.
 
+    This replaced a guard that asserted the *opposite* — that `publish()` had a
+    Good branch and an Uncertain branch and no Bad branch, which was the defect
+    lesson 03 reported. It used to slice the source between `status = (` and the
+    write; that anchor is gone now that the mapping is a dict, so this scopes on
+    the method body instead.
 
-def test_the_lesson_claims_the_plant_model_never_produces_a_bad_quality() -> None:
-    """`quality={}` in the only PlantSnapshot, and one Uncertain writer.
-
-    Traced rather than assumed: the contract defines three states, the scan loop
-    can hold any of them, the gateway acts on all of them, and the simulation
-    only ever writes `Uncertain`. So `QUALITY_BAD` is a constant with no
-    producer, and the docstring's "a failing sensor reports Bad" describes a
-    capability the code does not have.
+    Scoping to the method matters: a file-level assertion would pass on a `Bad`
+    that appears only in a comment, and the whole point of the original finding
+    was that the documentation promised a capability the code did not have.
     """
-    plant = (ROOT / "softplc" / "process" / "plant.py").read_text(encoding="utf-8")
-    assert "quality={}" in plant, (
-        "the plant model now populates quality; lesson 03's claim that Bad has "
-        "no producer needs revisiting"
+    src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    start = src.index("async def publish")
+    end = src.index("async def _flush_states", start)
+    body = src[start:end]
+    for name in ("Good", "Uncertain", "Bad"):
+        assert f"ua.StatusCodes.{name}" in body, (
+            f"publish() no longer maps to {name}; the three-state round trip "
+            "lesson 03 tabulates is stale"
+        )
+    assert ".get(entry.quality" in body, (
+        "the mapping is no longer driven by entry.quality, so a new quality "
+        "value would silently default to Bad -- or to something else entirely"
     )
+
+
+def test_the_plant_model_can_now_actually_produce_a_bad_reading() -> None:
+    """The inverse of the finding this test used to assert.
+
+    It used to require that `QUALITY_BAD` have *no* producer, because that was
+    a true and unpleasant fact: the contract defined three states, the scan loop
+    could hold any of them, and the simulation only ever wrote `Uncertain`. The
+    `sensor_dead` injector closed that, and this test now protects the closure.
+
+    Three things must hold together, and each is a way the fix can rot:
+
+    * something produces `Bad`;
+    * the plant hands a `None` through rather than substituting a number;
+    * the OPC UA server encodes it as a Bad StatusCode with **no Value field**,
+      because a null `Double` variant is a type lie that `asyncua` rejects.
+
+    The lesson in `audit/03` was rewritten from "Bad has no producer" to "here is
+    the producer", so the two cannot disagree.
+    """
     engine = (ROOT / "softplc" / "faults" / "engine.py").read_text(encoding="utf-8")
-    assert "snap.quality[target] = QUALITY_UNCERTAIN" in engine
-    assert "QUALITY_BAD" not in engine.replace(
-        "QUALITY_UNCERTAIN = 1", ""
-    ).replace("QUALITY_BAD = 2", ""), (
-        "the fault engine now writes QUALITY_BAD; lesson 03 is stale"
+    assert "snap.quality[target] = QUALITY_BAD" in engine, (
+        "the `sensor_dead` injector no longer marks Bad; `value IS NULL` with "
+        "`quality = 2` has no producer again and audit/03 is stale"
+    )
+    assert 'kind == "sensor_dead"' in engine or "sensor_dead" in engine, (
+        "the sensor_dead injector was renamed or removed; audit/03 names it"
+    )
+
+    plant = (ROOT / "softplc" / "process" / "plant.py").read_text(encoding="utf-8")
+    assert "values: dict[str, float | None]" in plant, (
+        "the plant snapshot no longer admits None, so a dead instrument cannot "
+        "reach the historian as `value IS NULL`"
+    )
+
+    server = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
+    assert "ua.StatusCodes.Bad" in server, (
+        "the OPC UA server no longer maps anything non-Good to Bad, so a dead "
+        "instrument would be published as Uncertain and told to be used"
+    )
+    assert "ua.Variant(entry.value, ua.VariantType.Double)" in server, (
+        "the DataValue write changed shape; check it still omits the Value "
+        "field for a dead instrument rather than sending a null Double"
     )
 
 
@@ -640,13 +679,29 @@ asyncio.run(main())
     )
 
 
-def test_the_lesson_claims_bad_quality_is_never_published() -> None:
-    """Lesson 03's second claim: `Bad` is documented and never produced."""
+def test_bad_quality_is_published_with_a_null_value_and_not_collapsed() -> None:
+    """Lesson 03's second claim, inverted: `Bad` is documented *and* produced.
+
+    This used to assert that `StatusCodes.Bad` appeared nowhere in the server,
+    which was true and which the lesson reported as a defect. Now that the
+    producer exists, the interesting property is the one that is easy to
+    regress: the three qualities must map to three distinct codes.
+
+    Collapsing `Bad` back into `Uncertain` would still let a dead instrument be
+    published, so a test that only checked "Bad appears somewhere" would pass
+    against a server that tells every client to go ahead and use a number it
+    does not have.
+    """
     src = (ROOT / "softplc" / "servers" / "opcua.py").read_text(encoding="utf-8")
-    assert "StatusCodes.Bad" not in src, (
-        "Bad is now published, so the course README's claim 2 is stale"
+    for name in ("Good", "Uncertain", "Bad"):
+        assert f"ua.StatusCodes.{name}" in src, (
+            f"the server no longer maps to {name}; lesson 03's three-state table "
+            "is stale"
+        )
+    assert "else ua.StatusCode(ua.UInt32(ua.StatusCodes.Uncertain))" not in src, (
+        "the server is collapsing every non-Good quality into Uncertain again, "
+        "so a dead instrument is published as 'probably fine'"
     )
-    assert "StatusCodes.Uncertain" in src
 
 
 def test_the_unit_id_collisions_lesson_02_teaches_are_still_there() -> None:

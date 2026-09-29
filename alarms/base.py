@@ -53,6 +53,7 @@ DETECTION_VOCABULARY: frozenset[str] = frozenset({
     "state_change",
     "flatline_detection",
     "expected_sample_count",
+    "quality_flag",
     "cross_validation",
     "ratio_derived_alarm",
     "model_based",

@@ -109,7 +109,7 @@ class OpcUaNode:
     writable: bool = False
     #: Last published value, kept so a late-joining subscriber gets a value
     #: immediately rather than waiting for the next change.
-    value: float = 0.0
+    value: float | None = 0.0
     quality: int = 0
 
 
@@ -427,11 +427,20 @@ class OpcUaServer:
             # silent no-op that looks exactly like a dead subscription, and it
             # is the sort of bug that survives a long way past where it was
             # introduced.
-            status = (
-                ua.StatusCode(ua.UInt32(ua.StatusCodes.Good))
-                if entry.quality == 0
-                else ua.StatusCode(ua.UInt32(ua.StatusCodes.Uncertain))
-            )
+            # A `DataValue` carries a value and a StatusCode independently, so
+            # the three project qualities map to three distinct OPC UA codes
+            # rather than two. Mapping everything non-Good to `Uncertain` was
+            # defensible while `Bad` had no producer — there was no third state
+            # to represent — and wrong now that a dead instrument can actually
+            # occur. A client that sees `Uncertain` is told "this number is
+            # probably right and the provenance is not", which is a different
+            # instruction from "there is no number", and collapsing them makes
+            # the first one unrepresentable on the wire.
+            status = {
+                0: ua.StatusCodes.Good,
+                1: ua.StatusCodes.Uncertain,
+            }.get(entry.quality, ua.StatusCodes.Bad)
+            status = ua.StatusCode(ua.UInt32(status))
             # `SourceTimestamp` is what lets a client tell a measurement from the
             # constructor's placeholder — see `courses/opcua/09-build-a-client.md`.
             #
@@ -444,9 +453,23 @@ class OpcUaServer:
             # laptop that is exactly what the first version of this fix did.
             #
             # A tz-aware datetime takes the other branch and is encoded correctly.
+            #
+            # A dead instrument is written as a DataValue with **no Value at
+            # all**, which is how OPC UA expresses "there is no number" — not a
+            # null variant. `ua.Variant(None, ua.VariantType.Double)` is
+            # rejected by `asyncua` (`Non array Variant ... cannot have value
+            # None`), and rightly so: a Double-typed variant carrying nothing is
+            # a type lie. Omitting the field and carrying the Bad status is the
+            # honest encoding, and a client reading it gets a DataValue whose
+            # `.Value` is None *and* whose StatusCode says Bad, so it can tell
+            # "no value" from "a value I could not decode".
+            payload: Any = (
+                None if entry.value is None
+                else ua.Variant(entry.value, ua.VariantType.Double)
+            )
             await entry.node.write_value(
                 ua.DataValue(
-                    ua.Variant(entry.value, ua.VariantType.Double),
+                    payload,
                     StatusCode=status,
                     SourceTimestamp=_utcnow(),
                 )
@@ -457,8 +480,22 @@ class OpcUaServer:
         self.changed = changed
         return count
 
-    def set_value(self, signal_id: str, value: float, quality: int = 0) -> None:
-        """Stage a value for publication. Cheap, and safe from the scan loop."""
+    def set_value(self, signal_id: str, value: float | None,
+                  quality: int = 0) -> None:
+        """Stage a value for publication. Cheap, and safe from the scan loop.
+
+        ``value is None`` is a supported input and the OPC UA reason it is
+        supported is the point of the protocol: a ``DataValue`` carries a value
+        *and* a StatusCode independently, so a dead instrument arrives as a null
+        value with a ``Bad`` status rather than as a plausible number. The
+        Modbus server in this same plant cannot do that, and the difference
+        between the two is the strongest argument in the project for OPC UA.
+
+        Note what is deliberately *not* done here: the previous value is not
+        retained, and no zero is substituted. ``_flush_states`` writes
+        ``entry.value`` verbatim, so ``None`` reaches the address space as a
+        genuine null.
+        """
         if self.space is None:
             return
         entry = self.space.variables.get(signal_id)

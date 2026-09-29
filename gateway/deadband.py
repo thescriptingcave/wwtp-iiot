@@ -98,7 +98,7 @@ class BandRule:
 
 @dataclass(slots=True)
 class _Entry:
-    value: float = math.nan
+    value: float | None = math.nan
     quality: int = -1
     seen: bool = False
 
@@ -149,7 +149,7 @@ class Deadband:
 
     # ─── the decision ────────────────────────────────────────────────────────
 
-    def accept(self, signal_id: str, value: float, quality: int = 0) -> bool:
+    def accept(self, signal_id: str, value: float | None, quality: int = 0) -> bool:
         """Decide whether this reading is worth publishing.
 
         Returns ``True`` and updates the baseline when the reading is newsworthy.
@@ -159,33 +159,46 @@ class Deadband:
         That last point is the one that is easy to get wrong. If a suppressed
         reading *did* update the baseline, a signal drifting slowly and steadily
         would be compared against itself and never publish at all.
+
+        Every case below ends in the same two lines, so the decision is made once
+        and the publish happens once. That is not tidiness for its own sake: a
+        reader comparing a *recovery* against a *quality change* against a
+        *first reading* is reading three claims about what is newsworthy, and
+        they should be next to each other rather than interleaved with a copy of
+        the bookkeeping.
         """
         rule = self.rule_for(signal_id)
         self._offered[signal_id] = self._offered.get(signal_id, 0) + 1
-
-        # A quality change is always news. The number may be identical.
         prev = self._last.get(signal_id)
-        if prev is not None and prev.seen and prev.quality != quality:
-            self._remember(signal_id, value, quality)
-            self._counts[signal_id] = self._counts.get(signal_id, 0) + 1
-            return True
 
-        if rule.mode is BandMode.ALWAYS:
-            self._remember(signal_id, value, quality)
-            self._counts[signal_id] = self._counts.get(signal_id, 0) + 1
-            return True
+        if value is None:
+            # A dead instrument is always news, and it is *not* a value to
+            # compare — there is no magnitude to exceed anything. Every later
+            # step of the same fault is suppressed, because one row saying "the
+            # probe is dead" is the fact; forty thousand rows saying it again is
+            # noise that hides the transition.
+            publish = not (prev is not None and prev.seen
+                           and prev.value is None and prev.quality == quality)
+        elif prev is not None and prev.seen and prev.quality != quality:
+            # A quality change is always news. The number may be identical.
+            publish = True
+        elif rule.mode is BandMode.ALWAYS:
+            publish = True
+        elif prev is None or not prev.seen:
+            # The first reading of a signal is always published. There is nothing
+            # to compare it against, and a historian whose first hour of a tag is
+            # empty is a historian that cannot answer "when did this start?".
+            publish = True
+        elif prev.value is None:
+            # A recovery is news too. This is the first number the instrument has
+            # produced since it died, so comparing it against the dead baseline
+            # would be meaningless.
+            publish = True
+        else:
+            publish = self._exceeds(rule, prev.value, value)
 
-        # The first reading of a signal is always published. There is nothing to
-        # compare it against, and a historian whose first hour of a tag is empty
-        # is a historian that cannot answer "when did this start?".
-        if prev is None or not prev.seen:
-            self._remember(signal_id, value, quality)
-            self._counts[signal_id] = self._counts.get(signal_id, 0) + 1
-            return True
-
-        if not self._exceeds(rule, prev.value, value):
+        if not publish:
             return False
-
         self._remember(signal_id, value, quality)
         self._counts[signal_id] = self._counts.get(signal_id, 0) + 1
         return True
@@ -207,7 +220,7 @@ class Deadband:
             return abs(new - old) > (rule.threshold / 100.0) * rule.span
         return abs(new - old) > rule.threshold
 
-    def _remember(self, signal_id: str, value: float, quality: int) -> None:
+    def _remember(self, signal_id: str, value: float | None, quality: int) -> None:
         self._last[signal_id] = _Entry(value=value, quality=quality, seen=True)
 
     # ─── introspection ───────────────────────────────────────────────────────

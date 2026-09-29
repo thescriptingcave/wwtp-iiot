@@ -1,5 +1,5 @@
 -- 04-expert/04-02_change_detection.md
--- (no heading above this query)
+-- Two silences that look identical
 --
 -- Query 3 of 5 in this lesson, at 04-expert/04-02_change_detection.md line 106.
 --

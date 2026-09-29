@@ -32,7 +32,7 @@ written down.
 pieces of equipment, their engineering units and ranges, their permit limits,
 their Modbus addresses and word orders.
 [`contracts/fault-scenarios.yaml`](contracts/fault-scenarios.yaml) describes the
-eleven faults the plant can be asked to suffer and the six scenarios that drive
+twelve faults the plant can be asked to suffer and the six scenarios that drive
 them.
 
 They are separate on purpose, and the reason is the interesting part: **a fault
@@ -121,7 +121,7 @@ CONSTRAINT reading_null_is_not_good CHECK (value IS NOT NULL OR quality <> 0)
 ```
 
 **Faults have expected signatures.** [`contracts/fault-scenarios.yaml`](contracts/fault-scenarios.yaml)
-gives each of eleven faults the signature an operator should see, plus
+gives each of twelve faults the signature an operator should see, plus
 `detectable_by` and `NOT_detectable_by` — because knowing what a fault will *not*
 tell you is how you avoid a confident wrong diagnosis.
 
@@ -188,7 +188,7 @@ The fault library was built to feed an alarm engine, and for three phases it fed
 nothing. It now does, and — more usefully — **it audits itself**: every rule names
 the faults it claims to catch, every fault names how it is and is not detectable,
 and the seeder can answer "did this rule fire?" because it replays the plant
-model through each of the eleven faults.
+model through each of the twelve faults.
 
 The tool's first full run found that `aeration_do_sagging` fired on **ten of
 eleven** faults, and then that **six rules fire on a healthy plant**. Tuning every
@@ -256,7 +256,7 @@ then written down as though it were a principle.
 - [x] **Phase 2** — Modbus TCP server, OPC UA server, browser tool, runnable soft PLC
 - [x] **Phase 3** — gateway (deadband, spool, both protocol readers), Postgres +
   TimescaleDB storage, metadata seeder, SQL course through `02-intermediate`
-- [x] **Phase 4** — alarm engine: ten detectors, fifteen rules, and a coverage
+- [x] **Phase 4** — alarm engine: eleven detectors, sixteen rules, and a coverage
   audit against the fault library. Every threshold derived from a measurement of
   a settled healthy plant, which took the false-positive count from six rules to
   five — and the remaining five cannot be tuned away.

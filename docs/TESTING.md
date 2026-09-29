@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 688 | no |
+| Unit, no database | 690 | no |
 | Integration | 46 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 4 | no — they run the plant model, ~18 min |
 | SQL course | 64 queries in 17 lessons | yes |
@@ -28,7 +28,7 @@ Per file, for the ones worth naming:
 | File | Tests | What it is for |
 |---|---|---|
 | `test_contract.py` | 63 | the loader's rules: units, ranges, bands, register links, write paths |
-| `test_alarm_detectors.py` | 61 | pure functions over hand-built windows |
+| `test_alarm_detectors.py` | 63 | pure functions over hand-built windows |
 | `test_modbus.py` | 63 | word order, the register model, the client |
 | `test_process.py` | 40 | the chemistry and the control loops, dimensionally |
 | `test_scada_contract.py` | 37 | the generated flows — and it *executes their SQL* |

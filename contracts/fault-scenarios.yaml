@@ -355,6 +355,33 @@ faults:
       detectable_by: [cross_validation, single_point_threshold]
       not_sufficient_alone: []
 
+  - id: sensor_dead
+    kind: sensor
+    title: Instrument stops answering entirely
+    description: >
+      The transmitter loses power, the cable is cut, or the card fails. There is
+      no reading at all — and that is the only honest thing to report. This is
+      the fault that produces `value = NULL` with `quality = 2`, the one state
+      the plant previously had no way to express, and the reason the convention
+      taught in `sql/00-foundations/00-03` could not be demonstrated: every other
+      sensor fault here rewrites the number into a plausible one, and a plausible
+      wrong number is a harder problem than a missing one.
+    start_at_s: 0
+    ramp_s: 0
+    duration_s: 3600
+    targets: ["INFLUENT:LIFT:CURRENT"]
+    inject: sensor_dead
+    params: {}
+    expects:
+      signature: >
+        The signal goes silent: one row recording the death with `value IS NULL`
+        and `quality = 2`, then nothing until it recovers. A gap in the data is
+        therefore a fact about the instrument, not about the process, and any
+        average over the window must either exclude the interval or report its
+        coverage.
+      detectable_by: [quality_flag, gap_detection]
+      not_sufficient_alone: [single_point_threshold]
+
   - id: effluent_tss_stuck
     kind: sensor
     title: Effluent TSS instrument stuck low

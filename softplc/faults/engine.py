@@ -44,6 +44,17 @@ FAULTS_PATH = Path(__file__).resolve().parents[2] / "contracts" / "fault-scenari
 #: StatusCodes and why design rule 4 exists.
 QUALITY_UNCERTAIN = 1
 
+#: ...and an instrument that has stopped answering altogether reports ``Bad`` with
+#: no value at all. This is the *only* way a ``None`` value reaches the historian,
+#: and it is the case three SQL lessons teach: a broken instrument is stored as
+#: ``value = NULL`` with ``quality = 2``, never as a plausible number.
+#:
+#: Every other sensor injector above it corrupts the *value* and reports Uncertain,
+#: which is the more insidious failure — the reading looks real. This one is the
+#: honest one, and without it the "keep the value, keep the status" rule in
+#: ``sql/00-foundations/00-03`` has nothing to teach from.
+QUALITY_BAD = 2
+
 
 class FaultError(RuntimeError):
     """Raised when a fault cannot be applied — a typo, or a target that does
@@ -192,7 +203,7 @@ class FaultEngine:
         self.now_s: float = 0.0
         #: Reported values frozen by sensor faults, so a flatline holds rather
         #: than tracking whatever the process happens to be doing.
-        self._frozen: dict[str, float] = {}
+        self._frozen: dict[str, float | None] = {}
         #: Equipment states forced by process faults, and the states to restore.
         self._forced_states: dict[str, int] = {}
         self._original_states: dict[str, int] = {}
@@ -414,55 +425,94 @@ class FaultEngine:
     # ─── sensor fault injection ───────────────────────────────────────────────
 
     def _apply_sensor_fault(self, af: ActiveFault, snap: PlantSnapshot) -> None:
-        kind = af.spec.inject
-        i = af.intensity(self.now_s)
-        plant = self.plant
-
         for target in af.spec.targets:
             if target not in snap.values:
                 raise FaultError(
                     f"{af.id}: target {target!r} is not in the plant snapshot, so "
                     "this sensor fault would silently do nothing"
                 )
-            true_value = snap.values[target]
 
-            if kind == "sensor_drift":
-                bias = float(af.spec.params.get("bias_max", 1.0)) * i
-                lo, hi = _signal_range(plant, target)
-                snap.values[target] = min(hi, max(lo, true_value + bias))
+            # Handled before the corruption chain because it is the one injector
+            # with no value to corrupt. Every other one *rewrites* what the
+            # instrument would have said; this one says nothing at all, and
+            # inventing a number for it — even the last good reading, even a
+            # zero — is precisely the laundering design rule 4 forbids. ``None``
+            # is a fact about the instrument; a number is a claim about the
+            # process.
+            if af.spec.inject == "sensor_dead":
+                snap.values[target] = None
+                snap.quality[target] = QUALITY_BAD
+                continue
 
-            elif kind == "sensor_flatline":
-                # Freeze at the value captured when the fault began, and keep
-                # it there. A flatline that still wanders is not a flatline.
-                if target not in self._frozen:
-                    self._frozen[target] = true_value
-                lo, hi = _signal_range(plant, target)
-                snap.values[target] = min(hi, max(lo, self._frozen[target]))
-
-            elif kind == "sensor_stuck_high":
-                frac = float(af.spec.params.get("fraction", 0.97))
-                lo, hi = _signal_range(plant, target)
-                snap.values[target] = lo + (hi - lo) * frac
-
-            elif kind == "sensor_stuck_low":
-                val = float(af.spec.params.get("value", 0.0))
-                lo, hi = _signal_range(plant, target)
-                snap.values[target] = min(hi, max(lo, val))
-
-            else:
-                raise FaultError(f"{af.id}: no sensor injector named {kind!r}")
+            self._corrupt(af, target, snap)
 
             # A failing instrument still reports a quality the SCADA layer can
             # act on. Overwriting the value without marking the quality is how a
             # historian ends up laundering bad data — see design rule 4.
             snap.quality[target] = QUALITY_UNCERTAIN
 
+    def _corrupt(self, af: ActiveFault, target: str,
+                 snap: PlantSnapshot) -> None:
+        """Rewrite one reported value the way a misbehaving instrument would.
+
+        Split out from :meth:`_apply_sensor_fault` so that "what does this
+        injector do to the number" and "what does a failing instrument report
+        about its own trustworthiness" are separate questions. Every branch here
+        produces a *plausible* value, which is exactly why the caller has to
+        decide the quality separately — the number cannot be trusted to say
+        anything about its own reliability.
+        """
+        kind = af.spec.inject
+        i = af.intensity(self.now_s)
+        plant = self.plant
+        true_value = snap.values[target]
+
+        if kind == "sensor_drift":
+            if true_value is None:
+                # Already dead. There is nothing to bias — a drifting instrument
+                # is a *reporting* fault, and an instrument that is not
+                # reporting cannot also be drifting.
+                snap.values[target] = None
+                return
+            bias = float(af.spec.params.get("bias_max", 1.0)) * i
+            lo, hi = _signal_range(plant, target)
+            snap.values[target] = min(hi, max(lo, true_value + bias))
+
+        elif kind == "sensor_flatline":
+            # Freeze at the value captured when the fault began, and keep it
+            # there. A flatline that still wanders is not a flatline.
+            #
+            # A frozen ``None`` is legitimate: an instrument that had already
+            # stopped answering freezes at "not answering", and a dead
+            # instrument is exactly as flat as a stuck one.
+            if target not in self._frozen:
+                self._frozen[target] = true_value
+            frozen = self._frozen[target]
+            if frozen is None:
+                snap.values[target] = None
+            else:
+                lo, hi = _signal_range(plant, target)
+                snap.values[target] = min(hi, max(lo, frozen))
+
+        elif kind == "sensor_stuck_high":
+            frac = float(af.spec.params.get("fraction", 0.97))
+            lo, hi = _signal_range(plant, target)
+            snap.values[target] = lo + (hi - lo) * frac
+
+        elif kind == "sensor_stuck_low":
+            val = float(af.spec.params.get("value", 0.0))
+            lo, hi = _signal_range(plant, target)
+            snap.values[target] = min(hi, max(lo, val))
+
+        else:
+            raise FaultError(f"{af.id}: no sensor injector named {kind!r}")
+
     # ─── introspection ───────────────────────────────────────────────────────
 
     def active_ids(self) -> tuple[str, ...]:
         return tuple(af.id for af in self.active if af.is_active(self.now_s))
 
-    def truth(self) -> dict[str, float]:
+    def truth(self) -> dict[str, float | None]:
         """The plant's *real* values, before any sensor fault.
 
         This is what a fault test compares the reported values against. It is

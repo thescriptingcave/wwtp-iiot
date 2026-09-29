@@ -36,6 +36,8 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
+from softplc.contract import QUALITY_BAD
+
 from alarms.base import (
     AlarmRule,
     Sample,
@@ -43,7 +45,7 @@ from alarms.base import (
     Window,
     slope_per_hour,
     verdict,
-)
+  )
 
 Detector = Callable[[AlarmRule, Window], Verdict]
 
@@ -399,7 +401,55 @@ def expected_sample_count(rule: AlarmRule, window: Window) -> Verdict:
     )
 
 
-# ─── 8. cross validation ────────────────────────────────────────────────────
+# ─── 8. quality flag ────────────────────────────────────────────────────────
+
+
+def quality_flag(rule: AlarmRule, window: Window) -> Verdict:
+    """The instrument says it cannot be trusted. The value is not consulted.
+
+    The only detector here that fires on a *flag* rather than on a number, and it
+    is the only one that can work when there is no number: a failed transmitter
+    reports `value = NULL` with `quality = 2`, and every other detector in this
+    file would read that as "no data, therefore inactive".
+
+    That is a real and easy failure — an alarm system that goes quiet precisely
+    when the instrument breaks is worse than no alarm system, because the
+    silence reads as healthy. The `min_quality` threshold makes the severity
+    tunable: `1` catches a drifting probe, `2` catches a dead one, and
+    `3` would catch anything this project's scale does not yet produce.
+    """
+    # `min_quality` is the one param that must be declared, because a rule that
+    # does not say which states count as a finding is a rule that does not know
+    # what it is for. The rest default, so a probe experiment does not have to
+    # spell them out.
+    min_quality = int(rule.params.get("min_quality", QUALITY_BAD))
+    recent = window.since(float(rule.params.get("horizon_s", 300.0)))
+    flagged = [p for p in recent if p.quality >= min_quality]
+    worst = max((p.quality for p in flagged), default=0)
+
+    return verdict(
+        bool(flagged),
+        # `None` when nothing is flagged, for the same reason every other
+        # detector reports an absent observation that way: a "worst quality of
+        # 0" would read as "we looked and everything was Good", which is a claim
+        # about the plant. An empty window supports no such claim — nothing
+        # arrived to be judged.
+        float(worst) if flagged else None,
+        count=len(flagged), min_quality=min_quality,
+        raw_count=len(recent), worst_quality=worst,
+        # A rule that did not fire still owes the operator a sentence. `reason`
+        # is where every other detector puts it, and a human reading the event
+        # log should never have to infer silence from the absence of a line.
+        reason=(
+            f"no sample reported quality >= {min_quality}"
+            if not flagged else
+            f"{len(flagged)} sample(s) reported quality {worst} "
+            f"(>= {min_quality})"
+        ),
+    )
+
+
+# ─── 9. cross validation ────────────────────────────────────────────────────
 
 
 def cross_validation(rule: AlarmRule, window: Window) -> Verdict:
@@ -558,6 +608,7 @@ REGISTRY: dict[str, Detector] = {
     "state_change": state_change,
     "flatline_detection": flatline_detection,
     "expected_sample_count": expected_sample_count,
+    "quality_flag": quality_flag,
     "cross_validation": cross_validation,
     "ratio_derived_alarm": ratio_derived,
     "model_based": model_based,

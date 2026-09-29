@@ -1,5 +1,5 @@
 -- 02-intermediate/02-02_joins.md
--- (no heading above this query)
+-- The three kinds of "no data", and telling them apart
 --
 -- Query 3 of 3 in this lesson, at 02-intermediate/02-02_joins.md line 196.
 --

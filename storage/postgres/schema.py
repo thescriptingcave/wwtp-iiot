@@ -25,14 +25,23 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from psycopg import errors
 from softplc.contract import Contract
 from softplc.contract import contract as get_contract
 
 log = logging.getLogger("storage.postgres")
+
+#: How hard to try when a scheduled refresh policy holds the aggregate we want.
+#: Ten attempts at 1, 2, 3 ... seconds is about a minute of waiting, which is far
+#: longer than a scheduled job over a seeded week should hold the lock, and far
+#: shorter than a seeder run. See `_refresh_with_retry`.
+REFRESH_LOCK_ATTEMPTS = 10
+REFRESH_LOCK_BACKOFF_S = 1.0
 
 if TYPE_CHECKING:  # pragma: no cover
     from psycopg import Connection
@@ -308,24 +317,65 @@ def refresh_aggregates(start: datetime, end: datetime) -> int:
     # A procedure call has no parse-time type for its arguments, so the value has
     # to be a literal in the statement text. `psycopg.sql` does the quoting and
     # escaping, so this is not string interpolation by hand.
-    from psycopg import sql
-
     window = (start.isoformat(), end.isoformat())
     with connect() as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             for view in ("reading_1m", "reading_1h"):
-                cur.execute(
-                    sql.SQL("CALL refresh_continuous_aggregate({}, {}, {})")
-                    .format(
-                        sql.Literal(view),
-                        sql.Literal(window[0]),
-                        sql.Literal(window[1]),
-                    )
-                )
-                log.info("refreshed %s over %s .. %s", view, *window)
+                _refresh_with_retry(cur, view, window)
         conn.close()
     return 2
+
+
+def _refresh_with_retry(cur: Any, view: str, window: tuple[str, str]) -> None:
+    """One `CALL`, retried if a scheduled policy is holding the same view.
+
+    TimescaleDB runs a **background job** for each policy — `reading_1m` and
+    `reading_1h` each have one, every five minutes. A manual `CALL` for the same
+    aggregate over an overlapping window collides with it, and the collision is
+    reported as::
+
+        LockNotAvailable: could not refresh continuous aggregate "reading_1h"
+        due to a concurrent refresh
+
+    The seeder lost a whole run to this: it finished writing 4.3 million
+    readings, then raised on the refresh, and the *data* was left in place with
+    both rollups stale. So the reader saw a populated `reading` and empty
+    `reading_1h` and had no way to tell that apart from a fresh database.
+
+    The job holds the lock for the length of its own refresh, which is seconds
+    rather than minutes, so a short bounded retry is the right shape. A timeout
+    that is generous enough for the longest legitimate job and no longer keeps
+    the failure loud for the case that is genuinely wrong.
+    """
+    from psycopg import sql
+
+    attempts = 0
+    while True:
+        try:
+            cur.execute(
+                sql.SQL("CALL refresh_continuous_aggregate({}, {}, {})")
+                .format(
+                    sql.Literal(view),
+                    sql.Literal(window[0]),
+                    sql.Literal(window[1]),
+                )
+            )
+            log.info("refreshed %s over %s .. %s", view, *window)
+            return
+        except errors.LockNotAvailable:
+            attempts += 1
+            if attempts > REFRESH_LOCK_ATTEMPTS:
+                raise
+            # Linear backoff, small. The competing job is already running and
+            # will finish; hammering it just makes both slower.
+            time.sleep(attempts * REFRESH_LOCK_BACKOFF_S)
+            log.warning(
+                "refresh of %s collided with the scheduled policy "
+                "(attempt %d of %d); waiting %.1fs",
+                view, attempts, REFRESH_LOCK_ATTEMPTS,
+                attempts * REFRESH_LOCK_BACKOFF_S,
+            )
 
 
 def record_event(conn: Connection, *, kind: str, severity: str,

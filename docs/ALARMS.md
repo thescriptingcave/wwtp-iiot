@@ -10,7 +10,7 @@ make alarms       # run against a live historian
 
 ## The problem this is built around
 
-**`single_point_threshold` cannot find nine of the eleven faults in
+**`single_point_threshold` cannot find nine of the twelve faults in
 `contracts/fault-scenarios.yaml`.** That is not an opinion; it is a field in the
 contract, written there by whoever modelled each fault, and
 `sql/00-02` and the lessons that follow it are about why.

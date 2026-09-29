@@ -428,6 +428,24 @@ def _rules(c: Contract) -> list[AlarmRule]:
             ),
         ),
 
+        AlarmRule(
+            id="lift_current_silence",
+            signal_id="INFLUENT:LIFT:CURRENT",
+            detector="quality_flag",
+            severity="critical",
+            for_s=60.0,
+            clear_s=120.0,
+            params={"min_quality": 2},
+            message="Lift current instrument stopped reporting",
+            detects=("sensor_dead",),
+            rationale=(
+                "The one rule in this file that fires on a *flag* rather than a "
+                "value, and it exists because a dead instrument is the only "
+                "fault in the library that reports no number at all. Every other "
+                "detector here needs something to look at."
+            ),
+        ),
+
         # ── lift station and secondary clarifier ─────────────────────────────
         AlarmRule(
             id="lift_pump_flow_lost",

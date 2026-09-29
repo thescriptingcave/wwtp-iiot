@@ -67,11 +67,24 @@ class PlantSnapshot:
     silently missing series.
     """
 
-    values: dict[str, float] = field(default_factory=dict)
+    #: ``None`` means *the instrument did not answer*, which is a different claim
+    #: from any number the process could produce. Only an injected
+    #: ``sensor_dead`` fault puts one here — the plant model itself always has a
+    #: value, because the process is real even when the gauge is not. The
+    #: asymmetry is the point: a broken instrument is ``value = NULL`` with
+    #: ``quality = 2`` in the historian, and this is where that ``None`` is born.
+    values: dict[str, float | None] = field(default_factory=dict)
     states: dict[str, int] = field(default_factory=dict)
     quality: dict[str, int] = field(default_factory=dict)
 
-    def get(self, key: str, default: float = 0.0) -> float:
+    def get(self, key: str, default: float = 0.0) -> float | None:
+        """The value for ``key``, or ``default`` if the signal is absent.
+
+        Returns ``None`` when the signal is *present but dead*. The distinction is
+        the whole point: a missing tag and an instrument that stopped answering
+        are different facts, and collapsing the second into the first is how a
+        failed probe becomes a plausible zero.
+        """
         return self.values.get(key, default)
 
     def __contains__(self, key: str) -> bool:
@@ -372,7 +385,7 @@ class Plant:
         )
         lift = self.lift
 
-        v: dict[str, float] = {
+        v: dict[str, float | None] = {
             # influent
             "INFLUENT:FLOW:FLOW": inf.flow_m3h,
             "INFLUENT:FLOW:TURBIDITY": inf.turbidity_ntu,

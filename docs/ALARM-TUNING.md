@@ -16,7 +16,7 @@ scenario, after a 9h15m settle.
 ## Why a tuning tool and not a spreadsheet
 
 `ALARMS.md` records the first finding of the alarm phase: `aeration_do_sagging`
-fired on ten of eleven faults *and on the healthy plant*, because its 0.15 mg/L
+fired on ten of twelve faults *and on the healthy plant*, because its 0.15 mg/L
 per hour threshold sat inside the diurnal distribution. It was fixed by hand, in
 a throwaway script, from 1 618 samples.
 

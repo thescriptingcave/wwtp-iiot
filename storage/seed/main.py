@@ -77,6 +77,30 @@ ExecuteFn = Callable[[list[tuple[Any, ...]]], int]
 #: database is that it does not let you.
 SAMPLE_INTERVAL_S = 1.0
 
+#: Instrument faults armed partway through a seeded run.
+#:
+#: Three faults, three different shapes, deliberately spread across the week:
+#:
+#: * ``do_sensor_drift`` — the process is fine and the *gauge* is wrong. The
+#:   value is plausible and in range, so nothing but a model-based check catches
+#:   it. This is `bad_instrument`'s own claim, and without it the dataset has no
+#:   example of a fault that a threshold cannot see.
+#: * ``effluent_tss_stuck`` — a frozen effluent reading. Frozen values are the
+#:   ones that quietly poison a time-weighted average, because the deadband stops
+#:   writing and a naive `AVG` treats the gap as "nothing happened".
+#: * ``sensor_dead`` — the instrument stops answering. The only source of
+#:   ``value IS NULL`` with ``quality = 2`` anywhere in this project, and the
+#:   reason `sql/00-foundations/00-03` and `sql/04-expert/04-01` can teach a
+#:   convention instead of only describing it.
+#:
+#: `at_fraction` is a fraction of the run, not a timestamp, so the spread
+#: follows ``--days``.
+DEFAULT_INSTRUMENT_FAULTS: list[dict[str, Any]] = [
+    {"fault": "do_sensor_drift", "at_fraction": 0.30, "duration_s": 5400.0},
+    {"fault": "effluent_tss_stuck", "at_fraction": 0.55, "duration_s": 7200.0},
+    {"fault": "sensor_dead", "at_fraction": 0.78, "duration_s": 3600.0},
+]
+
 #: Rows per COPY. 20 000 keeps any single transaction comfortably in memory while
 #: still being large enough that the round trip is not the bottleneck. The old
 #: limit — 3 000 — existed because line protocol capped a request body; COPY has
@@ -113,12 +137,16 @@ class Seeder:
 
     def __init__(self, contract: Contract, execute: ExecuteFn, *,
                  sample_interval_s: float = SAMPLE_INTERVAL_S,
-                 speed: float = 600.0, storm_after_h: float | None = 2.0) -> None:
+                 speed: float = 600.0, storm_after_h: float | None = 2.0,
+                 instrument_faults: list[dict[str, Any]] | None = None) -> None:
         self.c = contract
         self._execute = execute
         self.sample_interval_s = sample_interval_s
         self.speed = speed
         self.storm_after_h = storm_after_h
+        #: Instrument faults to arm partway through the run. See where they are
+        #: armed for why the dataset is worse without them.
+        self.instrument_faults = list(instrument_faults or DEFAULT_INSTRUMENT_FAULTS)
         self.deadband = Deadband.from_contract(contract)
         self.rows: list[tuple[Any, ...]] = []
         self.written = 0
@@ -210,6 +238,33 @@ class Seeder:
                 if fault.end_s is not None:
                     fault.end_s = delay + (fault.end_s - fault.start_s)
 
+        if self.instrument_faults:
+            # Instrument faults are the *point* of this dataset being teachable.
+            # Without them every row is `quality = 0` and no `value` is ever
+            # NULL, so the convention three SQL lessons teach — a broken
+            # instrument is stored as `value = NULL` with `quality = 2` — has
+            # nothing to teach from. The reader can read the rule and never see
+            # it happen.
+            #
+            # Spread across the week rather than clustered, because a reader
+            # sampling one arbitrary window has to be able to hit a bad reading
+            # by accident. The offsets are fractions of the run, so they follow
+            # `--days` rather than being pinned to a date.
+            for spec in self.instrument_faults:
+                at = total_s * spec["at_fraction"]
+                armed = self.faults.arm(spec["fault"], at)
+                armed.start_s = at
+                # `end_s` is set **unconditionally**, not only when the spec
+                # already had one. `do_sensor_drift` declares no `duration_s`,
+                # so `arm()` leaves `end_s` as None and the fault then runs from
+                # its offset to the end of the week — 1 176 readings of a
+                # steadily drifting probe, which is why the first version of
+                # this seeded a *third* of the dataset at `quality = 1` and the
+                # "only the readings I trust" query in `sql/00-foundations/00-03`
+                # came back empty. The lesson was teaching a filter that had
+                # nothing left to filter.
+                armed.end_s = at + spec["duration_s"]
+
         n = int(total_s / dt)
         for i in range(n):
             ts = start + i * dt
@@ -236,6 +291,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "negative to skip")
     p.add_argument("--speed", type=float, default=600.0,
                    help="simulated seconds per real second")
+    p.add_argument("--no-instrument-faults", action="store_true",
+                   help="seed a week where every instrument is healthy; without "
+                        "them the dataset cannot teach the quality convention")
     p.add_argument("--no-deadband", action="store_true",
                               help="record every sample; a much larger dataset")
     p.add_argument("--log-level", default="INFO")
@@ -292,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
     seeder = Seeder(
         contract, execute, speed=args.speed,
         storm_after_h=None if args.storm_after < 0 else args.storm_after,
+        instrument_faults=[] if args.no_instrument_faults else None,
     )
     if args.no_deadband:
         seeder.deadband = Deadband({})

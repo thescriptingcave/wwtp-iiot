@@ -190,7 +190,7 @@ grafana:  ## Grafana, provisioned from files in git
 	docker compose --profile observability up -d grafana
 
 coverage:  ## the fault x rule matrix, about eight minutes
-	@echo "── alarm coverage: eleven faults against thirteen rules ──"
+	@echo "── alarm coverage: twelve faults against fourteen rules ──"
 	$(PY) -m alarms.main coverage --hours 8
 
 coverage-json:  ## the same, machine-readable

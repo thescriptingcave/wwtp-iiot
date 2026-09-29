@@ -1,5 +1,5 @@
 -- 00-foundations/00-02_identity_and_values.md
--- (no heading above this query)
+-- The join, and why there is only one database
 --
 -- Query 9 of 9 in this lesson, at 00-foundations/00-02_identity_and_values.md line 239.
 --
