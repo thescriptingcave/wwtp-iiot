@@ -270,7 +270,7 @@ That is the output of a tool with nothing driving it, and it is the most useful
 output in the project: four numbers, all `Good`, all wrong, and the client says
 so about every one.
 
-Run it against `docker compose up -d plc` and the verdicts change to `measured`
+Run it against `docker compose up -d softplc` and the verdicts change to `measured`
 as the plant publishes — which is the whole point of finding 14's fix, and the
 reason this client can now be trusted on a running plant rather than only against
 a bare server.

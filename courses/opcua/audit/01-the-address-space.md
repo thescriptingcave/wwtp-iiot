@@ -25,8 +25,8 @@ it, which [lesson 02](02-units-and-types.md) is about.
 ## Before you start
 
 ```bash
-docker compose up -d plc            # or just: python -m softplc.main
-docker compose logs -f plc
+docker compose up -d softplc            # or just: python -m softplc.main
+docker compose logs -f softplc
 ```
 
 Any python in this repo can also open a session for you:

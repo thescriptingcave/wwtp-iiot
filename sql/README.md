@@ -21,23 +21,41 @@ docker compose --profile demo run --rm seed   # a week of plant history
 Without seeded data every query returns no rows and every chart is flat, and the
 mistake everyone makes is concluding their SQL is wrong. Seed first.
 
-### And stop the plant, if it is running
+### And stop the gateway, if it is running
 
 ```bash
-docker compose stop scada          # do this before working through the course
+docker compose stop gateway        # do this before working through the course
 ```
 
-**It is the gateway, not the plant, that has to stop.** `scada` is the service
-that reads the plant over Modbus and OPC UA and writes the rows; `softplc` is the
-plant itself. The two courses want opposite things and you can have both:
+**It is the gateway, not the plant, that has to stop.** `gateway` is the service
+that reads the plant over Modbus and OPC UA and **writes the rows**; `softplc` is
+the plant itself. The two courses want opposite things and you can have both:
 
 | | SQL course | OPC UA course |
 |---|---|---|
 | `softplc` (plant, port 4840) | not needed | **needed** — lesson 01 talks to it |
-| `scada` (gateway, writes rows) | **must be stopped** | not needed |
+| `gateway` (writes rows) | **must be stopped** | not needed |
 
 So the working combination for `make check` is both courses at once:
-`softplc` up, `scada` down.
+`softplc` up, `gateway` down.
+
+**This section was wrong for its whole life, and the mistake is worth reading
+because it nearly survived twice.** It said `docker compose stop scada`. There *is*
+a service called `scada` — Node-RED, behind the `scada` profile — so the command
+does not fail, it just **stops the wrong thing**. Node-RED only reads; the writer
+keeps running. A reader who trusted it got a database that was still being written
+to, and no explanation for why their results would not reproduce.
+
+It was caught because the author happened to have `gateway` stopped for an
+unrelated reason, so the documented command had never actually been needed. And on
+the first attempt to correct it, this section named the service `scada` *again* —
+the same wrong name, in the same file, while explicitly warning about it.
+
+So: two things now check this, and neither existed before.
+`tests/test_readme_claims.py` runs `docker compose --profile ... config --services`
+and asserts that every service name any document tells a reader to type is a real
+one; and a second test asserts the *writer* is named, not merely that the name
+resolves, because `stop scada` type-checks fine and is still wrong.
 
 **A live plant writing into the database makes the course non-reproducible**, and
 not in a subtle way. The lessons anchor to `(SELECT max(ts) FROM reading)`, so a

@@ -48,7 +48,7 @@ uv sync
 If you would rather drive it by hand against a live plant:
 
 ```bash
-docker compose up -d plc
+docker compose up -d softplc
 uv run python tools/opcua_browser.py browse
 ```
 

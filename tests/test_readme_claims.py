@@ -532,7 +532,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 50,
+    "tests/test_readme_claims.py": 52,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
@@ -1096,3 +1096,136 @@ def test_04_expert_claims_the_dashboard_query_that_shipped() -> None:
             f"lesson 04-04 no longer names {claim!r}, so a reader cannot find the "
             "code it is explaining"
         )
+
+
+# ── documented docker commands ───────────────────────────────────────────────
+
+
+def _documented_compose_service_names() -> dict[str, str]:
+    """Every `docker compose <verb> <name>` a document tells a reader to type.
+
+    Returns name → the file it came from, because the failure message is only
+    useful if it says which document to fix.
+    """
+    found: dict[str, str] = {}
+    pattern = re.compile(
+        r"docker compose\s+(?:--profile\s+\S+\s+)?"
+        r"(?:stop|start|restart|logs|up|run|exec)\s+(?:-{1,2}\S+\s+)*"
+        r"(?P<name>[a-z][a-z0-9-]+)"
+    )
+    for path in sorted(Path().rglob("*.md")):
+        if any(part in (".git", "node_modules", "TablePlus")
+               for part in path.parts):
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            # Only lines that *are* the command. Without this the pattern
+            # matched prose — `docs/LEARNING-LOG.md` line 627 reads
+            # "`docker compose up` produces a Grafana you cannot log into, and"
+            # and the first word after `up` is `produces`, which was then
+            # reported as a service that does not exist.
+            #
+            # A fenced block's body is indented by at most a couple of spaces and
+            # a `$ ` prompt is stripped, so both are accepted. A line that
+            # continues into a sentence — more than a few words after the
+            # command, or ending in a comma — is prose and is skipped.
+            stripped = line.strip().lstrip("$ ").strip()
+            if not stripped.startswith("docker compose"):
+                continue
+            if stripped.endswith((",", ".", ";")) and " -" not in stripped:
+                continue
+            if len(stripped.split()) > 8:
+                continue
+            for match in pattern.finditer(stripped):
+                found.setdefault(match.group("name"), str(path))
+    return found
+
+
+def _compose_profiles() -> list[str]:
+    """Every profile name declared in compose.yaml, read from the file itself."""
+    text = Path("compose.yaml").read_text(encoding="utf-8")
+    return sorted(set(re.findall(r'profiles:\s*\[(?:"|\')([a-z-]+)(?:"|\')\]', text)))
+
+
+def _real_compose_services() -> set[str]:
+    """The service names compose actually knows, across every profile.
+
+    `docker compose config --services` without `--profile` omits profiled
+    services, so asking that question alone would have called `scada` fictional
+    when it is real — which is the whole reason the original instruction slipped
+    through. Every profile has to be included.
+    """
+    services: set[str] = set()
+    # The profile list is *read from compose.yaml* rather than written down here.
+    # Hardcoding it is the same mistake this test exists to catch: the first
+    # version of it listed `demo` and `scada` and called `grafana` fictional,
+    # because `grafana` lives behind the `observability` profile. A guard that
+    # invents its own list of services to trust is a guard that invents findings.
+    profiles = ["", *_compose_profiles()]
+    for profile in profiles:
+        cmd = ["docker", "compose", "config", "--services"]
+        if profile:
+            cmd[2:2] = ["--profile", profile]
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, cwd=".",
+        )
+        if out.returncode != 0:
+            pytest.skip(
+                "docker compose config is unavailable: "
+                f"{out.stderr.strip()[:200]}"
+            )
+        services.update(out.stdout.split())
+    return services
+
+
+def test_documented_compose_services_exist() -> None:
+    """Every service name in a fenced `docker compose` line must be real.
+
+    A reader who types a service that does not exist gets `no such service`, and
+    a prerequisite that silently fails is worse than no prerequisite: the reader
+    concludes the data is at fault.
+
+    The check exists because `sql/README.md` told the reader to run
+    `docker compose stop scada` for a very long time.
+    """
+    real = _real_compose_services()
+    for name, where in _documented_compose_service_names().items():
+        assert name in real, (
+            f"{where} tells the reader to run a docker compose command naming "
+            f"{name!r}, which is not a service. Real services: "
+            f"{sorted(real)}"
+        )
+
+
+def test_the_reproducibility_prerequisite_names_the_writer() -> None:
+    """`sql/README.md` must name `gateway`, and `gateway` is the writer.
+
+    This is a *different* check from the one above, and it is the one that would
+    have caught the real bug. `scada` is a genuine service — Node-RED, behind
+    the `scada` profile — so `stop scada` passes "does this service exist" and is
+    still wrong, because Node-RED only reads and `gateway` is what writes.
+
+    The failure mode is specific and worth guarding: a valid name for the wrong
+    component is invisible to an existence check and to a human skimming for
+    typos. Asserting on the *writer* is what makes it checkable.
+    """
+    readme = Path("sql/README.md").read_text(encoding="utf-8")
+    assert "docker compose stop gateway" in readme, (
+        "sql/README.md no longer tells the reader to stop the gateway, which is "
+        "the service that writes rows; without it the seeded data moves under "
+        "the lessons and every result becomes unreproducible"
+    )
+
+    # And the claim itself, checked against the code rather than believed.
+    gateway = Path("gateway/main.py").read_text(encoding="utf-8")
+    assert "PostgresWriter" in gateway and "make_execute" in gateway, (
+        "gateway/main.py no longer writes readings; the prerequisite above names "
+        "the wrong component again and the data will not be reproducible"
+    )
+    # Node-RED must not be the thing that writes, or the doc is right for a
+    # reason nobody has checked.
+    assert "INSERT INTO reading" not in Path(
+        "scada/build_flows.py"
+    ).read_text(encoding="utf-8"), (
+        "scada/build_flows.py now writes readings, so stopping the gateway is no "
+        "longer sufficient to make the data static"
+    )
