@@ -176,13 +176,37 @@ jobs:
           --ignore=tests/integration
           -m "not slow and not integration"
 
+      # The OPC UA course's 87 snippets, run against a live server.
+      #
+      # This step was in the `unit` job — "no database, no containers" — and had
+      # never once worked there. 17 snippets got
+      #
+      #     ConnectionRefusedError: [Errno 111] Connect call failed ('127.0.0.1', 4840)
+      #
+      # and the gate exited 1. **A gate that has only ever failed is not a gate**,
+      # which is a different failure from a gate that has never been run: this one
+      # reported, every time, and was indistinguishable from a real failure.
+      #
+      # The server is a background process rather than a service container,
+      # because `softplc` is a module in this repository and not an image. The
+      # invocation is `softplc.main`, which takes the endpoint as an argument —
+      # `softplc.servers.opcua` has no `__main__` and exits silently, which is
+      # what the first version of this step did.
+      #
+      # Verified locally before being written here: **87/87 snippets ran**.
       - name: the lesson courses
-        # In this job rather than the integration one, and that placement is the
-        # point: `tools/check_lessons.py` starts its own OPC UA server on an
-        # ephemeral port and needs no database, no seed and no compose. A lesson
-        # gate that needed a seeded week to demonstrate a browse would be a gate
-        # that ran a fortnight and then not ran.
-        run: uv run python tools/check_lessons.py
+        run: |
+          uv run python -m softplc.main --scan-ms=20 --modbus-port=5020 \
+            --opcua-endpoint=opc.tcp://0.0.0.0:4840/wwtp/server/ \
+            --speed=1.0 --report-every=30 &
+          for i in $(seq 1 40); do
+            if uv run python -c "import socket,sys; s=socket.socket(); \
+              s.settimeout(1); sys.exit(s.connect_ex(('127.0.0.1', 4840)))"; then
+              echo "   opcua server ready after ${i}s"; break
+            fi
+            sleep 1
+          done
+          uv run python tools/check_lessons.py
 
   # ── the gate that needs a database ────────────────────────────────────────
   integration:
@@ -199,6 +223,20 @@ jobs:
         env:
           POSTGRES_USER: wwtp
           POSTGRES_DB: wwtp
+          # **Service containers do not inherit the workflow-level `env`.**
+          # GitHub passes job `env` and step `env` into steps; a `services:` entry
+          # is a container, and only its own `env` block reaches it.
+          #
+          # This line was removed by the cleanup that consolidated
+          # POSTGRES_PASSWORD to workflow level, and the timescale service then
+          # failed to start with the most misleading message in the file:
+          #
+          #     Database is uninitialized and superuser password is not specified.
+          #
+          # which says the image is broken rather than that its configuration was
+          # deleted. Consolidating a variable and deleting it are one keystroke
+          # apart, and only one of them is what the commit message claimed.
+          POSTGRES_PASSWORD: itpass
         ports:
           - 5432:5432
         options: >-

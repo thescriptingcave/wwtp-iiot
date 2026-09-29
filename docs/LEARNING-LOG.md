@@ -3558,3 +3558,93 @@ Worth noting what the gate said: **green throughout**. `make notebooks` executes
 every notebook, verifies every claim, and never once noticed that no figure was
 being rendered. Every check in this repository verifies something it was written to
 verify, and "does the figure appear" had never been one of them.
+
+### CI had never been green, and I made it worse before I made it better
+
+Checking CI because a run was red revealed **0 successes in 22 runs**. Every
+failure was older than the notebook work. Nothing about the notebooks caused any
+of it; all of it had simply never been read.
+
+Four distinct causes, in the order CI surfaced them:
+
+1. **`.gitignore` line 36 was a bare `spool/`**, which matches a directory of that
+   name at *any* depth — and `gateway/spool/` is the source package. Untracked
+   since it was written. CI: `ModuleNotFoundError: No module named 'gateway.spool'`
+   in five test modules, on every run.
+
+   Nothing local could see it, because **an ignored file is still on disk**. Every
+   test passed, every lesson ran, and `make lint` — which lints `gateway` — had
+   nothing to say about a package it could not see.
+
+2. **`POSTGRES_PASSWORD` was set on seven of eight jobs.** The one that missed it,
+   `generated files vs the contract`, has `docker compose config` as its last step
+   and failed on interpolating a variable the file requires.
+
+3. **compose requires four such variables, not one.** `GATEWAY_DB_PASSWORD`,
+   `POSTGRES_PASSWORD`, `WEB_DB_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`. I fixed one,
+   pushed, and CI reported the same error naming a different variable on a
+   different job that had been failing just as long.
+
+   > Finding them one per CI run, from the error message, is the slow way to find a
+   > set. `grep -oE '.${VAR:?...}' compose.yaml` lists them all and should have
+   > been the first command.
+
+4. **The OPC UA lesson gate had never worked in CI.** `check_lessons.py` runs 87
+   snippets against a live server, and the `unit` job — "no database, no
+   containers" — started no server. 17 snippets got `ConnectionRefusedError` and
+   the gate exited 1, every run.
+
+   > **A gate that has only ever failed is not a gate.** It is a different failure
+   > from one that has never been run: it reports, every time, and is
+   > indistinguishable from a real failure. That is a stronger argument for
+   > watching CI than "CI catches regressions" — this caught nothing and cost four
+   > CI round trips anyway.
+
+## The mistake in the middle
+
+Consolidating `POSTGRES_PASSWORD` to workflow level, I ran
+`re.sub(r"\n *POSTGRES_PASSWORD: itpass(?=\n)", "", t)` to remove the job-level
+copies. It removed **eight** of them and the workflow-level one I had just added
+was in the same match set. The commit removed eight lines and added none, and its
+message claimed otherwise.
+
+The third removal was in a **`services:` block**, and service containers do not
+inherit workflow-level `env` — only their own `env` block reaches them. So the
+timescale container stopped starting, with:
+
+    Database is uninitialized and superuser password is not specified.
+
+which blames the image for configuration that was deleted.
+
+> Consolidating a variable and deleting it are one keystroke apart, and only one of
+> them is what the commit message says. The grep was right; the claim about it was
+> not, and the claim is what a reviewer reads.
+
+## Two tests that needed a `.env` to exist
+
+Both passed locally for a week and failed in CI immediately, because CI has no
+`.env`:
+
+* one asserted that a git-ignored credentials file is present in a fresh clone;
+* one asserted a child process sees `POSTGRES_PORT`, which is true on a
+  developer's machine and meaningless on CI.
+
+Both now skip without `.env`, verified by moving the file aside and watching the
+reasons print.
+
+> **CI is the only place a fresh clone exists, so CI is the only place those two
+> tests could have been caught.** Both had been written to pass on the machine
+> that wrote them.
+
+## `.SHELLFLAGS` has never worked on this machine
+
+GNU Make **3.81**; `.SHELLFLAGS` arrived in **3.82**. So `SHELL := /bin/bash` is
+honoured and `.SHELLFLAGS := -euo pipefail -c` has been silently ignored since the
+Makefile was written. Every recipe in this repository has run without `errexit`,
+without `nounset` and without `pipefail` — for the life of the file.
+
+Nothing has been *fixed* about it here, because the portable fix is a judgement
+call: `SHELL := /bin/bash -euo pipefail` works on 3.81 by smuggling flags into
+`SHELL`, and breaks on 3.82+ where make appends its own. Recorded rather than
+patched, because guessing at this is how a Makefile stops working on somebody
+else's machine.
