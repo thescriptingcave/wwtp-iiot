@@ -88,6 +88,18 @@ env:
   # inside the runner, and it was already committed in the job-level copies.
   # `.env` is the developer's; CI's own credential belongs to CI.
   #
+  # **All four**, because compose declares all four as required — `${VAR:?...}` —
+  # and `docker compose config` interpolates every service whether or not the
+  # step starts it. `test_scada_contract.py::test_the_scada_service_itself_is_valid`
+  # had been failing in CI for the same reason and for the same length of time:
+  # `services.gateway.environment.POSTGRES_PASSWORD: required variable
+  # GATEWAY_DB_PASSWORD is missing a value`.
+  #
+  # Finding them one per CI run, from the error message, is the slow way to
+  # discover a set. `grep -oE '.${VAR:?...}' compose.yaml` lists them all.
+  GATEWAY_DB_PASSWORD: itpass-gateway
+  WEB_DB_PASSWORD: itpass-web
+  GRAFANA_ADMIN_PASSWORD: itpass-grafana
   # Written as `:=` on purpose. An earlier attempt added this key here and then
   # ran a cleanup that stripped *every* `POSTGRES_PASSWORD: itpass` line in the
   # file to remove the job-level copies — including the one just added. The result
