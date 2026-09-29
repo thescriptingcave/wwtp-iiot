@@ -3371,3 +3371,59 @@ and the gate rejected it, because `f"{268086:>7,}"` is exactly seven characters 
 **the thousands separator counts toward the field width**. So `>7` adds no padding
 at all for six-digit numbers and one space for five-digit ones. Reconstructed from
 the printed run rather than reasoned about, which is the only reliable method.
+
+### Notebook 04: a claim that was the opposite of the truth
+
+The notebook argues that bucketing computes a different estimator from `AVG`. The
+part I was most confident about was that the continuous aggregate and pandas
+would *disagree*, because their first buckets have different edges — the rollup
+starts on the hour and pandas starts at `01:43:25`.
+
+Restricted to the same window, they give **23.087** and **23.087**. Identical.
+
+> What I had actually written was a plausible mechanism for a disagreement that did
+> not exist, and I only found it because the gate compares pasted output rather
+> than because the reasoning was wrong. **A wrong reason and a right answer look
+> identical until someone checks the number.**
+
+The finding that replaced it is better: the rollup spans **two extra days** and
+**38,689 readings** the raw table does not have, so the *unrestricted*
+`avg(mean)` is **22.774** — within **1.3 %** of the correct answer. A wrong window
+returns a plausible number, which is the most dangerous shape a bug can take, and
+it is worth stating that the implementation question (rollup vs pandas) is
+genuinely *not* the problem here. The estimator question is.
+
+### The identity, proved rather than asserted
+
+`AVG(value)` equals the count-weighted mean of bucket means to **3.55e-15** —
+floating-point noise, identical for any data. I had asserted this as arithmetic in
+the notebook text and then made the notebook print both numbers, which is the only
+reason I noticed I had written `2.75e-14` from a mental estimate.
+
+The proof is one line of algebra and one print, and it is the kind of claim that
+should never be made in prose without a run next to it.
+
+### `f"{268086:>7,}"` is exactly seven characters
+
+The bucket-count table came back with `(n=  268,086 raw, 169 hours)` in the run and
+the gate rejected my pasted version for the whole block. The cause: **the thousands
+separator counts toward the field width**, so a six-digit number gets no padding
+at all under `>7` and a five-digit one gets a single space.
+
+Reconstructed from the printed run rather than reasoned about, which is the only
+reliable method and the reason the gate compares text rather than parsing it.
+
+### Two habits worth keeping from building three notebooks
+
+**Reconstruct claims from the run, never from memory.** Every wrong number in
+these three notebooks came from writing what I expected. Every one was fixed by
+copying what printed. None was found by re-reading the reasoning.
+
+**A punchline is not a measurement.** The notebook-01 averaging section claimed
+"10 %" and delivered 2 %, because the number came from a scratch query that had
+silently `dropna()`-ed a pivot. The honest version — rank every signal by relative
+disagreement, take the worst — gave **21.4 %** and a *mechanism* ("the more a signal
+moves, the further apart the two estimators get") that the single example could
+not have supported.
+
+Ranking to find the worst case is both more honest and more useful than picking one.
