@@ -66,6 +66,20 @@ analysis = [
     # and any pinned output would be stale on arrival.
     "nbmake>=1.5",
     "ipykernel>=6.29",
+    # The front-end. In its own extra `notebooks-serve` rather than in `analysis`,
+    # because CI executes notebooks headlessly and needs none of this: jupyterlab
+    # is ~40 MB of server that a gate never starts.
+    #
+    # It is worth the separation for a specific reason. A `jupyter` already on
+    # PATH — from a system Python, anaconda, pyenv — will happily open a notebook
+    # in this repository and run it under the *wrong interpreter*, which has no
+    # psycopg and no pandas. The failure is a ModuleNotFoundError on cell one, and
+    # it reads like the project is broken. Installing Jupyter into the venv means
+    # `uv run jupyter lab` and the project's dependencies are the same environment
+    # by construction.
+]
+serve = [
+    "jupyterlab>=4.2",
 ]
 dev = [
     "pytest>=8.3",

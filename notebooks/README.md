@@ -26,6 +26,25 @@ make notebooks                        # build, execute, and verify every claim
 every one against the live database, and fails if a number in the prose no longer
 matches what the database says.
 
+To **read** one rather than run the gate, open JupyterLab in the project's own
+environment:
+
+```bash
+uv sync --extra protocols --extra storage --extra analysis --extra serve
+make notebooks-open
+```
+
+Then open `01-meet-the-plant.ipynb`.
+
+**Use the `Python 3` kernel from this venv.** A `jupyter` earlier on your `PATH` —
+from a system Python, conda, pyenv — will open these notebooks under the *wrong
+interpreter*, which has no `psycopg` and no pandas, and the failure is a
+`ModuleNotFoundError` on cell one that reads like the project is broken. That is
+why JupyterLab lives in the venv: `uv run` and the dependencies are the same
+environment by construction. If JupyterLab shows a kernel picker, pick
+`Python 3 (ipykernel)` and check the status bar says
+`/Users/dev/Developer/wwtp-iiot/.venv`.
+
 ## How they are authored
 
 `notebooks/src/*.md` is the source of truth. `notebooks/*.ipynb` is generated.

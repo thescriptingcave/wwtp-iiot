@@ -33,7 +33,7 @@ TEST_PORT  ?= 55432
         up seed wait down clean logs \
         scada scada-flows scada-check dashboards dashboards-check grafana \
         coverage coverage-json alarms browse watch psql query roles contract \
-        lessons tableplus notebooks notebooks-build
+        lessons tableplus notebooks notebooks-build notebooks-open
 
 help:
 	@grep -E '^[a-z][a-zA-Z-]*:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -112,6 +112,11 @@ notebooks:  ## build, execute, and verify the claimed output of every notebook
 
 notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 	$(PY) -m tools.build_notebooks
+
+notebooks-open:  ## open JupyterLab on the notebooks, in this project's venv
+	@echo "── kernel: choose 'Python 3 (ipykernel)' if JupyterLab offers a list ──"
+	MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab --notebook-dir=notebooks \
+		--ServerApp.token=$$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
 
 # ── the stack ────────────────────────────────────────────────────────────────
 
