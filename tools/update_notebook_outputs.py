@@ -196,7 +196,11 @@ def _claims(source: str) -> list[tuple[int, str]]:
 def report(source_path: Path, *, write: bool) -> int:
     from tools.check_notebooks import _normalise  # noqa: PLC0415
 
-    notebook = ROOT / "notebooks" / f"{source_path.stem}.ipynb"
+    # The generated notebook sits beside its source's track, not in `notebooks/`.
+    # Hardcoding the directory here meant a workshop source produced a `FileNotFound`
+    # naming a path that does not exist, which is a worse error than the one this
+    # tool exists to fix.
+    notebook = source_path.parent.parent / f"{source_path.stem}.ipynb"
     source = source_path.read_text(encoding="utf-8")
     printed = _printed_blocks(notebook)
     claims = _claim_positions(source)
@@ -244,8 +248,11 @@ def report(source_path: Path, *, write: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="update_notebook_outputs")
-    parser.add_argument("source", type=Path)
-    parser.add_argument("--write", action="store_true")
+    parser.add_argument("source", type=Path,
+                        help="a source file, e.g. workshops/ml/src/01-....md. Its "
+                             "track is inferred from where it lives.")
+    parser.add_argument("--write", action="store_true",
+                        help="rewrite the output fences; without it, only report")
     args = parser.parse_args(argv)
     return report(args.source.resolve(), write=args.write)
 

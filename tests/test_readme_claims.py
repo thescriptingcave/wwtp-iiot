@@ -336,6 +336,21 @@ DOCS = sorted(
     if not any(x in p.parts for x in ("node_modules", ".next", ".git"))
 )
 
+#: Documents that **record** rather than **describe**, so a number in them was true
+#: when it was written and must stay true.
+#:
+#: `docs/LEARNING-LOG.md` is append-only by policy: it says what was learned and when,
+#: and rewriting an old entry to match today would destroy the only thing it is for.
+#: Its "Done — gates.yml, seven jobs" was correct on the day it was written and is
+#: now a historical fact about a seven-job workflow, not a claim about this one.
+#:
+#: **This was found by the CI-job test flagging it**, which is the check working: it
+#: cannot tell a record of a past state from a description of the present one, because
+#: both are the same shape. Rather than widen the pattern until it stops matching old
+#: entries — which would defeat it — the record is excluded by name, and the reason is
+#: here rather than in a list nobody reads.
+RECORDS = frozenset({Path("docs/LEARNING-LOG.md")})
+
 
 def _claims_only(path: Path) -> list[str]:
     """The lines of a document that *assert* something, not the lines that quote.
@@ -779,7 +794,7 @@ def test_no_document_miscounts_the_ci_workflow_jobs() -> None:
     )
     offenders = [
         f"{path}:{number}: {stripped.strip()}"
-        for path in DOCS
+        for path in (p for p in DOCS if p not in RECORDS)
         for number, (raw, prose) in enumerate(
             zip(path.read_text(encoding="utf-8").splitlines(),
                 _is_prose(path), strict=True), start=1,

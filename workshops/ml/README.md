@@ -118,7 +118,17 @@ not notice any of it, and neither does a `DummyClassifier`.
 | `build_dataset.py` | The builder. Pure functions over a frame, IO in `main()`, so `tests/test_workshop_dataset.py` runs without a database |
 | — | 15 tests, in `tests/test_workshop_dataset.py`: the panel is dense, the baseline cannot see the hour it judges, the two row states stay apart, the storm is not a fault |
 
-`make workshop` seeds and builds. `make workshop-notebooks` runs the gate.
+```bash
+make workshop             # seed and build
+make workshop-notebooks   # the claim-checking gate, same five checks as `make notebooks`
+```
+
+`make workshop-notebooks` is the analyst gate on the workshop track: every `output`
+block is a claim checked against a real run, and every **bold** number in the prose
+is checked against what the notebook printed. The two gates that do not apply are
+`sql`-fence execution and the seed fingerprint — a CSV has no query blocks and a
+derived panel has no fingerprint — and they are switched **off** rather than left to
+pass vacuously.
 
 ## The six beats, and the number at each
 

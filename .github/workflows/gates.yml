@@ -466,6 +466,92 @@ jobs:
           POSTGRES_DB: wwtp
         run: uv run python -m tools.check_notebooks
 
+  # ── the machine-learning workshop ───────────────────────────────────────────
+  #
+  # A separate job, not a step in `notebooks`, for two reasons. The seed is 3 weeks
+  # at 1 s -- 12.7 M rows, against the analyst notebooks' 4.2 M -- so it needs its
+  # own timeout and must not eat into theirs. And a workshop notebook that fails
+  # should not turn the analyst notebooks red: they are a different audience with a
+  # different dataset, and conflating the two makes both harder to act on.
+  workshop-notebooks:
+    name: workshop notebooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      timescale:
+        image: timescale/timescaledb:2.19.3-pg16
+        env:
+          POSTGRES_USER: wwtp
+          POSTGRES_DB: wwtp
+          POSTGRES_PASSWORD: itpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wwtp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WORKSHOP_WEEKS: "3"
+      WORKSHOP_HOURS: "36"
+      WORKSHOP_END: "2026-09-29T00:00:00Z"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: install the project
+        # `--all-extras` for the `workshop` extra, which is where scikit-learn
+        # lives. Without it the notebooks fail on `ModuleNotFoundError: sklearn` on
+        # cell one, and a missing dependency reads as a broken notebook.
+        run: uv sync --all-extras --frozen
+
+      - name: seed the workshop window
+        # **A third database, for the same reason `wwtp_notebooks` is a second one.**
+        # The workshop needs a *recurring* fault schedule and 25 weeks of history to
+        # have enough labelled events to classify, and neither can live in `wwtp` --
+        # whose seed is relative to `now` and whose course depends on that. The three
+        # `WORKSHOP_*` values here are the contract: the labels are derived from
+        # them, and a mismatch with the Makefile defaults would produce a table whose
+        # labels are confidently wrong without failing anything.
+        #
+        # `--reset` for the same idempotence reason the analyst job gives.
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp_ml
+        run: >-
+          uv run python -m storage.seed.main
+          --days 21 --sample-interval 1
+          --fault-every-hours 36 --storm-after 36
+          --end 2026-09-29T00:00:00Z --reset
+
+      - name: build the modelling panel
+        env:
+          WORKSHOP_DSN: host=127.0.0.1 port=5432 user=wwtp password=itpass dbname=wwtp_ml
+        run: uv run python -m workshops.ml.build_dataset --days 21 --every-hours 36 --end 2026-09-29T00:00:00Z
+
+      - name: build, execute, and check every number in the prose
+        # The same gate as the analyst notebooks, on the same four checks. It is
+        # worth being explicit that the workshop notebooks get this for free: the
+        # `--track` flag was added to the two tools, and everything that made the
+        # analyst gate trustworthy -- claims in markdown rather than recorded output,
+        # bold numbers in prose checked against a real run -- applies unchanged.
+        #
+        # The two gates that do NOT apply, and why they are off rather than passing
+        # vacuously: ```sql fences need a database (the workshop reads a CSV) and the
+        # seed fingerprint needs a pinned seed (the panel is derived, not seeded).
+        env:
+          WORKSHOP_DSN: host=127.0.0.1 port=5432 user=wwtp password=itpass dbname=wwtp_ml
+        run: uv run python -m tools.check_notebooks --track workshop
+
   # ── generated files are in step with the contract ─────────────────────────
   drift:
     name: generated files vs the contract

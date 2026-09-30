@@ -184,7 +184,7 @@ Full walkthrough, including troubleshooting, in
 | [`scada/README.md`](scada/README.md) | The Node-RED operator flows, and how they are kept in step with the contract |
 | [`courses/opcua/`](courses/opcua/README.md) | The OPC UA course — **9 of 9 lessons** — and the **fourteen** things this implementation gets wrong |
 | [`ui/web/README.md`](ui/web/README.md) | The custom dashboard, its four decisions, and what is *not* verified |
-| [`docs/CI.md`](docs/CI.md) | The seven CI jobs, and the three broken things writing the file found |
+| [`docs/CI.md`](docs/CI.md) | The eight CI jobs, and the three broken things writing the file found |
 | [`docs/LEARNING-LOG.md`](docs/LEARNING-LOG.md) | Every wrong assumption — **the most useful file here** |
 | [`docs/adr/`](docs/adr/) | Decision records |
 
@@ -358,7 +358,7 @@ feature that works is a per-signal comparison against its own recent history.
   pages, server-rendered, **no credential in the browser**, generated read model,
   a read-only Postgres role, and a read-only container. 22 tests from Python; the
   rendering verified by building and running it. [`ui/web/README.md`](ui/web/README.md)
-- [x] **Phase 6** — CI: seven jobs, and writing the file found that **three of the
+- [x] **Phase 6** — CI: eight jobs, and writing the file found that **three of the
   four local gates had been failing, or not doing what their labels said, the
   whole time** — `make lint`, `make types` and `make test`. I had been reporting
   the subsets that pass. [`docs/CI.md`](docs/CI.md)

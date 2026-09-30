@@ -21,7 +21,7 @@ not**.
 | OPC UA course | 87 snippets in 18 lessons — **all 9 teaching lessons written** | no — the gate starts its own server |
 | Extracted queries (`sql/TablePlus/`) | 78 files, run against a live database | yes |
 | Analyst notebooks | 11 notebooks, 4 checks each | yes — and their own pinned database |
-| `mypy` | clean across 70 source files | no |
+| `mypy` | clean across 71 source files | no |
 | `ruff` | clean on the gated packages; 156 tracked findings elsewhere | no |
 
 `mypy` runs over `softplc gateway storage alarms scada tools ui` and the count
@@ -86,7 +86,7 @@ one.
 ## The gates run in CI, and what each one is
 
 `make check` runs the fast gates locally. `.github/workflows/gates.yml` runs them
-on a machine that is not mine, in seven jobs — see [`docs/CI.md`](CI.md) for what
+on a machine that is not mine, in eight jobs — see [`docs/CI.md`](CI.md) for what
 each covers and, more usefully, what it deliberately does not.
 
 The line that was here before said "The repository has no CI configuration and no

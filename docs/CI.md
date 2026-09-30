@@ -1,6 +1,6 @@
 # CI
 
-`.github/workflows/gates.yml`. **Seven jobs.** This document says what each one is
+`.github/workflows/gates.yml`. **Eight jobs.** This document says what each one is
 for, what it deliberately does **not** cover, and why the exclusions are
 exclusions rather than oversights.
 
@@ -87,16 +87,49 @@ from them, because a named volume over `/data` silently shadows the image's
 | `unit` | every push | ruff (scoped), mypy (everything), pytest without a database, **the lesson courses** |
 | `integration` | every push | a real seeded TimescaleDB, the integration suite, the SQL course, the flow SQL, the dashboard queries, the replay |
 | `notebooks` | every push | the analysts' database, the eleven notebooks, and every number in their prose |
+| `workshop-notebooks` | every push | the workshop's own seeded window, the modelling panel, and every number in *its* prose |
 | `drift` | every push | generated files vs the contract, and `docker compose config` |
 | `images` | every push | the three images build, and the two non-core node types resolve |
 | `lint-debt` | every push | 156 findings is the baseline; going up fails |
 | `nightly` | 04:17 UTC | the fault × rule coverage matrix and the four slow tests |
 
-That is six on every push and one on a schedule. The count is checked by
+That is seven on every push and one on a schedule. The count is checked by
 `tests/test_readme_claims.py::test_no_document_miscounts_the_ci_workflow_jobs`,
 which reads it out of `gates.yml` rather than against a number written down here
 — and which found the wrong number in *this file* the day it was written, then
-found it wrong a second time when the `notebooks` job was added.
+found it wrong a second time when the `notebooks` job was added, and a third time
+when the workshop job was added.
+
+**And the third time it caught two lines out of the three it should have.** It
+flagged `README.md` twice and left this paragraph's own "six on every push" alone,
+because the pattern it matches is a *counted* claim — "seven jobs", "six on every
+push" is a counted claim too, but only where the words are adjacent. So the third
+stale number was in the file whose whole subject is the job list, which is worth
+recording: a check that reads prose finds the prose that looks like the thing it
+is checking, and a sentence with the number in a different clause is a sentence
+about something else as far as the regex is concerned. The right fix is a narrower
+claim, not a wider regex — a regex wide enough to catch this would also catch the
+historical paragraphs above, which are *supposed* to say five and six.
+
+### Why the workshop gets a job of its own
+
+It shares the gate with the analyst notebooks — the same `output`-block and
+prose-number checks, because `--track` was added to those two tools precisely so
+that it could. It does not share the *job*, for two reasons.
+
+**A separate timeout.** The workshop seed is 3 weeks at 1 s: 12.7 M rows against
+the analyst notebooks' 4.2 M. It needs longer, and it must not consume theirs.
+
+**A separate failure.** A workshop notebook and an analyst notebook have different
+audiences and a different dataset. One going red should not turn the other red,
+or the fastest way to fix CI becomes to stop looking at it.
+
+What it does *not* get, and why that is deliberate rather than an omission:
+`` ```sql `` fences are not executed, because a CSV has no query blocks, and there
+is no seed fingerprint, because the panel is derived from a seed rather than being
+one. Both are switched off in `check_notebooks.DATABACKED_TRACKS` rather than left
+to run vacuously — a gate that passes because it checked nothing is worse than a
+gate that is absent, because it appears in the output.
 
 ### Why the lesson courses run in the `unit` job
 
