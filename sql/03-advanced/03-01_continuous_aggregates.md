@@ -186,12 +186,24 @@ aggregates. It gets a second form.
 -- The bug: this cannot return a signal with no buckets at all, for exactly the
 -- reason 02-04 opens with. A `GROUP BY` over readings never mentions the
 -- signals that are missing from the readings.
+-- **Why an interior hour and not "the last two hours".** The obvious version of
+-- this query ends at the newest bucket, and it is the version that was here. It
+-- returns nothing whenever every tag happened to write in the final two hours of
+-- the window -- which depends on the hour of day you seeded, because the window
+-- ends at `now`. On one seed it returned 19 signals and the gate passed; on the
+-- next it returned none and `make sql` failed with `EMPTY`. A course query whose
+-- result depends on when you ran it teaches nothing, and a gate that fails for
+-- that reason is a gate people learn to re-run.
+--
+-- An interior hour is stable: the plant is quiet for some tags at every hour, so
+-- this returns rows on any seed, and the point below is made every time.
 SELECT s.id, s.unit, max(h.bucket) AS last_hour
 FROM signal s
 LEFT JOIN reading_1h h ON h.signal_id = s.id
+    AND h.bucket = date_trunc('hour', (SELECT min(bucket) FROM reading_1h))
+                   + interval '60 hours'   -- the third day; any interior hour works
 GROUP BY s.id, s.unit
 HAVING max(h.bucket) IS NULL
-    OR max(h.bucket) < (SELECT max(bucket) FROM reading_1h) - interval '2 hours'
 ORDER BY last_hour NULLS FIRST;
 ```
 

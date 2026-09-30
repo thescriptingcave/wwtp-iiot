@@ -8,6 +8,36 @@ anything from outside this repository.
 
 ---
 
+## The short version
+
+If you want the plant and nothing else, this is the whole thing:
+
+```bash
+make up
+```
+
+It writes a `.env` if you do not have one, starts the simulation, gives it a week
+of history, and blocks until the first readings actually land. Two and a half
+minutes, most of it the seed. You end up with **4.3 M readings** in TimescaleDB.
+
+```bash
+make query SQL="SELECT count(*) FROM reading"
+```
+
+To watch the plant's live values, and to read its tags over OPC UA:
+
+```bash
+uv run python tools/opcua_browser.py browse
+```
+
+The rest of this document is the same four steps with the explanations, plus
+Grafana, the courses and the troubleshooting. **These three commands are the same
+ones in the README's Quick start, and a test fails if they diverge** — two
+documents describing the setup differently is how somebody ends up on a clean
+machine running a command nobody tested there.
+
+---
+
 ## Requirements
 
 * Docker with Compose v2

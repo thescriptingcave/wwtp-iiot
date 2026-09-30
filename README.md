@@ -134,37 +134,44 @@ features, and 80 documents in three key-sets with one shape each are all in
 
 ## Quick start
 
-Requires Docker with Compose v2 and `uv`. **No licence key, no account, nothing
-from outside this repository** — about five minutes.
+Needs **Docker with Compose v2** and [`uv`](https://docs.astral.sh/uv/). Nothing
+else — no account, no licence key, nothing from outside this repository.
 
 ```bash
-# set POSTGRES_PASSWORD — or skip this and let `make` do it
-cp .env.example .env
-docker compose up -d
-# 4.3 M readings, ~2 min
-docker compose --profile demo run --rm seed
+make up
 ```
 
-Or start with the analyst notebooks, which does the setup itself — `.env` if you
-have not made one, database, seed, then JupyterLab:
+One command. It writes a `.env` if you do not have one, starts the simulation,
+gives it a week of history (about two and a half minutes, most of it the seed), and
+blocks until the first readings actually land. You end up with **4.3 M readings**
+in TimescaleDB.
 
 ```bash
-make
-```
-
-A fresh `git clone` has no `.env` — it holds this checkout's passwords, so it is
-not committed. `make` creates it from `.env.example` on the first run and never
-overwrites an existing one.
-
-Then browse the plant and query it:
-
-```bash
+make query SQL="SELECT count(*) FROM reading"
 uv run python tools/opcua_browser.py browse
-uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
-uv run python tools/sqlrun.py "SELECT count(*) FROM reading"
 ```
 
-Full walkthrough, including troubleshooting, in
+**The commands in this section are the same ones in
+[`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md), and a test fails if they
+diverge** — because two documents that each describe the setup differently is how
+somebody ends up on a clean machine running a command that was never tested on one.
+
+### Three courses, once the plant is up
+
+Each is optional and none of them changes the plant.
+
+| | Start at | Run it with |
+|---|---|---|
+| SQL — 64 graded queries | [`sql/README.md`](sql/README.md) | `make sql` |
+| Analyst notebooks — 11 | [`notebooks/README.md`](notebooks/README.md) | `make` |
+| ML workshop — 1 of 6 written | [`workshops/ml/TRAINER.md`](workshops/ml/TRAINER.md) | `make workshop-notebooks` |
+
+`make` on its own is the **notebooks**: it seeds `wwtp_notebooks` on the first run
+(about two and a half minutes) and opens JupyterLab on
+<http://127.0.0.1:8899>. `make notebooks` runs all eleven and fails if any number in
+the prose no longer matches.
+
+Full walkthrough, configuration reference and troubleshooting, in
 [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
 ## Documentation

@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 from storage.postgres import schema
 from storage.seed import main as seed_main
+from tools import notebook_data
 
 #: Where each of the six used to connect from the environment, and what it must
 #: receive instead. The names are the ones the log lines use, so a failure says which
@@ -310,3 +311,41 @@ def test_the_workshop_target_uses_the_argument_not_the_environment() -> None:
         "the inherited environment, so that names the plant's database and --reset "
         "empties it."
     )
+
+
+# ── the regression this guard actually shipped ───────────────────────────────
+
+
+def test_notebook_data_names_the_database_it_resets() -> None:
+    """`tools/notebook_data.py` calls the seeder with `--reset`, so it must name one.
+
+    **This is the bug the `--reset` guard caused when it was first written.** It
+    fired correctly, and the first thing it broke was `make notebooks-data` — on a
+    clean checkout, reported as
+
+        wwtp_notebooks: created
+        ERROR storage.seed refusing to --reset a database this run was not told about
+        wwtp_notebooks: not available (UndefinedTable)
+        make: *** [Makefile:496: notebooks-has-data] Error 2
+
+    which reads as a seeding failure and is not one. Nobody noticed locally because
+    every database already existed; it surfaced on a machine that had only just
+    cloned the repository, which is the one environment where this target runs.
+
+    So the call site is asserted, not just the guard. A refusal is only safe if
+    every caller in the repository can satisfy it, and the way to know that is to
+    check rather than to remember.
+    """
+    calls = _calls(Path(notebook_data.__file__), "seed")
+    assert calls, "notebook_data no longer calls the seeder; this test has gone stale"
+    for call in calls:
+        assert "--reset" in call, (
+            "notebook_data no longer resets, so this no longer matters -- and "
+            "something else has changed"
+        )
+        assert '"--database"' in call or "'--database'" in call, (
+            f"notebook_data calls the seeder with --reset and no --database: "
+            f"{call[:120]}. The seeder will refuse, `make notebooks` will fail on a "
+            f"clean machine, and the error will name the seeder rather than the "
+            f"caller."
+        )

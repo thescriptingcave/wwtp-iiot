@@ -88,12 +88,26 @@ def main(argv: list[str] | None = None) -> int:
     made = ensure_database()
     print(f"  {_data.NOTEBOOK_DB}: {'created' if made else 'exists'}")
 
-    # The seeder reads its target from the environment, so point it at ours.
+    # Two things, and they are not the same thing.
+    #
+    # The environment variable is for **this module's own** `dsn()` calls —
+    # `ensure_database()` and `connect()` both read it, so it has to say
+    # `wwtp_notebooks`.
+    #
+    # `--database` is for **the seeder**, and it is an argument rather than the
+    # environment because the seeder refuses `--reset` without one. That refusal
+    # exists because `POSTGRES_DB=... in a recipe` is overridden by `.env` and names
+    # the wrong database — and this call was the first thing it broke, on a clean
+    # checkout, with an error that blamed the guard rather than the caller.
+    #
+    # The comment this replaces said "the seeder reads its target from the
+    # environment", which was true, and was the assumption behind six separate bugs.
     os.environ["POSTGRES_DB"] = _data.NOTEBOOK_DB
 
     from storage.seed.main import main as seed  # noqa: PLC0415
 
     code = seed([
+        "--database", _data.NOTEBOOK_DB,
         "--days", str(_data.SEED_DAYS),
         "--end", _data.SEED_END,
         "--storm-after", str(_data.STORM_AFTER_H),
