@@ -633,6 +633,22 @@ db-still: db-up
 	fi
 
 up: setup  ## a running plant with a week of history
+	@# **Build before `up`.** `docker compose up` reuses an image that exists and
+	@# only builds one that does not, so a checkout that has run before runs the
+	@# *previous commit's* service code. Nothing says so: the containers start, the
+	@# ports answer, and the only symptom is a behaviour that no longer matches the
+	@# source you are reading.
+	@#
+	@# This was found the hard way, twice, and both times the error named something
+	@# else. `seed: error: unrecognized arguments: --database=wwtp` was a stale
+	@# seeder image. `docker compose down -v` does not catch it: a volume is not an
+	@# image, and dropping the volumes is exactly what you do to simulate a clean
+	@# machine.
+	@#
+	@# The cost when nothing changed is about a second per service, because Docker
+	@# caches every layer and a warm rebuild is a no-op. `make up` is already two
+	@# and a half minutes; this does not change that.
+	docker compose build
 	docker compose up -d
 	$(MAKE) seed
 	$(MAKE) wait
