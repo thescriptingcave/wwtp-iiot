@@ -213,6 +213,46 @@ connection error tells you which database you reached and nothing else.
 
 `notebooks/src/*.md` is the source of truth. `notebooks/*.ipynb` is generated.
 
+## Working in them, and what to do afterwards
+
+**Edit the markdown, never the `.ipynb`.** The `.ipynb` is an artefact and the
+next build overwrites it, so a hand-edit there is lost — silently, and usually
+hours later.
+
+**Running a notebook in JupyterLab dirties the file, even if you changed nothing.**
+Saving writes `execution_count` and `outputs` back into the `.ipynb`, and both are
+`null`/`[]` in a generated one. So a session you only *read* in leaves a few
+hundred lines of churn that is drift by definition — the claims live in the
+markdown's ` ```output ` fences, and `make notebooks` checks those against a real
+run rather than against whatever your last session left behind.
+
+Two ways out, and the first is better:
+
+1. **Close without saving.** JupyterLab asks on close; answer *No* / *Discard*. Then
+   nothing is written and there is nothing to clean up.
+2. **Afterwards, one command:**
+
+   ```bash
+   make notebooks-reset
+   ```
+
+   It reports what the session wrote and then regenerates from the markdown:
+
+   ```
+   discarding what a Jupyter session wrote back:
+      notebooks/01-meet-the-plant.ipynb | 84 +++++++++++++++++++++++++++++---
+      1 file changed, 70 insertions(+), 14 deletions(-)
+   regenerated from notebooks/src/*.md — put edits there, not in the .ipynb
+   ```
+
+   It says the size **before** it discards, on purpose. A silent revert is
+   indistinguishable from one that ate something.
+
+**If you want to keep your executed version**, that is `make notebooks-read` —
+self-contained HTML with outputs and figures inline, in `notebooks/read/`, which is
+gitignored. The `.ipynb` stays generated and output-free; your run lives as a
+document you can read and send.
+
 A `.ipynb` is a JSON file with four hundred lines of escaped markdown in it, and
 a git diff on one shows a single enormous changed line because a comma moved in an
 output cell. The prose is the thing that gets reviewed, so the prose lives in a

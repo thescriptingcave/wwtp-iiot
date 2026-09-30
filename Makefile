@@ -283,6 +283,33 @@ notebooks: setup notebooks-has-data  ## build, execute, and verify the claimed o
 notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 	$(PY) -m tools.build_notebooks
 
+# **After a session in JupyterLab.** Running a notebook writes `execution_count`
+# and `outputs` back into the `.ipynb`, and those files are *generated* from
+# `notebooks/src/*.md` — so a session leaves 1,000-odd lines of churn that is
+# drift by definition. The gate catches it (`check_notebooks` compares the file to
+# a fresh build) but only at gate time, by which point it is a confusing failure
+# about a file nobody remembers touching.
+#
+# So the recovery is one command, and it **says what it discarded** rather than
+# silently reverting. Knowing the size is the point: "discarded 1399 insertions"
+# is a session, and "discarded nothing" means Jupyter never wrote to disk, which is
+# the normal case when you close without saving.
+#
+# It cannot tell you whether you meant to keep something, so it says plainly what
+# it is doing. Edits belong in `notebooks/src/*.md` — the `.ipynb` is an artefact
+# and a hand-edit there is lost the next time anyone builds.
+notebooks-reset:  ## discard what a Jupyter session wrote back, and report it
+	@dirty=$$(git diff --name-only -- 'notebooks/*.ipynb'); \
+	if [ -z "$$dirty" ]; then \
+	  echo "  no notebook changed since the last commit — nothing to discard"; \
+	  echo "  (JupyterLab only writes a file when you save it)"; \
+	else \
+	  echo "  discarding what a Jupyter session wrote back:"; \
+	  git diff --stat -- 'notebooks/*.ipynb' | sed 's/^/    /'; \
+	  $(MAKE) --no-print-directory notebooks-build > /dev/null; \
+	  echo "  regenerated from notebooks/src/*.md — put edits there, not in the .ipynb"; \
+	fi
+
 # Executed HTML, for reading a notebook without Jupyter in the loop.
 #
 # The committed `.ipynb` files carry **no outputs** — that is deliberate, and it
