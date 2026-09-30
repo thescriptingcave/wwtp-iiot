@@ -156,5 +156,18 @@ notebooks/figures/
 # timestamp on it, and committing one puts a half-written notebook in the history.
 notebooks/.ipynb_checkpoints/
 
+# The URL `make notebooks-open` is serving on, including its **token**. Written
+# so the address survives a scroll-back — JupyterLab logs twenty lines after the
+# Makefile prints the URL, and on a 24-line terminal that is the difference
+# between using the server and restarting it.
+#
+# **A token, and therefore a secret.** Not committable, and not only because
+# nothing else here looks like a secret. Checked rather than assumed: with this
+# rule absent, `git check-ignore` says the file is not ignored, and this
+# repository's next commit would have carried a live credential into a public
+# history. `.gitignore` is the only thing standing between a convenience and that,
+# so the rule is here rather than in the Makefile that writes the file.
+notebooks/.jupyter-url
+
 # Executed HTML from `make notebooks-read`. Derived from the data, like figures.
 notebooks/read/

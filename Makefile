@@ -168,7 +168,8 @@ NB_ONLY ?=
         up seed wait down clean logs \
         scada scada-flows scada-check dashboards dashboards-check grafana \
         coverage coverage-json alarms browse watch psql query roles contract \
-        lessons tableplus notebooks notebooks-build notebooks-open
+        lessons tableplus notebooks notebooks-build notebooks-read notebooks-open \
+        notebooks-url notebooks-url-open notebooks-stop
 
 # `head -1` on $(MAKEFILE_LIST) rather than the whole list.
 #
@@ -329,13 +330,37 @@ notebooks-read: notebooks-has-data  ## execute every notebook to notebooks/read/
 notebooks-open: sync db-still notebooks-build notebooks-has-data
 	@echo "  kernel : Python 3 (ipykernel) - check the status bar says .venv"
 	@echo "  read   : notebooks/read/  (make notebooks-read, for HTML)"
+	@mkdir -p notebooks
+	@printf 'http://127.0.0.1:%s/lab?token=%s\n' '$(NB_PORT)' '$(NB_TOKEN)' \
+		> notebooks/.jupyter-url
 	@echo "  open   : http://127.0.0.1:$(NB_PORT)/lab?token=$(NB_TOKEN)"
-	@echo "  stop   : Ctrl-C"
+	@echo "  again  : make notebooks-url          (this URL, again)"
+	@echo "  browser: make notebooks-url-open     (or just copy the line above)"
+	@echo "  stop   : Ctrl-C, or: make notebooks-stop"
 	@MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab \
 		--notebook-dir=notebooks \
+		--IdentityProvider.token=$(NB_TOKEN) \
 		--ServerApp.port=$(NB_PORT) \
-		--ServerApp.token=$(NB_TOKEN) \
 		--no-browser
+
+# **The URL is also written to `notebooks/.jupyter-url`,** and the reason is the
+# one thing this target got wrong for a long time. It printed the address and
+# *then* started a server that logs twenty more lines, so on any terminal of
+# ordinary height the only line with a usable token was pushed off the top within
+# a second. The recovery was a `ps | grep -oE '--ServerApp.token=…'` incantation,
+# which is not something to ask a reader to type.
+#
+# The file is gitignored, and that is load-bearing rather than tidiness: it holds
+# a **token**, and a public repository's history is forever. Checked, not assumed
+# — with the rule absent `git check-ignore` says the file is committable.
+notebooks-url:  ## print the URL of the JupyterLab `make` started
+	@$(PY) -m tools.jupyter_url
+
+notebooks-url-open:  ## print it and open it in a browser
+	@$(PY) -m tools.jupyter_url --open
+
+notebooks-stop:  ## stop that JupyterLab, without hunting for its terminal
+	@$(PY) -m tools.jupyter_url --stop
 
 # Seed the notebooks' own database if it is missing or empty; otherwise leave it.
 #

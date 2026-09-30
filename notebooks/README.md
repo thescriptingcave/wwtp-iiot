@@ -141,6 +141,36 @@ make notebooks-open
 It prints a URL with a token in it — use that one. JupyterLab serves on `8899`
 and mints the token itself.
 
+**No browser opens, and that is deliberate.** JupyterLab masks the token in the
+URL *it* prints (`token=...`), so the address worth opening is the Makefile's,
+printed a few lines higher — and then twenty lines of startup log bury it. Rather
+than scroll, ask again:
+
+```bash
+make notebooks-url          # print the URL of the running server
+make notebooks-url-open     # print it and hand it to your browser
+make notebooks-stop         # stop it, if you lost the terminal it was in
+```
+
+These work whether the server was started by `make` or by hand, and the URL is
+also written to `notebooks/.jupyter-url` so it survives a restart of the terminal.
+**That file holds a token, so it is gitignored** — and it is a live file server
+address, not a decoration.
+
+Three more targets in the same family, for the same "the address is the awkward
+part" reason:
+
+```bash
+make notebooks-url-open     # the address, and a browser
+make notebooks-stop         # no hunting for the terminal
+make notebooks-read NB_ONLY="05 09"   # two notebooks, not eleven
+```
+
+> The `--no-browser` flag is in the recipe on purpose. It is also what makes
+> `make` on a headless box, over SSH, or in a container do something other than
+> hang forever on a browser that will never appear. So the browser is opened on
+> request, where a failure to open one is a message rather than a stall.
+
 **Use the `Python 3` kernel from this venv.** A `jupyter` earlier on your `PATH` —
 from a system Python, conda, pyenv — will open these notebooks under the *wrong
 interpreter*, which has no `psycopg` and no pandas, and the failure is a
