@@ -322,9 +322,23 @@ WORKSHOP_HOURS ?= 36
 WORKSHOP_END   ?= 2026-09-29T00:00:00Z
 
 workshop-seed: setup  ## seed the workshop window: $(WORKSHOP_WEEKS) weeks, a fault every $(WORKSHOP_HOURS) h
+	@echo "── creating $(WORKSHOP_DB) if it is not there ──"
+	@$(PY) -c "from workshops.ml._data import ensure_database; \
+	print('  created' if ensure_database('$(WORKSHOP_DB)') else '  already exists')"
 	@echo "── seeding $(WORKSHOP_DB): $(WORKSHOP_WEEKS) weeks, a fault every $(WORKSHOP_HOURS) h ──"
-	@echo "   $$(($(WORKSHOP_WEEKS) * 7)) days at 1 s. This writes about $$(($(WORKSHOP_WEEKS) * 7 * 1000000 / 1000000))M rows."
-	POSTGRES_DB=$(WORKSHOP_DB) $(PY) -m storage.seed.main \
+	@echo "   $$(($(WORKSHOP_WEEKS) * 7)) days at 1 s, about $$(($(WORKSHOP_WEEKS) * 7 * 605000 / 1000))k rows."
+	# `--database`, never `POSTGRES_DB=`: `$(PY)` sources `.env` after the inherited
+	# environment, so an environment assignment here names `wwtp` -- the plant's own
+	# database -- and this target passes `--reset`. An argument cannot be overridden
+	# that way, and the seeder refuses `--reset` without one. See
+	# `storage/seed/main.py::_target_database`, which is where the reasoning lives.
+	# `POSTGRES_HOST` is set here, and only here, because this is the one seeder
+	# invocation that runs **on the host** rather than through `docker compose run`
+	# (which is how `make seed` reaches it, and where compose supplies the host).
+	# `.env` does not set it, so nothing overrides this, and the seeder's "there is
+	# nowhere to seed to" check is a container-deployment check rather than a
+	# general one -- the library default of 127.0.0.1 is right from a laptop.
+	POSTGRES_HOST=127.0.0.1 $(PY) -m storage.seed.main --database $(WORKSHOP_DB) \
 	  --days $$(($(WORKSHOP_WEEKS) * 7)) --sample-interval 1 \
 	  --fault-every-hours $(WORKSHOP_HOURS) --storm-after 36 \
 	  --end $(WORKSHOP_END) --reset

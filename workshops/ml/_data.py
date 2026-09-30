@@ -148,3 +148,32 @@ def held_out(panel: pd.DataFrame, last: int = 1) -> tuple[Any, Any]:
     assert len(weeks) > last, f"only {len(weeks)} week(s); cannot hold out {last}"
     cut = weeks[-last]
     return panel[panel["week"] < cut], panel[panel["week"] >= cut]
+
+
+def ensure_database(name: str | None = None) -> bool:
+    """Create the workshop's database if it is absent. `True` if it created it.
+
+    **The seeder does not do this.** `storage.seed.main` connects to
+    `POSTGRES_DB` and applies the schema to whatever is already there, so pointing
+    it at a database nobody has created fails with `database "wwtp_ml" does not
+    exist` — which is what `make workshop-seed` did on a clean checkout until this
+    function existed. `tools/notebook_data.py` has always had one for the analyst
+    notebooks; this is the same answer for this track.
+
+    `POSTGRES_DB` names the database, so the connection string is taken from the
+    usual place and only the *name* is swapped for `postgres` to get an admin
+    handle. Creating a database is not idempotent in the useful direction — a
+    second `CREATE DATABASE` raises — so the existence check is the whole point.
+    """
+    import psycopg  # noqa: PLC0415
+    from psycopg import sql  # noqa: PLC0415
+    from storage.postgres.schema import dsn as _dsn  # noqa: PLC0415
+
+    database = name or os.environ.get("POSTGRES_DB") or "wwtp_ml"
+    admin = _dsn().replace(f"dbname={database}", "dbname=postgres")
+    with psycopg.connect(admin, autocommit=True) as conn:
+        if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s",
+                        (database,)).fetchone():
+            return False
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+    return True

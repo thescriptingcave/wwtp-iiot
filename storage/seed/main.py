@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -59,7 +60,6 @@ from storage.postgres.schema import (
     apply_refresh_policies,
     apply_retention,
     apply_schema,
-    connect,
     dsn,
     refresh_aggregates,
     seed_metadata,
@@ -323,6 +323,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ISO-8601 instant the window ends at (default: now, or "
                         "$SEED_END). Pin it and a re-seed reproduces the same "
                         "database, timestamps included")
+    p.add_argument("--database", default=None, metavar="NAME",
+                   help="seed this database instead of $POSTGRES_DB. An "
+                        "argument rather than an environment variable on "
+                        "purpose: `tools/py.sh` sources `.env` *after* the "
+                        "inherited environment, so `POSTGRES_DB=other make seed` "
+                        "silently seeds `wwtp` -- the plant's own database -- and "
+                        "with --reset that destroys it. A command-line argument "
+                        "cannot be overridden by a sourced file.")
     p.add_argument("--reset", action="store_true",
                    help="empty `reading` first. Without it a second seed into a "
                         "different window ADDS a week; with a pinned --end it "
@@ -355,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _seed_bounds() -> tuple[datetime, datetime] | None:
+def _seed_bounds(dsn_str: str) -> tuple[datetime, datetime] | None:
     """The bounds of everything now in ``reading``, or ``None`` if it is empty.
 
     Takes no arguments on purpose. It could take the seeder and the day count and
@@ -368,9 +376,9 @@ def _seed_bounds() -> tuple[datetime, datetime] | None:
     in the other produces buckets that are one interval out, which is the kind of
     bug that looks like a rounding error and is not.
     """
-    from storage.postgres.schema import connect
+    import psycopg
 
-    with connect() as conn, conn.cursor() as cur:
+    with psycopg.connect(dsn_str) as conn, conn.cursor() as cur:
         cur.execute("SELECT min(ts), max(ts) FROM reading")
         row = cur.fetchone()
     if row is None or row[0] is None:
@@ -399,6 +407,119 @@ def _reset_readings(dsn_str: str) -> None:
     log.info("reading emptied; aggregates refreshed over nothing")
 
 
+def _prepare_database(dsn_str: str) -> dict[str, int]:
+    """Schema and contract metadata, into *this* database. Returns the metadata counts.
+
+    **On one connection, to the database the run is actually seeding.**
+
+    Both halves of this used to take no arguments, so both connected from the
+    environment — which is a *different database* the moment `--database` is used.
+    The consequences arrived one at a time, and neither named its cause:
+
+    1. `apply_schema()` put the schema in `wwtp` and the seed then failed on
+       `relation "reading" does not exist` in the database it had just created.
+    2. With that fixed, `seed_metadata()` put the 57 signals in `wwtp` and the seed
+       then failed on `Key (signal_id)=(INFLUENT:FLOW:FLOW) is not present in table
+       "signal"` — pointing at a foreign-key violation, which is as far from the
+       cause as an error can point.
+
+    Both are the same mistake: a call that means "the database this run is
+    seeding" expressed as "the database the environment names". They are here
+    together, on one connection, for that reason.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn_str, autocommit=True) as conn:
+        apply_schema(conn)
+        return seed_metadata(conn=conn)
+
+
+def _target_database(args: argparse.Namespace) -> tuple[str | None, str]:
+    """`(dsn, database name)` for this run, or `(None, ...)` if the run must stop.
+
+    ## Why `--database` exists at all, when `POSTGRES_DB` looks like it does the job
+
+    `tools/py.sh` sources `.env` **after** the inherited environment, so
+    `POSTGRES_DB=wwtp_ml make seed` seeds `wwtp`. The Makefile documents that
+    precedence deliberately, and it is right for everything else -- a laptop's
+    `POSTGRES_PORT` should not beat a checked-in file. Here it means a target that
+    prints `--reset` and the right database name is actually emptying the plant's
+    own, and the command that causes it looks entirely correct.
+
+    So the database is an **argument**. A command-line argument cannot be overridden
+    by a sourced file, which makes this the one place in the seeder where the
+    distinction matters.
+
+    ## Why `--reset` without `--database` is refused rather than trusted
+
+    The failure is invisible in the command that causes it, so a warning is not
+    enough: a log line scrolls past, and a recipe that prints the right database
+    name is exactly the one that misleads. The rule is narrow on purpose -- naming
+    the database lets you reset it, and seeding without `--reset` is unchanged
+    because the primary key stops a second window anyway.
+    """
+    dsn_str = dsn()
+    if args.database:
+        dsn_str = re.sub(r"dbname=\S+", f"dbname={args.database}", dsn_str)
+    found = re.search(r"dbname=(\S+)", dsn_str)
+    name = found.group(1) if found else "?"
+
+    if args.reset and not args.database:
+        log.error(
+            "refusing to --reset a database this run was not told about. Pass "
+            "--database NAME to say which one, e.g. --database wwtp_ml, or drop "
+            "--reset. (The reason this is not just advice: POSTGRES_DB=... in a "
+            "recipe is overridden by .env, so it names the wrong database.)"
+        )
+        return None, name
+    return dsn_str, name
+
+
+def _dbname(dsn_str: str) -> str:
+    """The database name out of a DSN, or `"?"`. Small enough to be a function."""
+    found = re.search(r"dbname=(\S+)", dsn_str)
+    return found.group(1) if found else "?"
+
+
+def _report(dsn_str: str) -> None:
+    """Log what the database now holds, **against the database that was seeded**.
+
+    The connection is a parameter for the sixth and last time this mattered: the
+    call meant "the database this run is seeding" and was written as
+    `with connect()`, which is the database the *environment* names. It printed a
+    row count for `wwtp` while the seed had been filling `wwtp_ml`, so the one line
+    an operator would use to confirm which database got written was reporting the
+    other one.
+
+    Extracted from `main` because `main` had grown past what a reader can hold, and
+    because a function that takes a DSN cannot be reintroduced as the thing it was.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn_str) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE quality <> 0),
+                   min(ts), max(ts),
+                   count(DISTINCT signal_id)
+            FROM reading
+            """
+        )
+        row = cur.fetchone()
+    total, bad, lo, hi, signals = row if row and row[0] else (0, 0, None, None, 0)
+    named = _dbname(dsn_str)
+    if not total or lo is None or hi is None:
+        log.warning("no readings in %s - is the deadband filtering everything?",
+                    named)
+        return
+    log.info(
+        "database %s now holds %d readings across %d signals, %d flagged "
+        "non-Good, spanning %s to %s",
+        named, total, signals, bad, lo.isoformat(), hi.isoformat(),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -411,15 +532,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     contract = get_contract()
-    dsn_str = dsn()
+    import psycopg
+
+    dsn_str, target_name = _target_database(args)
+    if dsn_str is None:
+        return 2
+    log.info("seeding database %r", target_name)
     execute = make_copy_execute(dsn_str)
 
     # Schema and metadata first. The `reading` table has a foreign key onto
     # `signal`, so history cannot be written before the contract is in place —
     # the seeder now depends on the same referential integrity as everything
     # else, and would have been impossible to write against the previous engine.
-    apply_schema()
-    log.info("metadata: %s", seed_metadata(contract))
+    metadata = _prepare_database(dsn_str)
+    log.info("metadata: %s", metadata)
 
     end_ts = None
     if args.end:
@@ -485,52 +611,35 @@ def main(argv: list[str] | None = None) -> int:
     # That is the whole bug, and it lived undetected through 384 unit tests and
     # 17 integration tests, because not one of them asserted that the rollups
     # contained anything. `tests/integration/test_postgres.py` now does.
-    bounds = _seed_bounds()
-    if bounds is not None:
-        started_at, ended_at = bounds
-        refresh_aggregates(started_at, ended_at)
-        log.info("aggregates refreshed over %s .. %s", started_at, ended_at)
+    # **One connection, to the database this run is seeding**, for the three calls
+    # that would otherwise each open their own from the environment. That was the
+    # fifth and sixth instances of the same mistake, and this one is the quietest:
+    # the log said "aggregates refreshed" and `reading_1h` in the workshop database
+    # stayed **empty**, because the refresh had run against the plant's.
+    #
+    # `refresh_aggregates` sets `autocommit` on it, which is why it is last in the
+    # block and why the other two commit explicitly.
+    with psycopg.connect(dsn_str) as conn:
+        bounds = _seed_bounds(dsn_str)
+        if bounds is not None:
+            started_at, ended_at = bounds
+            refresh_aggregates(started_at, ended_at, conn=conn)
+            log.info("aggregates refreshed over %s .. %s", started_at, ended_at)
 
-    # Retention policies last: attaching them before the data is in place would
-    # make the policy's own refresh window the thing being measured.
-    apply_retention(
-        raw_days=_env_int("RETENTION_RAW_DAYS", 7),
-        minute_days=_env_int("RETENTION_MINUTE_DAYS", 90),
-    )
-
-    # ...and the refresh policies, which is the other half. Without these the
-    # aggregates go stale the moment the seeder finishes, and a live gateway
-    # writing new readings would leave the rollups frozen at the seed boundary.
-    apply_refresh_policies()
-
-    # Summary, printed rather than only logged, because the number that matters
-    # is not "how many points" but "how many of the interesting events are in
-    # there" — and you cannot tell that from a row count.
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT count(*),
-                   count(*) FILTER (WHERE quality <> 0),
-                   min(ts), max(ts),
-                   count(DISTINCT signal_id)
-            FROM reading
-            """
-        )
-        row = cur.fetchone()
-        if row is None or not row[0]:
-            total, bad, lo, hi, signals = 0, 0, None, None, 0
-        else:
-            total, bad, lo, hi, signals = row
-        if not total or lo is None or hi is None:
-            log.warning("no readings in the database - is the deadband "
-                        "filtering everything?")
-            return 0
-        log.info(
-            "database now holds %d readings across %d signals, %d flagged "
-            "non-Good, spanning %s to %s",
-            total, signals, bad, lo.isoformat(), hi.isoformat(),
+        # Retention policies next: attaching them before the data is in place would
+        # make the policy's own refresh window the thing being measured.
+        apply_retention(
+            raw_days=_env_int("RETENTION_RAW_DAYS", 7),
+            minute_days=_env_int("RETENTION_MINUTE_DAYS", 90),
+            conn=conn,
         )
 
+        # ...and the refresh policies, which is the other half. Without these the
+        # aggregates go stale the moment the seeder finishes, and a live gateway
+        # writing new readings would leave the rollups frozen at the seed boundary.
+        apply_refresh_policies(conn=conn)
+
+    _report(dsn_str)
     return 0
 
 

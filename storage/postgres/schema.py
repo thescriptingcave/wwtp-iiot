@@ -206,7 +206,9 @@ def seed_metadata(c: Contract | None = None,
     return counts
 
 
-def apply_retention(raw_days: int = 7, minute_days: int = 90) -> None:
+def apply_retention(
+    raw_days: int = 7, minute_days: int = 90, *, conn: Connection | None = None,
+) -> None:
     """Attach Timescale retention policies.
 
     Retention is the reason the tiers exist. Keeping every 1 Hz reading for two
@@ -217,28 +219,37 @@ def apply_retention(raw_days: int = 7, minute_days: int = 90) -> None:
     operational parameters, and a schema file that hardcodes them is a schema file
     somebody has to edit to change a retention policy.
     """
-    with connect() as conn, conn.cursor() as cur:
-        # add_retention_policy raises if one already exists on the relation, and
-        # "already configured" is the normal case on every restart after the
-        # first.
-        for relation, days in (("reading", raw_days), ("reading_1m", minute_days)):
-            if days <= 0:
-                continue
-            try:
-                cur.execute(
-                    "SELECT add_retention_policy(%s, INTERVAL '1 day' * %s, "
-                    "if_not_exists => TRUE)",
-                    (relation, days),
-                )
-            except Exception as exc:  # a policy that already exists
-                log.debug("retention on %s: %s", relation, exc)
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn.cursor() as cur:
+            # add_retention_policy raises if one already exists on the relation, and
+            # "already configured" is the normal case on every restart after the
+            # first.
+            for relation, days in (("reading", raw_days),
+                                   ("reading_1m", minute_days)):
+                if days <= 0:
+                    continue
+                try:
+                    cur.execute(
+                        "SELECT add_retention_policy(%s, INTERVAL '1 day' * %s, "
+                        "if_not_exists => TRUE)",
+                        (relation, days),
+                    )
+                except Exception as exc:  # a policy that already exists
+                    log.debug("retention on %s: %s", relation, exc)
         conn.commit()
+    finally:
+        if own:
+            conn.close()
 
 
 def apply_refresh_policies(
     start_offset_h: int = 25,
     end_offset_h: int = 1,
     schedule_minutes: int = 5,
+    *,
+    conn: Connection | None = None,
 ) -> None:
     """Attach the policies that keep the continuous aggregates populated.
 
@@ -269,31 +280,49 @@ def apply_refresh_policies(
 
     Both aggregates get the same offsets. They are separate policies over
     separate definitions, and TimescaleDB does not compose them.
+
+    ## Why there is a `conn` parameter
+
+    Because "the database this run is seeding" and "the database the environment
+    names" stop being the same string the moment `--database` is used, and this
+    function was quietly the fourth place that assumed they were. The seeder called
+    it with no arguments, it connected to `wwtp`, and `wwtp_ml` was left with
+    `reading_1h` **empty** while the log said *"aggregates refreshed"*. The same
+    shape as `apply_schema` and `seed_metadata`, and found the same way: by the
+    next call failing and pointing somewhere else entirely.
     """
-    with connect() as conn, conn.cursor() as cur:
-        for view in ("reading_1m", "reading_1h"):
-            try:
-                cur.execute(
-                    "SELECT add_continuous_aggregate_policy(%s, "
-                    "  start_offset => INTERVAL '1 hour' * %s, "
-                    "  end_offset   => INTERVAL '1 hour' * %s, "
-                    "  schedule_interval => INTERVAL '1 minute' * %s, "
-                    "  if_not_exists => TRUE)",
-                    (view, start_offset_h, end_offset_h, schedule_minutes),
-                )
-                log.info(
-                    "refresh policy on %s: %d h of history every %d min",
-                    view, start_offset_h, schedule_minutes,
-                )
-            except Exception as exc:
-                # TimescaleDB raises rather than no-op'ing on some versions even
-                # with if_not_exists, and "already configured" is the normal
-                # case on every restart after the first.
-                log.debug("refresh policy on %s: %s", view, exc)
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with conn.cursor() as cur:
+            for view in ("reading_1m", "reading_1h"):
+                try:
+                    cur.execute(
+                        "SELECT add_continuous_aggregate_policy(%s, "
+                        "  start_offset => INTERVAL '1 hour' * %s, "
+                        "  end_offset   => INTERVAL '1 hour' * %s, "
+                        "  schedule_interval => INTERVAL '1 minute' * %s, "
+                        "  if_not_exists => TRUE)",
+                        (view, start_offset_h, end_offset_h, schedule_minutes),
+                    )
+                    log.info(
+                        "refresh policy on %s: %d h of history every %d min",
+                        view, start_offset_h, schedule_minutes,
+                    )
+                except Exception as exc:
+                    # TimescaleDB raises rather than no-op'ing on some versions even
+                    # with if_not_exists, and "already configured" is the normal
+                    # case on every restart after the first.
+                    log.debug("refresh policy on %s: %s", view, exc)
         conn.commit()
+    finally:
+        if own:
+            conn.close()
 
 
-def refresh_aggregates(start: datetime, end: datetime) -> int:
+def refresh_aggregates(
+    start: datetime, end: datetime, *, conn: Connection | None = None,
+) -> int:
     """Materialise both aggregates over an explicit range, now.
 
     **A refresh policy cannot do this job.** A policy looks backwards from
@@ -318,12 +347,18 @@ def refresh_aggregates(start: datetime, end: datetime) -> int:
     # to be a literal in the statement text. `psycopg.sql` does the quoting and
     # escaping, so this is not string interpolation by hand.
     window = (start.isoformat(), end.isoformat())
-    with connect() as conn:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        # `refresh_continuous_aggregate` cannot run inside a transaction, so
+        # autocommit is not optional here however the connection arrived.
         conn.autocommit = True
         with conn.cursor() as cur:
             for view in ("reading_1m", "reading_1h"):
                 _refresh_with_retry(cur, view, window)
-        conn.close()
+    finally:
+        if own:
+            conn.close()
     return 2
 
 

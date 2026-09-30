@@ -301,7 +301,15 @@ def _read_source(dsn: str, table: str) -> tuple[Any, list[str], Any]:
         signals = [r[0] for r in conn.execute("SELECT id FROM signal ORDER BY 1")]
     import pandas as pd  # noqa: PLC0415
 
-    return stored, signals, pd.date_range(lo, hi, freq="h", tz="UTC")
+    # Coerce the bounds rather than passing `tz=` alongside them. `pd.date_range`
+    # takes *either* tz-aware bounds *or* a `tz=`, and supplying both raises
+    # "exactly three must be specified" — which is a message about the wrong thing
+    # entirely, and which did not fire on one database and fired on another for no
+    # reason anyone could act on. `tz="UTC"` alone would also have been wrong: it
+    # *localises* naive bounds rather than converting aware ones, and every bucket
+    # in this project is UTC by construction.
+    start, end = (pd.Timestamp(b).tz_convert("UTC") for b in (lo, hi))
+    return stored, signals, pd.date_range(start, end, freq="h")
 
 
 def _fetch(conn: Any, sql: str) -> Any:
