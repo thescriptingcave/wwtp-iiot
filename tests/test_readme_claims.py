@@ -494,14 +494,20 @@ def test_the_documented_mypy_file_count_matches() -> None:
     as a stale number, one level of indirection further out.
 
     Counted the way `make types` counts it: the packages the Makefile names.
+
+    **The list is read out of the Makefile rather than written out again here.** It
+    was duplicated, and duplication of that kind is invisible — a new package added
+    to the Makefile leaves this test happily passing against a stale list, so the
+    documented count and the check that guards it drift apart while both look
+    healthy. It is the same failure as a stale number, except now the number and its
+    own verification live in two files that agree only by accident.
     """
     doc = Path("docs/TESTING.md").read_text(encoding="utf-8")
     claimed = re.search(r"mypy` \| clean across (\d+) source files", doc)
     assert claimed, "docs/TESTING.md has no mypy row"
 
     result = subprocess.run(
-        ["uv", "run", "--no-sync", "mypy", "softplc", "gateway", "storage",
-         "alarms", "scada", "tools", "ui"],
+        ["uv", "run", "--no-sync", "mypy", *_mypy_packages()],
         capture_output=True, text=True, check=False,
     )
     m = re.search(r"(\d+) source files", result.stdout + result.stderr)
@@ -510,6 +516,36 @@ def test_the_documented_mypy_file_count_matches() -> None:
         f"docs/TESTING.md says {claimed.group(1)} source files; "
         f"mypy reports {m.group(1)}"
     )
+
+
+def _mypy_packages() -> list[str]:
+    """The package list on `make types`'s mypy line, read from the Makefile.
+
+    Recipe lines are joined through `\\` continuations, comments dropped (both `#`
+    at the start of a line and `@#` inside a recipe, which make treats as a comment
+    because the `@` is only a silencing prefix), trailing `##` text removed, and the
+    leading `$(PY) -m mypy` stripped.
+
+    Text handling, so it is the fiddly kind. Two versions of this got it wrong
+    before it worked: the first matched the *target* line, because its `##` comment
+    also mentions mypy; the second would have swallowed a following recipe's `@#`
+    comment into the buffer. Hence one function with one caller and a test.
+    """
+    buffer = ""
+    recipes: list[str] = []
+    for raw in Path("Makefile").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("#") or line.startswith("@#"):
+            continue
+        buffer += line.removesuffix("\\").rstrip()
+        if line.endswith("\\"):
+            continue
+        recipe, buffer = buffer.strip(), ""
+        if "-m mypy" in recipe:
+            recipes.append(recipe.split("##")[0].strip())
+    assert len(recipes) == 1, f"expected one mypy recipe, found {recipes}"
+    tokens = recipes[0].split()
+    return tokens[tokens.index("mypy") + 1:]
 
 
 def test_the_documented_extracted_query_count_matches() -> None:
@@ -803,13 +839,14 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,
     "tests/test_web_page.py": 22,
-    "tests/test_readme_claims.py": 73,
+    "tests/test_readme_claims.py": 74,
     "tests/test_opcua_course.py": 34,
     "tests/test_opcua_minimal_client.py": 7,
     "tests/test_opcua_address_space.py": 12,
     "tests/test_alarm_engine.py": 17,
     "tests/test_seed.py": 5,
     "tests/test_seed_schedule.py": 15,
+    "tests/test_workshop_dataset.py": 15,
     "tests/test_makefile_env.py": 7,
     "tests/test_lessons_gate_ports.py": 4,
     "tests/test_notebook_kernels.py": 4,

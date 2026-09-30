@@ -230,9 +230,15 @@ lint-debt:  ## fail if the finding count has gone up; never fail if it has gone 
 	   echo "   the debt fell — lower lint-debt-baseline.txt in the same commit"; \
 	 fi
 
-types:  ## mypy, over every Python file in the project
+types:  ## mypy, over every Python package that ships
 	@echo "── mypy ──"
-	$(PY) -m mypy softplc gateway storage alarms scada tools ui
+	# `workshops` is here because it ships code rather than notebooks-to-be. The
+	# list is explicit because a bare `mypy .` follows `.venv` and the build tree, and
+	# because `notebooks/` is deliberately absent: it is generated Markdown rendered
+	# as .ipynb, and the prose in it is checked by `make notebooks` instead. Both of
+	# those are the kind of thing a reader cannot infer from the command, which is why
+	# it is a comment here rather than a convention.
+	$(PY) -m mypy softplc gateway storage alarms scada tools ui workshops
 
 # `-m "not slow and not integration"` because the label on this target is a
 # promise: **no database, no containers, about two minutes.** Without the marker

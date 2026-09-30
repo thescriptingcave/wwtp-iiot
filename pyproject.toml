@@ -81,6 +81,17 @@ analysis = [
 serve = [
     "jupyterlab>=4.2",
 ]
+workshop = [
+    # The machine-learning workshop (`workshops/ml/`). Its own extra for the same
+    # reason `analysis` is: nothing in the plant imports it, and the plant's image
+    # must not grow because a workshop needs a classifier.
+    #
+    # `torch` is deliberately NOT here yet. Day 2's sequence tier needs it, that
+    # tier is not written, and a CPU-only torch wheel is ~200 MB -- an extra that
+    # nothing imports is a 200 MB download nobody asked for. It arrives with the
+    # notebooks that need it.
+    "scikit-learn>=1.5",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

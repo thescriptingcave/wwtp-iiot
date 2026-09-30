@@ -316,6 +316,24 @@ printed — the discipline the SQL course already follows, and
 `sql/00-foundations/00-03` is the reason: it drifted for months because its
 expected output described a dataset that no longer existed.
 
+## The machine-learning workshop
+
+[`workshops/ml/`](workshops/ml/README.md) is a fourth track, under construction.
+The SQL course teaches tools, the notebooks teach what the plant is telling you,
+and this one teaches **the moment a score stops being evidence** — using this
+plant's data to do it.
+
+Only the dataset builder is written. It is there because the prototype found that
+the obvious approach does not work: **the stored hourly table has no row at all
+inside the window of two of the three instrument faults**, so a classifier fitted
+on it has no positive examples for two thirds of the classes. The builder crosses
+every signal with every hour instead, which makes an absent hour a row with `n = 0`
+— 239,400 rows at a base rate of **0.081%**, with every injected fault present.
+
+The lesson the data hands over for free: **41% of ordinary hours are in exactly
+the state a broken instrument is in**, so absence alone finds nothing, and the
+feature that works is a per-signal comparison against its own recent history.
+
 ## Phase status
 
 - [x] **Phase 1** — contracts, process model, scan loop, control blocks, fault engine
