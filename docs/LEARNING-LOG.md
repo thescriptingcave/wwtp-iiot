@@ -4142,3 +4142,77 @@ only reason it is right.
 > `notebook_read.py`, `kernel_name` in the same file, and the `set -a` regex.
 > Five is enough to stop treating it as a detail: **when the thing being checked
 > is a flag in a Makefile, the check has to parse the recipe, not the file.**
+
+## The plant looks stochastic and is not, and it cost me a wrong recommendation
+
+Planning an ML workshop on this data, I needed more labelled events than one week
+contains. The obvious answer was to run the seeder twenty-five times and call the
+weeks independent, **I recommended it, and it is false.** Then I went looking for
+why, and found something worth more than the answer.
+
+The seeder's docstring is unusually honest about this and I had already read it:
+
+> *The seed is not random. It replays the actual process model — the same
+> `softplc.process.plant.Plant` the live PLC uses.*
+
+"Replays" is the load-bearing word and I read past it. There is no `random`, `normal`
+or `uniform` anywhere in the seeding path. The trajectory is deterministic. Twenty-five
+runs give the same plant twenty-five times, shifted in time, with the faults at the
+same relative offsets every week — because they are armed at `at_fraction` 0.30,
+0.55 and 0.78 of the window, not at fixed timestamps. And `--days 90` does not help:
+it still arms exactly three faults, at day 27, 50 and 70.
+
+### The machinery is there, and entirely dead
+
+Which is the part worth keeping.
+
+| Where | What | Occurrences |
+|---|---|---|
+| `softplc/process/plant.py:107` | `self.rng = Random(seed)` | **1** — assigned, never read |
+| `softplc/process/units.py:182` | `def _noise(rng, magnitude): return rng.gauss(0.0, magnitude)` | **1** — defined, never called |
+
+And the seeder does not even pass a seed: `Plant(c=contract)` takes the
+`seed: int = 0` default, so it is `Random(0)` whether or not anyone reads it.
+
+So somebody built a seeded RNG and a Gaussian noise helper for the plant, and never
+wired either one up. That is not a bug in any behaviour — nothing observable is
+wrong. It is a **documentation bug**, and those are worse in one specific way: they
+misinform the next reader with total confidence.
+
+> Dead code that *looks* live is more dangerous than no code, because it answers a
+> question the reader did not think to doubt.
+
+Concretely, in the twenty minutes after finding this I nearly wrote a plan arguing
+that the plant was deterministic on the strength of the seeder's docstring, having
+glimpsed `self.rng` and decided it was being used. A future maintainer could spend
+longer on a worse version of that: conclude the plant is noisy, "fix" a
+non-reproducibility bug that does not exist, or wire `_noise` up and be unable to
+explain why every claimed number in eleven notebooks moved.
+
+### The fix is a comment, not a feature
+
+Not wiring the noise up, deliberately:
+
+- **Nothing needs it.** Every trap this data sets for a model is structural —
+  duplicate tags, one shared daily cycle, change-triggered density — and none is a
+  function of process noise. A deterministic plant is just as good at misleading
+  you as a stochastic one.
+- **Turning it on would be expensive.** Any noise changes the trajectory, which
+  changes the pinned week, which breaks every machine-checked number in all eleven
+  notebooks. A real cost, for a benefit that is not wanted.
+
+So: a comment on each line saying it is currently unused, and this entry. The
+generalisation is the thing to carry away.
+
+> Before trusting that a system has no property, check whether it has the
+> *machinery* for the property. "No `random` in this path" and "no `random` in this
+> path and none left over unused" are different findings, and only the second one
+> tells you the first is not an artefact of where you happened to look.
+
+The same error, one level up, is the one this file has been collecting all along: a
+number that was true on the machine that produced it. `hypertable_size()`, `0.00e+00`,
+a Linux-only port constant, a `.env` that only the developer had. All four were
+asserted about *this* system by *this* system. **Every one of them was found by
+something outside the system asking whether the claim was portable** — a CI runner, a
+clean machine, a second person, or this time, a plan written for a different purpose.
+

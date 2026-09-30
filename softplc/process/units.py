@@ -180,7 +180,20 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 
 
 def _noise(rng: Random, magnitude: float) -> float:
-    """Small symmetric noise, for sensor realism. Never changes the mean."""
+    """Small symmetric noise, for sensor realism. Never changes the mean.
+
+    **Currently never called**, so the plant produces no noise and is fully
+    deterministic. `Plant.rng` is the intended source and is likewise never read.
+
+    The docstring above is the *intent*, and it is worth being precise that the
+    intent is not what happens: nothing in the plant calls this. Left as-is rather
+    than deleted, because sensor realism is a real requirement and re-deriving it
+    is more work than reading the note. See `docs/LEARNING-LOG.md`, "The plant looks
+    stochastic and is not".
+
+    **If you are about to call it**, know that it changes the seeded week, and
+    every machine-checked number in `notebooks/` hangs off that week.
+    """
     return rng.gauss(0.0, magnitude)
 
 

@@ -104,6 +104,18 @@ class Plant:
 
     def __init__(self, c: Contract | None = None, seed: int = 0) -> None:
         self.c = c or get_contract()
+        # **Currently unused, and the plant is fully deterministic.** `seed` and
+        # this attribute are the whole of the stochasticity story, and the whole of
+        # it is that nothing reads `self.rng`. `units._noise()` is its intended
+        # consumer and is likewise never called.
+        #
+        # Recorded because it has already misled a reader: a plan for an ML
+        # workshop assumed this RNG was in use, on the strength of seeing it here.
+        # See `docs/LEARNING-LOG.md`, "The plant looks stochastic and is not".
+        #
+        # Wiring it up is not free — noise would change the seeded week, and every
+        # machine-checked number in `notebooks/` hangs off that week. So: left
+        # alone on purpose. If you are about to change that, read that entry first.
         self.rng = Random(seed)
         self.t_s: float = 0.0
 
