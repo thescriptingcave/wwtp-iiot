@@ -29,6 +29,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from storage.postgres import schema
 from storage.seed import main as seed_main
 from tools import notebook_data
@@ -349,3 +350,131 @@ def test_notebook_data_names_the_database_it_resets() -> None:
             f"clean machine, and the error will name the seeder rather than the "
             f"caller."
         )
+
+
+# ── every caller, in every language, found automatically ─────────────────────
+#
+# The three that broke, in order:
+#
+#   1. `tools/notebook_data.py`  — found by a person, on a clean machine.
+#   2. `compose.yaml`'s `seed`   — found by a person, on a *different* clean
+#      machine, an hour later.
+#   3. whichever one is next.
+#
+# Each was found the same way: somebody ran it on hardware nobody had run it on
+# before. Two of the three were not in Python, so an `ast` walk over the source
+# could not see them, and a test that enumerated the call sites I already knew
+# about would have passed on all three.
+#
+# So this enumerates from the *other* end: it finds every place the repository
+# invokes the seeder — the Makefile, the compose file, and every `.py` — and
+# requires `--database` on each that passes `--reset`. A new caller is covered the
+# moment it is written, and a caller in a language nobody thought of is a failure
+# this test produces rather than a bug a person finds.
+
+
+def _invocations() -> list[tuple[str, list[str], str]]:
+    """`(where, argv, kind)` for every seeder invocation in the repository.
+
+    Three sources, because the two that broke were in different files from the
+    third: Python, the Makefile, and `compose.yaml`.
+
+    **Each invocation is a list of arguments, not a line of text.** A compose
+    `command:` is a YAML sequence, so `--database` and `--reset` are separate list
+    elements, and a line-oriented check sees a line with a reset and no database
+    next to a line with a database and no reset -- and passes. That was the first
+    version, and removing the flag from `compose.yaml` did not fail the test.
+
+    The `kind` is what the assertion reports, so a failure names the file rather
+    than "a caller".
+    """
+    found: list[tuple[str, list[str], str]] = []
+
+    for path in Path().rglob("*.py"):
+        if any(p in (".venv", ".git", "node_modules") for p in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for call in _calls(path, "seed"):
+            found.append((f"{path} (python)", _argv(call), "python"))
+        # A direct `storage.seed.main` run, which is how the Makefile and compose
+        # do it and which no Python call site would reveal.
+        for line in text.splitlines():
+            if "storage.seed.main" in line:
+                found.append((f"{path} (python)", line.split(), "python"))
+
+    for line in Path("Makefile").read_text(encoding="utf-8").splitlines():
+        if "storage.seed.main" in line and not line.strip().startswith("#"):
+            found.append(("Makefile", line.split(), "makefile"))
+
+    for compose in (Path("compose.yaml"), Path("compose.yml")):
+        if not compose.exists():
+            continue
+        services = yaml.safe_load(compose.read_text(encoding="utf-8"))["services"]
+        for name, svc in services.items():
+            command = svc.get("command") or []
+            argv = [str(a) for a in command]
+            if any("storage.seed.main" in a for a in argv):
+                found.append((f"{compose}:{name}", argv, "compose"))
+
+    return found
+
+
+def _argv(call: str) -> list[str]:
+    """A rendered Python call as an argument list.
+
+    `ast.unparse` gives `seed(['--database', 'wwtp_ml', '--reset'])`, so the
+    brackets and the trailing paren are stripped and the list literal's quoting
+    removed. Deliberately simple: these are the project's own calls, and a call
+    with an embedded newline in an argument would need this to be a real parser.
+    """
+    inner = call[call.index("(") + 1:call.rindex(")")]
+    return [a.strip().strip("'\"") for a in inner.strip("[]").split(",") if a.strip()]
+
+
+def _has(argv: list[str], flag: str) -> bool:
+    """Is `flag` among the arguments, as `--flag` or `--flag=value`?"""
+    return any(a == flag or a.startswith(flag + "=") for a in argv)
+
+
+def test_there_are_invocations_to_check() -> None:
+    """The enumeration itself is a test, because an empty list passes everything.
+
+    This is the failure mode of every "find all the X and check them" test: if the
+    finder breaks — a renamed flag, a reformatted compose file — the list comes
+    back empty and the check reports success. Three callers are known to exist, so
+    three is the floor.
+    """
+    found = [f for f in _invocations()
+             if not f[0].startswith("tests/test_seed_target_database.py")]
+    assert len(found) >= 3, (
+        f"only found {len(found)} seeder invocation(s): "
+        f"{[where for where, _, _ in found]}. The finder has probably broken, "
+        f"and an empty list passes every check built on it."
+    )
+
+
+def test_every_invocation_that_resets_names_its_database() -> None:
+    """`--reset` without `--database` anywhere in the repository is a failure.
+
+    The one rule. No escape hatch, because an escape hatch is something a recipe
+    reaches for the first time it is inconvenient — and "inconvenient" is exactly
+    the moment the guard exists.
+    """
+    # This file is excluded, and it has to be: its own docstring quotes the broken
+    # invocation as a counter-example, so the finder correctly reported it on the
+    # first run. A check that cannot exclude its own fixtures is a check that
+    # cannot carry any.
+    offenders = [
+        (where, argv)
+        for where, argv, _kind in _invocations()
+        if not where.startswith("tests/test_seed_target_database.py")
+        and _has(argv, "--reset") and not _has(argv, "--database")
+    ]
+    assert not offenders, (
+        "these seeder invocations pass --reset without --database, and the seeder "
+        "will refuse them:\n  "
+        + "\n  ".join(f"{where}: {' '.join(argv)}" for where, argv in offenders)
+    )

@@ -564,6 +564,15 @@ services:
       - python
       - -m
       - storage.seed.main
+      # `--database`, for the same reason `tools/notebook_data.py` passes it: the
+      # seeder refuses `--reset` without one. Inside a container `POSTGRES_DB` is
+      # genuinely authoritative -- there is no `.env` and no `tools/py.sh` to source
+      # one -- so this is belt and braces rather than a correction. It reads the
+      # same `${POSTGRES_DB:-wwtp}` the environment block does, so the two cannot
+      # disagree, and it means there is now ONE rule for every caller of the seeder
+      # instead of one rule for host callers and a different assumption for
+      # container ones.
+      - --database=${POSTGRES_DB:-wwtp}
       - --days=${SEED_DAYS:-7}
       - --storm-after=${DEMO_STORM_AT_HOURS:-2}
       # Replace, do not append: `make seed` twice used to give two weeks, with

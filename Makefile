@@ -639,6 +639,20 @@ up: setup  ## a running plant with a week of history
 
 seed: setup  ## a week of plant history, about two minutes
 	@echo "── a week of plant history ──"
+	# **Rebuild the seeder image first.** `docker compose run` builds only when the
+	# image is *absent*, so a checkout that has run before reuses an image built from
+	# an older commit. That is invisible until the code and the image disagree, and
+	# then the error names a command line rather than the staleness:
+	#
+	#     seed: error: unrecognized arguments: --database=wwtp
+	#
+	# Found by running `make up` after `docker compose down -v` on a machine whose
+	# image predated the `--database` flag. A volume is not an image, so dropping the
+	# volumes -- the thing you do to get "a clean machine" -- does not catch it.
+	#
+	# The build is a no-op when nothing changed: Docker caches the layers, and a warm
+	# rebuild of this image takes about a second.
+	docker compose --profile demo build seed
 	docker compose --profile demo run --rm seed
 
 # Block until the gateway has actually written something, rather than until the
