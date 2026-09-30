@@ -52,6 +52,23 @@ print(f"{len(readings):,} readings across {readings.signal_id.nunique()} signals
 The other tables, and what each is for:
 
 ```python
+# **Keyed, not positional.** The first version assigned a plain list:
+#
+#     counts["what it is"] = ["every change, as it happened", ...]
+#
+# which lines the descriptions up with the rows *in the order the SQL writes
+# them* — and this query ends in `ORDER BY rows DESC`, so it *returns* them in a
+# different order. `site` has one row and `event` has none, so the last two came
+# back the wrong way round and the table said, in print, that `event` was
+# "one row — this is one plant, not many" while showing it at **0**. The
+# sentence underneath said the opposite.
+#
+# Nothing caught it, which is the part worth keeping: every *number* in that
+# table was correct, and this project's gate checks numbers. A wrong word in a
+# table is invisible to a gate that only reads digits, and a reader who notices
+# one stops trusting the other four hundred.
+#
+# A dict keyed on `table_name` cannot be misaligned by a sort.
 counts = pd.read_sql(
     """
     SELECT 'reading' AS table_name, count(*) AS rows FROM reading
@@ -64,28 +81,32 @@ counts = pd.read_sql(
     ORDER BY rows DESC
     """,
     conn,
+).set_index("table_name")
+
+counts["what it is"] = pd.Series(
+    {
+        "reading": "every change, as it happened",
+        "reading_1m": "continuous aggregate, 1-minute buckets",
+        "reading_1h": "continuous aggregate, 1-hour buckets",
+        "signal": "one row per tag: unit, range, deadband, sample rate",
+        "equipment": "one row per physical asset, with its failure modes",
+        "event": "alarms and state changes — empty in this seed",
+        "site": "one row — this is one plant, not many",
+    }
 )
-counts["what it is"] = [
-    "every change, as it happened",
-    "continuous aggregate, 1-minute buckets",
-    "continuous aggregate, 1-hour buckets",
-    "one row per tag: unit, range, deadband, sample rate",
-    "one row per physical asset, with its failure modes",
-    "alarms and state changes",
-    "one row — this is one plant, not many",
-]
-print(counts.to_string(index=False))
+print(counts.to_string())
 ```
 
 ```output
-table_name    rows                                          what it is
-   reading 4239284                        every change, as it happened
-reading_1m  185455              continuous aggregate, 1-minute buckets
-reading_1h    5882                continuous aggregate, 1-hour buckets
-    signal      57 one row per tag: unit, range, deadband, sample rate
- equipment      22  one row per physical asset, with its failure modes
-      site       1                            alarms and state changes
-     event       0               one row — this is one plant, not many
+               rows                                           what it is
+table_name                                                               
+reading     4239284                         every change, as it happened
+reading_1m   185455               continuous aggregate, 1-minute buckets
+reading_1h     5882                 continuous aggregate, 1-hour buckets
+signal           57  one row per tag: unit, range, deadband, sample rate
+equipment        22   one row per physical asset, with its failure modes
+site              1                one row — this is one plant, not many
+event             0        alarms and state changes — empty in this seed
 ```
 
 **Seven tables, 57 tags, 22 pieces of equipment, one week.** The `event` table is
