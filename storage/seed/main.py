@@ -79,7 +79,12 @@ SAMPLE_INTERVAL_S = 1.0
 
 #: Instrument faults armed partway through a seeded run.
 #:
-#: Three faults, three different shapes, deliberately spread across the week:
+#: Re-exported from `storage.seed.schedule`, which owns it so the seeder and the
+#: ground truth in `notebooks/_data.py` derive the schedule from **one** function.
+#: They were defined here and rebuilt independently by `known_events()`, which is
+#: a dataset whose answer key is one edit away from being silently wrong.
+#:
+#: The long description of the three kinds moved with them:
 #:
 #: * ``do_sensor_drift`` — the process is fine and the *gauge* is wrong. The
 #:   value is plausible and in range, so nothing but a model-based check catches
@@ -93,13 +98,12 @@ SAMPLE_INTERVAL_S = 1.0
 #:   reason `sql/00-foundations/00-03` and `sql/04-expert/04-01` can teach a
 #:   convention instead of only describing it.
 #:
-#: `at_fraction` is a fraction of the run, not a timestamp, so the spread
-#: follows ``--days``.
-DEFAULT_INSTRUMENT_FAULTS: list[dict[str, Any]] = [
-    {"fault": "do_sensor_drift", "at_fraction": 0.30, "duration_s": 5400.0},
-    {"fault": "effluent_tss_stuck", "at_fraction": 0.55, "duration_s": 7200.0},
-    {"fault": "sensor_dead", "at_fraction": 0.78, "duration_s": 3600.0},
-]
+#: `at_fraction` is a fraction of the run, not a timestamp, so the spread follows
+#: `--days`.
+from storage.seed.schedule import (  # noqa: E402
+    DEFAULT_INSTRUMENT_FAULTS,
+    recurring_faults,
+)
 
 #: Rows per COPY. 20 000 keeps any single transaction comfortably in memory while
 #: still being large enough that the round trip is not the bottleneck. The old
@@ -325,6 +329,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "fails on the primary key instead")
     p.add_argument("--speed", type=float, default=600.0,
                    help="simulated seconds per real second")
+    p.add_argument(
+        "--fault-every-hours", type=float, default=None, metavar="H",
+        help=(
+            "arm a recurring instrument fault every H hours instead of the three "
+            "defaults. Deterministic: the kinds cycle in the order of "
+            "DEFAULT_INSTRUMENT_FAULTS, so the same window always produces the "
+            "same schedule. Omitted, the schedule is exactly the three defaults and "
+            "the seeded week is unchanged."
+        ),
+    )
+    p.add_argument("--sample-interval", type=float, default=SAMPLE_INTERVAL_S,
+                   metavar="SECONDS",
+                   help=(
+                       "seconds between recorded samples. The default of 1.0 is a "
+                       "4.2 M-row week; 60 gives a 1-minute dataset, which is all a "
+                       "model needs and 60x less to write."
+                   ))
     p.add_argument("--no-instrument-faults", action="store_true",
                    help="seed a week where every instrument is healthy; without "
                         "them the dataset cannot teach the quality convention")
@@ -407,10 +428,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.reset:
         _reset_readings(dsn_str)
 
+    # **The fault schedule is decided here, not in the Seeder**, because the same
+    # call has to produce the ground truth and it has to do so in a process that
+    # never opens a database. `recurring_faults` is pure; this is the only place the
+    # flag reaches it.
+    #
+    # The `None` branch is the one that matters: it means "the three defaults", and
+    # it must stay `None` rather than an expanded list so the pinned week is
+    # byte-identical. `tests/test_seed.py` asserts that with a fingerprint, and
+    # `make notebooks` is the canary — eleven notebooks' worth of claimed numbers
+    # hang off this window.
+    if args.no_instrument_faults:
+        instrument_faults: list[dict[str, Any]] | None = []
+    elif args.fault_every_hours is not None:
+        every_s = args.fault_every_hours * 3600.0
+        instrument_faults = recurring_faults(args.days * 86_400.0, every_s)
+        log.info(
+            "instrument faults: %d instances every %g h, cycling %s",
+            len(instrument_faults), args.fault_every_hours,
+            ", ".join(dict.fromkeys(s["fault"] for s in instrument_faults)),
+        )
+    else:
+        instrument_faults = None
+
     seeder = Seeder(
         contract, execute, speed=args.speed,
+        sample_interval_s=args.sample_interval,
         storm_after_h=None if args.storm_after < 0 else args.storm_after,
-        instrument_faults=[] if args.no_instrument_faults else None,
+        instrument_faults=instrument_faults,
         end_ts=end_ts,
     )
     if args.no_deadband:
