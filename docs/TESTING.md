@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 731 | no |
+| Unit, no database | 737 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -53,7 +53,7 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 70 |
+| `test_readme_claims.py` | 71 |
 | `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
@@ -64,6 +64,7 @@ Per file, for the ones worth naming:
 | `test_lessons_gate_ports.py` | 4 | that the lesson gate's port allocation is not an OS default |
 | `test_notebook_kernels.py` | 4 | that nothing runs a notebook through nbconvert's command line, which picks a kernel by name |
 | `test_jupyter_url.py` | 4 | that the JupyterLab token file can never be committed, and that `--stop` cannot kill the wrong process |
+| `test_clean_checkout.py` | 5 | that `compose.yaml`'s required variables are all in `.env.example`, and that the template holds no real credential |
 
 **Every number in both tables is asserted by
 `tests/test_readme_claims.py`** — each per-file count by `pytest --co`, the

@@ -39,7 +39,7 @@
 # The repo root is derived from this file's own location rather than assumed, so
 # BASH_ENV works from any directory and needs no make variable.
 #
-# ## Why a missing `.env` is a warning and not an error
+# ## Why a missing `.env` is a warning and not an error, and who creates it
 #
 # `.env` is gitignored, so **it does not exist in CI at all** — the workflow
 # supplies the environment directly, and a checkout has nothing to source. This
@@ -54,11 +54,23 @@
 # the real `$(PY)` wrapper, so four tests failed on a runner that was doing
 # nothing wrong and had no `.env` by design.
 #
-# So: warn, on stderr, once per shell, and carry on. A recipe that genuinely needs
-# a variable reports that itself, and the message says where to get the file
-# rather than leaving the reader to work out that a *sourced* file was absent.
+# **Creating the file here was the wrong fix, and it took one afternoon to show.**
+# On a clean clone `make` then failed with a `docker compose` error naming a
+# password, so the obvious repair was to have this file write `.env` from
+# `.env.example`. It did — and because this file is sourced by `tools/py.sh` as
+# well as by every recipe, **running the test suite created a `.env` part-way
+# through a run.** One test then skipped because there was no `.env` and a later
+# one failed because a test before it had made one: an order-dependent suite,
+# which is the specific thing this repository refuses to ship.
+#
+# So the writing lives in `make setup`, a target, and this file only reads. A
+# file whose job is to load the environment should not also be changing the
+# filesystem, and the breadth of "every recipe and every `$(PY)` call" is the
+# wrong blast radius for a side effect. What this file does is *say* the file is
+# missing, and name the one command that makes it.
+#
 # Failing here instead would mean `make` could not run at all in the one
-# environment where it is supposed to be reproducible.
+# environment where it is supposed to be reproducible, so the warning stands.
 
 # Where the repository is, from this file's own location rather than assumed.
 # `BASH_ENV` is sourced before any recipe runs, so there is no make variable yet
@@ -71,7 +83,7 @@ if [ -f "$_ENV_ROOT/.env" ]; then
   . "${_ENV_ROOT}/.env"
   set +a
 elif [ -z "${_ENV_WARNED:-}" ]; then
-  echo "warning: no ${_ENV_ROOT}/.env — 'cp .env.example .env' is the usual fix;" >&2
-  echo "         continuing with this shell's own variables" >&2
+  echo "warning: no ${_ENV_ROOT}/.env — 'make setup' creates one," >&2
+  echo "         or: cp .env.example .env" >&2
   _ENV_WARNED=1
 fi

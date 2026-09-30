@@ -164,7 +164,7 @@ NB_TOKEN := $(shell uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
 # goal and fails with a message about a target.
 NB_ONLY ?=
 
-.PHONY: help check lint lint-all lint-debt types test integration sql sql-check \
+.PHONY: help setup check lint lint-all lint-debt types test integration sql sql-check \
         up seed wait down clean logs \
         scada scada-flows scada-check dashboards dashboards-check grafana \
         coverage coverage-json alarms browse watch psql query roles contract \
@@ -239,7 +239,7 @@ types:  ## mypy, over every Python file in the project
 # filter it kept the four `slow` tests, which are eighteen minutes on their own
 # because every scenario settles for 9h15m before measurement begins, so the
 # label was wrong and the target was half an hour.
-test:  ## unit tests: no database, no containers, about two minutes
+test: setup  ## unit tests: no database, no containers, about two minutes
 	@echo "── unit tests ──"
 	$(PY) -m pytest tests/ -q -p no:cacheprovider --ignore=tests/integration \
 	    -m "not slow and not integration"
@@ -252,7 +252,7 @@ test:  ## unit tests: no database, no containers, about two minutes
 # machine where the scratch database was running, reachable, and correct —
 # reported as `password authentication failed`, which is a true statement about
 # a password that was not the one being used.
-integration:  ## integration tests, against a throwaway database
+integration: setup  ## integration tests, against a throwaway database
 	@echo "── integration tests ──"
 	-docker exec wwtp-db createdb -U wwtp $(TEST_DB) 2>/dev/null || true
 	POSTGRES_TEST_PORT=$(TEST_PORT) POSTGRES_TEST_DB=$(TEST_DB) \
@@ -269,13 +269,13 @@ sql: db-still  ## every SQL block in the course, against a real server
 	@echo "── the SQL course ──"
 	$(PY) tools/check_sql.py sql/
 
-lessons:  ## every python snippet in courses/, against a live OPC UA server
+lessons: setup  ## every python snippet in courses/, against a live OPC UA server
 	@echo "── the lesson courses ──"
 	$(PY) tools/check_lessons.py
 
 sql-check: seed sql  ## the one gate that needs a seeded week
 
-notebooks: notebooks-has-data  ## build, execute, and verify the claimed output of every notebook
+notebooks: setup notebooks-has-data  ## build, execute, and verify the claimed output of every notebook
 	@echo "── the analyst notebooks ──"
 	$(PY) -m tools.build_notebooks
 	$(PY) -m tools.check_notebooks
@@ -401,9 +401,59 @@ EXTRA := --extra protocols --extra storage --extra analysis --extra serve
 # `uv` is not on PATH everywhere — a Homebrew or pyenv install can put it outside
 # what a non-login shell sees — and the first version of this target made `make`
 # fail on a missing `uv` even when the environment was already complete. A command
+# ── the first thing a clean checkout needs ───────────────────────────────────
+
+# A fresh `git clone` has no `.env`. It holds this checkout's passwords, so it is
+# gitignored and cannot be committed — which means **`make` on a new machine used
+# to fail**, and it failed at the least useful place:
+#
+#     warning: no /home/someone/developer/wwtp-iiot/.env
+#     ── starting the database
+#     error while interpolating services.db.environment.POSTGRES_PASSWORD:
+#     required variable POSTGRES_PASSWORD is missing a value
+#     make: *** [Makefile:414: db-up] Error 1
+#
+# Reported from a real clean clone on a real machine, by somebody doing the
+# obvious thing. The `warning` line is this repository's own — `tools/env.sh`
+# knows there is no `.env` and says so — and then hands the problem to
+# `docker compose`, which reports it as a *password* problem two steps from its
+# cause. `README.md` documents `cp .env.example .env` in Quick start, which is a
+# section a reader reaches *after* trying `make`, because `make` is what
+# everybody tries first.
+#
+# So `make` makes it, from the tracked template, and never overwrites an existing
+# one. This is idempotent, prints what it did, and is a no-op on every run after
+# the first.
+#
+# ## Why this is a target and not a line in `tools/env.sh`
+#
+# **Because `env.sh` is sourced by far more than `make`.** `tools/py.sh` sources
+# it, so a bare `python -m pytest` does too — and so does every test in this
+# repository that shells out to `make` or to `$(PY)`. The first version of this
+# fix created the file from `env.sh`, and the immediate consequence was that
+# running the test suite created a `.env` in the repository root part-way
+# through a run. That made the suite **order-dependent**: one test skipped because
+# there was no `.env`, another failed because a test before it had created one.
+#
+# A file that reads the environment should not write the filesystem, and the
+# blast radius of "every recipe and every `$(PY)` call" is the wrong place for a
+# side effect. A prerequisite is the right shape — and the risk that it is
+# *forgotten* on the next target is covered by a test rather than by care, which
+# is `tests/test_clean_checkout.py`.
+setup:
+	@if [ -f .env ]; then :; \
+	elif [ -f .env.example ]; then \
+	  cp .env.example .env; \
+	  echo "── created .env from .env.example (this checkout's passwords)"; \
+	else \
+	  echo "no .env and no .env.example to copy it from." >&2; \
+	  echo "cp .env.example .env, or export POSTGRES_* yourself." >&2; \
+	  exit 1; \
+	fi
+
 # whose whole job is "open the notebooks" should not refuse to open them because a
 # package manager is not installed and nothing needs installing.
-sync:
+sync: setup
 	@missing=""; \
 	for m in asyncua pymodbus psycopg fastapi pandas matplotlib seaborn \
 	         jupyterlab nbformat nbclient; do \
@@ -435,7 +485,7 @@ db-live:
 # the data is already there. The previous version called `docker compose up` first
 # unconditionally, which meant `make` failed on a machine with no docker even
 # though the database it wanted was right there.
-db-up:
+db-up: setup
 	@if [ "$$($(MAKE) --no-print-directory db-live)" = "yes" ]; then \
 	  echo "── database already reachable"; \
 	else \
@@ -462,12 +512,12 @@ db-still: db-up
 	  docker compose stop gateway; \
 	fi
 
-up:  ## a running plant with a week of history
+up: setup  ## a running plant with a week of history
 	docker compose up -d
 	$(MAKE) seed
 	$(MAKE) wait
 
-seed:  ## a week of plant history, about two minutes
+seed: setup  ## a week of plant history, about two minutes
 	@echo "── a week of plant history ──"
 	docker compose --profile demo run --rm seed
 

@@ -3981,3 +3981,87 @@ design; the same situation is a clean skip three files away in `test_readme_clai
 It now checks all four and skips with their names, which is the difference between
 a test that declines to run and one that fails about a subject it was not asked
 about.
+
+## The first thing anyone did on a clean machine, and what it cost to get right
+
+Someone cloned this repository onto a machine that had never seen it, typed
+`make`, and got:
+
+    warning: no /home/someone/developer/wwtp-iiot/.env
+    ── starting the database
+    error while interpolating services.db.environment.POSTGRES_PASSWORD:
+    required variable POSTGRES_PASSWORD is missing a value
+    make: *** [Makefile:414: db-up] Error 1
+
+The `warning` line is this repository's own. `tools/env.sh` knew there was no
+`.env`, said so, and then handed the problem to `docker compose`, which reported
+it as a **password** problem two steps from its cause — the same "the port is the
+tell" shape as everything else in this file, except here the wrong thing is the
+*file*.
+
+And `README.md` documents `cp .env.example .env`, in Quick start, which is a
+section a reader reaches **after** trying `make`, because `make` is what
+everybody tries first. A correct instruction placed after the failure it prevents
+is not an instruction.
+
+### The obvious fix was wrong, and one afternoon is what it cost
+
+`env.sh` is the single place that knows how `.env` is loaded, and it is sourced
+at the top of every recipe. So the natural repair was to have **it** write
+`.env` from `.env.example` when the file is absent. That fixed the reported
+error, immediately, and broke the test suite in a way that took a simulated
+no-`.env` run to notice:
+
+    FAILED test_the_makefile_loads_env_for_every_recipe
+
+Because `tools/py.sh` sources `env.sh` too — and so does every test here that
+shells out to `make` or to `$(PY)` — **running the suite created a `.env`
+part-way through a run.** One test then skipped because there was no `.env`, and
+a later one failed because a test before it had made one.
+
+> An order-dependent suite passes on Tuesday. That is the sentence this
+> repository keeps rediscovering, and this time I introduced it myself while
+> fixing an unrelated thing.
+
+So the writing moved to a `setup` target and `env.sh` only reads. **A file whose
+job is to load the environment should not also be changing the filesystem**, and
+"every recipe and every `$(PY)` call" is the wrong blast radius for a side
+effect. The warning now names the command that fixes it.
+
+### The cost of a target is a forgotten prerequisite, so a test covers it
+
+A target has to be depended upon, and the next person can forget. That is the
+whole trade, and it is the same trade as a `# noqa`: leave a hole, then put a
+check in it.
+
+`tests/test_clean_checkout.py` computes the prerequisite graph and asserts every
+target that reaches the environment can **reach** `setup` — transitively, because
+make finishes all prerequisites before a recipe runs, so `sql → db-still → db-up
+→ setup` is sufficient and requiring a direct `setup:` on eleven targets would be
+asserting a shape nobody writes. Two more tests guard the bug's *reachable* form,
+which is the one that matters from now on: every `${VAR:?…}` that `compose.yaml`
+requires must be defined in `.env.example`, and defined **non-empty**, because
+compose's own test is a non-empty value rather than a present name.
+
+Three mutations tried, all caught: dropping `setup` from `db-up`, making `setup`
+copy unconditionally over a real `.env`, and adding a required variable to
+`compose.yaml` that the template lacks.
+
+### A bootstrap that overwrites is worse than no bootstrap
+
+`setup` never replaces an existing `.env`. That is one behaviour from the
+operator's point of view and two from the code's, and the second one is the
+dangerous one: a bootstrap that clobbers a real `.env` swaps working credentials
+for `replace-me` and the failure looks like a database problem, several minutes
+later, in a different tool.
+
+Verified on a real clone: `make setup` creates it, `docker compose … config -q`
+exits 0, and the reported `POSTGRES_PASSWORD` error is gone.
+
+> I also destroyed the local `.env` while testing this, by deleting a file in a
+> repository I do not own, and recovered it from a stale copy in `/tmp` made
+> hours earlier. The lesson is not about backups. It is that **`rm` on a path
+> outside a scratch directory is not a thing to do while investigating**, and the
+> same hour took the database container down for the same reason — a second
+> checkout with a fixed `container_name` grabbing the one already running. Both
+> were recovered, and neither was a bug in the project.

@@ -138,12 +138,23 @@ Requires Docker with Compose v2 and `uv`. **No licence key, no account, nothing
 from outside this repository** — about five minutes.
 
 ```bash
-# set POSTGRES_PASSWORD
+# set POSTGRES_PASSWORD — or skip this and let `make` do it
 cp .env.example .env
 docker compose up -d
 # 4.3 M readings, ~2 min
 docker compose --profile demo run --rm seed
 ```
+
+Or start with the analyst notebooks, which does the setup itself — `.env` if you
+have not made one, database, seed, then JupyterLab:
+
+```bash
+make
+```
+
+A fresh `git clone` has no `.env` — it holds this checkout's passwords, so it is
+not committed. `make` creates it from `.env.example` on the first run and never
+overwrites an existing one.
 
 Then browse the plant and query it:
 
