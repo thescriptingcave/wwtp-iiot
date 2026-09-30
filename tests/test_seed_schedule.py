@@ -15,11 +15,28 @@ eleven notebooks' claimed numbers depend on.
 Everything else in the file guards the two ways a recurring schedule can be wrong
 without looking wrong: instances that arm past the end of the replay and produce no
 rows, and instances that overlap and double a fault's effect.
+
+## Two accessors, and why there are not one
+
+`known_events()` returns a **dict keyed by event name** and predates recurrence.
+`known_event_instances()` returns a **list** and came after it. That is not tidiness
+for its own sake: a dict with one key per event cannot express a fault that happens
+twice, and the way it fails is the worst available — the second occurrence
+overwrites the first, the ground truth still prints, every label is still a valid
+timestamp, and every detector scored against it is confidently wrong about the
+occurrence nobody can see. So the dict stays for the pinned week, where it is
+machine-checked prose in `notebooks/09`, and the list is the shape recurrence needs.
+The tests below pin both, and pin that they agree.
 """
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
+from notebooks._data import (
+    known_event_instances,
+    known_events,
+)
 from storage.seed.schedule import (
     DEFAULT_INSTRUMENT_FAULTS,
     event_windows,
@@ -222,3 +239,107 @@ def test_nth_distinguishes_repeated_occurrences_of_one_kind() -> None:
     onsets = [w[1] for w in windows]
     assert onsets == sorted(onsets)
     assert len(set(onsets)) == len(onsets)
+
+
+# ── the two accessors, and the pinned week they must not disturb ─────────────
+
+
+def test_the_pinned_week_is_still_the_three_faults_and_the_storm() -> None:
+    """`known_events()`, verbatim. The constraint every other test here is allowed by.
+
+    These four rows are the ground truth `notebooks/09` prints and scores detectors
+    against, and `notebooks/10` dates change points from. They are asserted as exact
+    strings rather than as a fingerprint because a failure then *is* the diff, and the
+    reader does not have to go and recompute an md5 to find out what moved.
+    """
+
+    got = {
+        name: (sig, str(a), str(b))
+        for name, (sig, a, b) in known_events().items()
+    }
+    assert got == {
+        "do_sensor_drift": (
+            "AERATION:AHU-1:DO",
+            "2026-09-24 02:24:00+00:00", "2026-09-24 03:54:00+00:00",
+        ),
+        "effluent_tss_stuck": (
+            "EFFLUENT:FLOW:TSS",
+            "2026-09-25 20:24:00+00:00", "2026-09-25 22:24:00+00:00",
+        ),
+        "sensor_dead": (
+            "INFLUENT:LIFT:CURRENT",
+            "2026-09-27 11:02:00+00:00", "2026-09-27 12:02:00+00:00",
+        ),
+        "wet_weather_storm": (
+            "INFLUENT:LIFT:FLOW",
+            "2026-09-27 12:00:00+00:00", "2026-09-27 14:00:00+00:00",
+        ),
+    }
+
+
+def test_the_two_accessors_agree_where_the_dict_can_reach() -> None:
+    """`known_event_instances()` is `known_events()` without the dict.
+
+    Two code paths for one answer is exactly the arrangement this file was written to
+    remove, so the reduction is asserted rather than assumed: the storm aside, the
+    list must reproduce the dict entry for entry.
+    """
+
+    by_name = {fault: (sig, a, b) for fault, sig, a, b, _nth in known_event_instances()}
+    for name, expected in known_events().items():
+        if name == "wet_weather_storm":
+            continue  # a covariate, not an instrument fault; see the docstring
+        assert by_name[name] == expected, name
+    assert len(by_name) == 3
+
+
+def test_a_recurring_schedule_keeps_every_occurrence_a_dict_would_have_lost() -> None:
+    """The reason the second accessor exists, stated as an assertion.
+
+    A dict keyed by fault name collapses these 39 drifts to one. Nothing raises; the
+    table just stops describing the data, and the labels stay plausible.
+    """
+
+    instances = known_event_instances(days=25 * 7, every_h=36)
+    drifts = [row for row in instances if row[0] == "do_sensor_drift"]
+    assert len(drifts) == 39, f"the schedule should have recurred; got {len(drifts)}"
+
+    windows = {(row[1], row[2], row[3]) for row in drifts}
+    assert len(windows) == len(drifts), (
+        "two instances of the same fault must not share a window, or they are the "
+        "same event and `nth` is lying about there being a second one"
+    )
+    assert [row[4] for row in drifts] == list(range(len(drifts)))
+
+
+def test_the_ground_truth_scales_with_the_window_it_describes() -> None:
+    """`days` and `end` move the window, and the schedule follows the window.
+
+    The 25-week dataset is the reason this function takes arguments at all. A ground
+    truth pinned to a week would label nine tenths of it "normal", and the model
+    would be trained on a fiction.
+    """
+
+    one = known_event_instances(every_h=36)
+    many = known_event_instances(days=25 * 7, every_h=36)
+    assert len(one) == 4 and len(many) == 116
+    # Every instance lies inside the window it claims to describe.
+    for _f, _s, a, b, _n in many:
+        assert a < b
+    span = pd.Timedelta(days=25 * 7)
+    assert many[-1][3] - many[0][2] <= span
+
+
+def test_a_recurring_label_count_matches_what_the_seeder_would_arm() -> None:
+    """The cross-check that ties the two halves together.
+
+    `recurring_faults` is what the seeder arms; `known_event_instances` is what the
+    workshop labels with. They are separate functions because one produces specs and
+    one produces timestamps, so this is the assertion that their *count* cannot drift
+    apart — which is how a label set ends up describing faults that never fired.
+    """
+
+    for days, every_h in [(7, 36), (7, 12), (25 * 7, 36), (25 * 7, 24)]:
+        armed = recurring_faults(days * 86_400.0, every_h * 3600.0)
+        labelled = known_event_instances(days=days, every_h=every_h)
+        assert len(labelled) == len(armed), f"{days}d @ {every_h}h"

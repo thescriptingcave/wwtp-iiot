@@ -809,7 +809,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_opcua_address_space.py": 12,
     "tests/test_alarm_engine.py": 17,
     "tests/test_seed.py": 5,
-    "tests/test_seed_schedule.py": 10,
+    "tests/test_seed_schedule.py": 15,
     "tests/test_makefile_env.py": 7,
     "tests/test_lessons_gate_ports.py": 4,
     "tests/test_notebook_kernels.py": 4,

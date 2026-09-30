@@ -97,30 +97,105 @@ FAULT_TARGET = {
 }
 
 
+def _window_anchor(days: int, end: str) -> Any:
+    """`datetime` the window of `days` length ending at ISO-8601 `end` starts at."""
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    finish = datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(UTC)
+    return finish - timedelta(days=days)
+
+
 def known_events() -> dict[str, tuple[str, Any, Any]]:
     """`{event: (signal, start, end)}` for everything the seed injects.
 
     The one place the ground truth is derived, so the notebooks that score detectors
     and date change points cannot disagree about when something happened. Times are
     tz-aware `pandas.Timestamp`s, floored to the minute because the rollup is.
+
+    ## Keyed by event name, which is why it cannot express a recurring fault
+
+    One key per event means one occurrence, so a second `sensor_dead` would silently
+    overwrite the first and the ground truth would describe one event where the data
+    had two. Nothing would notice: the labels would still be well-formed, the table
+    would still print, and every detector scored against it would be confidently
+    wrong about the second. `known_event_instances` is the shape that survives
+    recurrence; this one is kept exactly as it was for the pinned week, because
+    `notebooks/09` builds a printed table out of it and that table is
+    machine-checked.
     """
-    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+    from datetime import timedelta  # noqa: PLC0415
 
     import pandas as pd  # noqa: PLC0415
-    from storage.seed.main import DEFAULT_INSTRUMENT_FAULTS  # noqa: PLC0415
+    from storage.seed.schedule import event_windows  # noqa: PLC0415
 
-    week_start = datetime.fromisoformat(SEED_END.replace("Z", "+00:00"))
-    week_start = week_start.astimezone(UTC) - timedelta(days=SEED_DAYS)
+    week_start = _window_anchor(SEED_DAYS, SEED_END)
     events: dict[str, tuple[str, Any, Any]] = {}
-    for spec in DEFAULT_INSTRUMENT_FAULTS:
-        offset = spec["at_fraction"] * SEED_DAYS * 86400
-        start = pd.Timestamp(week_start + timedelta(seconds=offset))
-        end = start + pd.Timedelta(seconds=spec["duration_s"])
-        fault = spec["fault"]
+    # `event_windows` is the seeder's own schedule function, so the answer key and the
+    # readings cannot disagree about *what fires*. It used to rebuild the arithmetic
+    # from `DEFAULT_INSTRUMENT_FAULTS` a second time here, which is the arrangement
+    # that produces a dataset whose labels are one edit away from being wrong.
+    #
+    # The end is still derived as `start + (ends - onset)` rather than
+    # `window_start + ends`, so the timestamp arithmetic is bit-for-bit what it always
+    # was. Sub-second rounding cannot cross a minute boundary for these values, but
+    # "cannot" is not "does not", and eleven notebooks' claimed numbers sit on top of
+    # this function.
+    for fault, onset, ends, _nth in event_windows(SEED_DAYS * 86_400.0, None):
+        start = pd.Timestamp(week_start + timedelta(seconds=onset))
+        end = start + pd.Timedelta(seconds=ends - onset)
         events[fault] = (FAULT_TARGET[fault], start.floor("1min"), end.floor("1min"))
     storm_from, storm_to = (pd.Timestamp(t) for t in storm_window())
     events["wet_weather_storm"] = ("INFLUENT:LIFT:FLOW", storm_from, storm_to)
     return events
+
+
+def known_event_instances(
+    days: int = SEED_DAYS,
+    end: str = SEED_END,
+    every_h: float | None = None,
+) -> list[tuple[str, str, Any, Any, int]]:
+    """`[(fault, signal, start, end, nth)]` — every instrument fault that will fire.
+
+    The recurring-shaped ground truth, for a window of any length. `every_h=None`
+    gives the three defaults, so this is `known_events()` without the dict.
+
+    Two things `known_events()` cannot do and this can:
+
+    * **A fault may occur more than once.** `nth` counts occurrences of a kind, and a
+      second `sensor_dead` is a separate row rather than an overwrite.
+    * **The window need not be the pinned week.** `days` and `end` move it, and the
+      schedule is computed from `total_s` rather than from a constant, so a 25-week
+      dataset's labels are as derivable as a week's.
+
+    **The storm is not here, deliberately.** It is a covariate — the weather, not a
+    broken instrument — and it is anchored to the *end* of the window by
+    `STORM_AFTER_H`, so on a 25-week window "36 hours before the end" describes one
+    afternoon rather than a season. Callers that want it can add `storm_window()`,
+    but it should be a deliberate choice, not a row nobody looked at.
+
+    Returns tuples, not a frame, so this module stays free of a pandas import at
+    module scope. `pd.DataFrame(known_event_instances(every_h=36), columns=[...])` is
+    one line, and `notebooks/09` already shows that incantation.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    import pandas as pd  # noqa: PLC0415
+    from storage.seed.schedule import event_windows  # noqa: PLC0415
+
+    every_s = None if every_h is None else every_h * 3600.0
+    window_start = _window_anchor(days, end)
+    return [
+        (
+            fault,
+            FAULT_TARGET[fault],
+            pd.Timestamp(window_start + timedelta(seconds=onset)).floor("1min"),
+            pd.Timestamp(
+                window_start + timedelta(seconds=onset + (ends - onset))
+            ).floor("1min"),
+            nth,
+        )
+        for fault, onset, ends, nth in event_windows(days * 86_400.0, every_s)
+    ]
 
 
 def dsn() -> str:

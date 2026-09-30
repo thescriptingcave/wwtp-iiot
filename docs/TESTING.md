@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 762 | no |
+| Unit, no database | 767 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -59,7 +59,7 @@ Per file, for the ones worth naming:
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
-| `test_seed_schedule.py` | 10 | that the seeder and the ground truth derive the fault schedule from one function |
+| `test_seed_schedule.py` | 15 | that the seeder and the ground truth derive the fault schedule from one function |
 | `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
 | `test_makefile_env.py` | 7 | that make's fast path cannot strip `.env` from a recipe again |
 | `test_lessons_gate_ports.py` | 4 | that the lesson gate's port allocation is not an OS default |
