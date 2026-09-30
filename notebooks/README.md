@@ -55,11 +55,11 @@ make notebooks-data      # just (re)create and seed wwtp_notebooks
 
 | # | notebook | the question |
 |---|---|---|
-| 1 | [Meet the plant](01-meet-the-plant.ipynb) | what is here, and which tags are secretly the same measurement |
-| 2 | [Three kinds of nothing](02-three-kinds-of-nothing.ipynb) | no data, bad data, no change — `dropna` cannot tell them apart |
+| 1 | [Meet the plant](01-meet-the-plant.ipynb) | what is here, and why a row is not a sample |
+| 2 | [Three kinds of nothing](02-three-kinds-of-nothing.ipynb) | no data, bad data, no change — and tags that are copies of each other |
 | 3 | [Choosing your tier](03-choosing-a-tier.ipynb) | raw, 1-minute or 1-hour, and what each one costs |
 | 4 | [Resampling buys you nothing](04-resampling-buys-you-nothing.ipynb) | the rollups are a different estimator, not a faster one |
-| 5 | [Autocorrelation](05-autocorrelation.ipynb) | how many independent observations are in that hour |
+| 5 | [Autocorrelation](05-autocorrelation.ipynb) | how many independent hours — and how many independent signals |
 | 6 | [Detrending and differencing](06-detrending-and-differencing.ipynb) | stationarity before modelling |
 | 7 | [What are you estimating](07-what-are-you-estimating.ipynb) | time-weighted, flow-weighted, and which one you meant |
 | 8 | [Rolling-origin validation](08-rolling-origin-validation.ipynb) | why a random split lies |

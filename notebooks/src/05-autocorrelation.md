@@ -26,13 +26,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from notebooks._data import connect
+from notebooks._data import connect, storm_window
 from notebooks._style import apply_style, save, stamp
 
 apply_style()
 pd.set_option("display.width", 130)
 
 conn = connect()
+
+# The last section counts independent *time points*. It also needs to count
+# independent *signals*, which means the raw table and an hourly pivot of it.
+readings = pd.read_sql(
+    """
+    SELECT signal_id, ts, value, quality
+    FROM reading
+    WHERE ts >= (SELECT max(ts) FROM reading) - interval '7 days'
+    """,
+    conn,
+)
+hourly = (
+    readings.set_index("ts")
+    .groupby("signal_id")
+    .value.resample("1h")
+    .mean()
+    .unstack("signal_id")
+)
+storm_start, storm_end = (pd.Timestamp(t) for t in storm_window())
+
 rollup = pd.read_sql("SELECT bucket, signal_id, mean FROM reading_1m", conn)
 wide = rollup.pivot(index="bucket", columns="signal_id", values="mean")
 minutes = wide.reindex(pd.date_range(wide.index.min(), wide.index.max(), freq="1min"))
@@ -375,6 +395,151 @@ cycle averages out exactly over whole days.
 And the lag-one formula is wrong in *both* directions. For plant power it says the mean
 is uncertain by **138.37** kW where the daily means say **3.65** — an error of nearly
 forty times, from a signal whose lag-one correlation is 0.997.
+
+## And how many independent *signals* are there?
+
+This notebook has been asking one question — how many observations are really
+in an hour — and answering it along the time axis. There is a second axis, and
+it is the one that ruins a correlation matrix.
+
+Notebook 02 swept the tag list and found nine pairs of tags carrying identical
+values — the four water temperatures are one measurement under four names, and
+`EFFLUENT:FLOW:TSS` repeats `SECONDARY:SEC-CL-1:OVERFLOW` on every shared row.
+Drop those six redundant tags and ask how independent the remaining ones are.
+
+Drop the redundant tags and ask how independent the remaining 51 really are:
+
+```python
+import itertools
+
+redundant = {
+    "EFFLUENT:FLOW:TEMP",  # identical to three other temperatures
+    "SECONDARY:SEC-CL-1:TEMP",
+    "AERATION:AHU-1:WTEMP",
+    "EFFLUENT:FLOW:PH",  # identical to AERATION:AHU-1:PH
+    "EFFLUENT:FLOW:NH4",  # identical to AERATION:AHU-1:NH4_OUT
+    "SECONDARY:SEC-CL-1:OVERFLOW",  # identical to EFFLUENT:FLOW:TSS
+}
+kept = [c for c in hourly.columns if c not in redundant]
+
+pairs = []
+for left, right in itertools.combinations(kept, 2):
+    both = hourly[[left, right]].dropna()
+    if len(both) < 60:
+        continue
+    pairs.append((left, right, both[left].corr(both[right]), len(both)))
+
+print(f"dropped {len(redundant)}, kept {len(kept)} of {hourly.shape[1]} signals")
+print(f"pairs with at least 60 shared hourly means: {len(pairs)}")
+for threshold in (0.99, 0.95, 0.90):
+    strong = [p for p in pairs if abs(p[2]) > threshold]
+    print(
+        f"  |r| > {threshold:.2f} : {len(strong):3} of {len(pairs)} "
+        f"({100 * len(strong) / len(pairs):4.1f}%)"
+    )
+
+print()
+for left, right, value, n in sorted(pairs, key=lambda p: -abs(p[2]))[:6]:
+    print(f"  {value:+.6f}  n={n:>3}  {left:26} {right}")
+```
+
+```output
+dropped 6, kept 51 of 57 signals
+pairs with at least 60 shared hourly means: 547
+  |r| > 0.99 :  10 of 547 ( 1.8%)
+  |r| > 0.95 :  20 of 547 ( 3.7%)
+  |r| > 0.90 :  23 of 547 ( 4.2%)
+
+  +0.999976  n=158  INFLUENT:FLOW:TEMP         SITE:WEATHER:AIR_TEMP
+  +0.999816  n=168  AERATION:AHU-1:AIR_FLOW    AERATION:AHU-1:BLOWER_VALVE
+  +0.999705  n=168  AERATION:AHU-1:AIR_FLOW    UTILITY:SITE:PLANT_POWER
+  +0.999503  n=168  AERATION:AHU-1:BLOWER_VALVE UTILITY:SITE:PLANT_POWER
+  +0.998885  n=130  INFLUENT:LIFT:RUNTIME      INFLUENT:LIFT:STARTS
+  +0.996615  n=161  EFFLUENT:FLOW:TSS          EFFLUENT:FLOW:TURBIDITY
+```
+
+**Ten of 547 independent pairs correlate above 0.99**, after the duplicates are
+removed. That is a small share of the pairs and a striking one: these are
+correlations most analysts would stop at. Before believing any of them, ask the
+question this dataset makes unavoidable — *is it the plant, or is it the clock?*
+Everything in the plant rises and falls with the day, so two signals can agree only
+because both are reading it.
+
+The test is cheap. Subtract each signal's own hour-of-day profile (from the storm-free
+hours, so the storm does not leak into the baseline) and correlate what is left:
+
+```python
+storm_free = hourly[
+    (hourly.index < storm_start) | (hourly.index >= storm_end + pd.Timedelta(hours=3))
+]
+
+
+def without_the_clock(series):
+    profile = storm_free[series.name].groupby(storm_free.index.hour).mean()
+    return series - series.index.hour.map(profile).to_numpy()
+
+
+print(f"{'pair':62} {'raw r':>9} {'clock removed':>14}")
+for left, right, *_ in sorted(pairs, key=lambda p: -abs(p[2]))[:6]:
+    both = storm_free[[left, right]].dropna()
+    kept = pd.concat(
+        [without_the_clock(both[left]), without_the_clock(both[right])], axis=1
+    ).dropna()
+    print(
+        f"{left + '  x  ' + right:62} "
+        f"{both[left].corr(both[right]):+9.4f} "
+        f"{kept.iloc[:, 0].corr(kept.iloc[:, 1]):+14.4f}"
+    )
+```
+
+```output
+pair                                                               raw r  clock removed
+INFLUENT:FLOW:TEMP  x  SITE:WEATHER:AIR_TEMP                     +1.0000        +0.9786
+AERATION:AHU-1:AIR_FLOW  x  AERATION:AHU-1:BLOWER_VALVE          +0.9998        +0.9999
+AERATION:AHU-1:AIR_FLOW  x  UTILITY:SITE:PLANT_POWER             +0.9998        +0.9997
+AERATION:AHU-1:BLOWER_VALVE  x  UTILITY:SITE:PLANT_POWER         +0.9996        +0.9995
+INFLUENT:LIFT:RUNTIME  x  INFLUENT:LIFT:STARTS                   +0.9989        +0.9904
+EFFLUENT:FLOW:TSS  x  EFFLUENT:FLOW:TURBIDITY                    +0.9996        +0.9265
+```
+
+**Two different things are in that table, and they separate cleanly.**
+
+The air chain **survives**. Air flow against blower valve stays at **+0.9999** with
+the clock removed, and the valve against plant power at **+0.9995**. That is not a
+shared day. It is a valve opening, air moving and a motor drawing power — a causal
+chain, visible in the data as a correlation that cannot be subtracted away.
+
+Other pairs **lose** most of what they had. Effluent TSS against turbidity falls
+from **+0.9996** to **+0.9265**: two instruments watching the same solids share a
+clock, and most of what looked like agreement was the two of them riding the day.
+
+> **Remove the hour of day before you believe a correlation.** If it survives, you
+> have found coupling. If it collapses, you found a calendar. Notebook 06 does this
+> properly, with a detrended series and a difference, and notebook 05 says how many
+> independent observations any of it rests on.
+
+**One formatting note that turns out to matter.** Look at the decimal places. The
+duplicate temperature pair printed as `+1.000000`; the strongest real pair here
+prints as `+0.999976`. Those are a few parts in a hundred thousand apart and a correlation
+table rounded to two decimals cannot tell them apart:
+
+```python
+duplicate = hourly[["INFLUENT:FLOW:TEMP", "AERATION:AHU-1:WTEMP"]].dropna()
+genuine = hourly[["INFLUENT:FLOW:TEMP", "SITE:WEATHER:AIR_TEMP"]].dropna()
+
+print(f"the duplicate pair   : {duplicate.iloc[:, 0].corr(duplicate.iloc[:, 1]):.2f}")
+print(f"the real relationship: {genuine.iloc[:, 0].corr(genuine.iloc[:, 1]):.2f}")
+```
+
+```output
+the duplicate pair   : 1.00
+the real relationship: 1.00
+```
+
+**Both print `1.00`.** One is a tag list artefact and the other is the weather
+passing through a tank, and at two decimal places they are indistinguishable. Print
+correlations to enough digits that identity and near-identity are different
+strings, and when you find one, go and check *why*.
 
 ## Takeaways
 

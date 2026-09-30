@@ -34,7 +34,7 @@ because the metadata is stored 57 times instead of four million, and because
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from notebooks._data import connect
+from notebooks._data import connect, storm_window
 from notebooks._style import apply_style, save, signal_meta, stamp, trend
 
 apply_style()
@@ -57,6 +57,18 @@ print(
     f"{readings.signal_id.nunique()} signals, one week"
 )
 print(f"quality counts: {readings.quality.value_counts().to_dict()}")
+
+# The last section needs an hourly pivot and to know when the storm was, and both
+# are loaded here rather than rebuilt in that section, so the two notebooks bring
+# the data in the same way.
+hourly = (
+    readings.set_index("ts")
+    .groupby("signal_id")
+    .value.resample("1h")
+    .mean()
+    .unstack("signal_id")
+)
+storm_start, storm_end = (pd.Timestamp(t) for t in storm_window())
 ```
 
 ```output
@@ -455,6 +467,86 @@ extra columns. The one that is missing is the interesting one: **there is no
 column that tells you a signal is stuck rather than steady.** `distinct` tells you
 it did not move; whether that is correct is a question about the process, and no
 amount of querying the `reading` table answers it.
+
+## The tag list is not the measurement list
+
+The last section found nine signals that never spoke. This is the other way a
+signal misleads you, and it is quieter: a tag reporting a value that is a copy
+of another tag's, where neither the schema nor the row count says so.
+
+### Nine pairs of tags are one measurement
+
+The obvious way to find these is to be told about them. The useful way is to sweep
+for them, because nobody is going to tell you:
+
+```python
+import itertools
+
+ids = sorted(readings.signal_id.unique())
+series = {
+    sig: readings[readings.signal_id == sig].set_index("ts").value.sort_index()
+    for sig in ids
+}
+
+duplicates = []
+for left, right in itertools.combinations(ids, 2):
+    a, b = series[left], series[right]
+    shared = a.index.intersection(b.index)
+    if len(shared) < 200:
+        continue
+    if (a.reindex(shared) - b.reindex(shared)).abs().max() == 0:
+        duplicates.append((left, right, len(shared), len(a), len(b)))
+
+print(f"pairs of tags with identical values on every shared reading: {len(duplicates)}")
+for left, right, shared, len_a, len_b in duplicates:
+    print(f"  shared {shared:>7}   rows {len_a:>7} / {len_b:>7}   {left}  ==  {right}")
+```
+
+```output
+pairs of tags with identical values on every shared reading: 9
+  shared     702   rows     702 /     702   AERATION:AHU-1:NH4_OUT  ==  EFFLUENT:FLOW:NH4
+  shared  128373   rows  128373 /  128373   AERATION:AHU-1:PH  ==  EFFLUENT:FLOW:PH
+  shared    2027   rows    2027 /    2027   AERATION:AHU-1:WTEMP  ==  EFFLUENT:FLOW:TEMP
+  shared    2027   rows    2027 /    2027   AERATION:AHU-1:WTEMP  ==  INFLUENT:FLOW:TEMP
+  shared    2027   rows    2027 /    2027   AERATION:AHU-1:WTEMP  ==  SECONDARY:SEC-CL-1:TEMP
+  shared    2027   rows    2027 /    2027   EFFLUENT:FLOW:TEMP  ==  INFLUENT:FLOW:TEMP
+  shared    2027   rows    2027 /    2027   EFFLUENT:FLOW:TEMP  ==  SECONDARY:SEC-CL-1:TEMP
+  shared  125886   rows  125887 /  128079   EFFLUENT:FLOW:TSS  ==  SECONDARY:SEC-CL-1:OVERFLOW
+  shared    2027   rows    2027 /    2027   INFLUENT:FLOW:TEMP  ==  SECONDARY:SEC-CL-1:TEMP
+```
+
+**Six of those nine pairs are the same four water temperatures.**
+`INFLUENT:FLOW:TEMP`, `AERATION:AHU-1:WTEMP`, `SECONDARY:SEC-CL-1:TEMP` and
+`EFFLUENT:FLOW:TEMP` are not four tanks that happen to agree — they are
+**2,027 identical readings** under four names, and every pair among them is
+byte-for-byte equal.
+
+The other three are the same story at two tags each:
+
+* `AERATION:AHU-1:NH4_OUT` and `EFFLUENT:FLOW:NH4` — **702** identical readings.
+  Ammonia leaves the aeration basin and enters the disinfection tank, and nothing
+  in between changes it.
+* `AERATION:AHU-1:PH` and `EFFLUENT:FLOW:PH` — **128,373** identical readings.
+* `EFFLUENT:FLOW:TSS` and `SECONDARY:SEC-CL-1:OVERFLOW` — the secondary
+  clarifier's overflow solids and the effluent's suspended solids: **125,886**
+  shared readings, all identical.
+
+None of this is a defect. It is what a real address space does — a tag per stage,
+whether or not that stage changes the value, so that the tag list reads the way
+the process diagram does. But the consequence is mechanical:
+
+> **A correlation matrix over all 57 tags contains off-diagonal entries of exactly
+> 1.0000, and a regression given two of these columns is perfectly collinear.**
+
+Neither is a fact about the plant. Both are an artefact of the tag list, and
+**nothing in the schema distinguishes a duplicate tag from an independent one.**
+You have to compute it, which is why the sweep above is nine lines and not one
+metadata flag.
+
+One detail worth noticing: `EFFLUENT:FLOW:TSS` has 125,887 rows against
+`SECONDARY:SEC-CL-1:OVERFLOW`'s 128,079. They agree on everything they share, and
+then one of them keeps going. So "identical on the overlap" is not the same as
+"the same series" — check the row counts as well as the values.
 
 ## The rule
 
