@@ -335,9 +335,27 @@ notebooks-open: sync db-still notebooks-build notebooks-has-data
 		> notebooks/.jupyter-url
 	@echo "  open   : http://127.0.0.1:$(NB_PORT)/lab?token=$(NB_TOKEN)"
 	@echo "  again  : make notebooks-url          (this URL, again)"
-	@echo "  browser: make notebooks-url-open     (or just copy the line above)"
+	@echo "  browser: make notebooks-url-open"
 	@echo "  stop   : Ctrl-C, or: make notebooks-stop"
-	@MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab \
+	@# **The browser, opened by us and not by Jupyter.** `--no-browser` is still
+	@# here and still deliberate: JupyterLab masks the token in the URL it prints
+	@# and opens, so its own attempt would land on `token=...` and fail to
+	@# authenticate. This Makefile's URL is the real one, so this is what sends it.
+	@#
+	@# Backgrounded, because JupyterLab runs in the foreground and nothing after
+	@# it in this recipe would run until Ctrl-C. `--wait 30` closes the race the
+	@# other way: it polls until the port answers, so a browser is never sent to a
+	@# server that is not up yet.
+	@#
+	@# **Its output is not discarded**, which was the first version and was wrong.
+	@# Redirecting to /dev/null made this quiet, and quiet is the original
+	@# complaint: "the browser does not start, what do I do" gets *more* confusing
+	@# when the attempt says nothing. So if there is no display, or no browser
+	@# installed, the reason and the URL are printed — which is the answer.
+	@# `|| true` only stops the failure from being a *gate* failure; a headless box
+	@# has no browser and that is not a broken build.
+	@( $(PY) -m tools.jupyter_url --open --wait 30 2>&1 || true ) & \
+	MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab \
 		--notebook-dir=notebooks \
 		--IdentityProvider.token=$(NB_TOKEN) \
 		--ServerApp.port=$(NB_PORT) \

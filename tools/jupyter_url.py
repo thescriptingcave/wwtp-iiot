@@ -48,10 +48,13 @@ one is a message rather than a stall.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
@@ -155,6 +158,84 @@ def stop(port: int = DEFAULT_PORT) -> int:
     return 0
 
 
+#: Environment variables that mean "there is a desktop to open a window on".
+#: Linux and the BSDs; macOS and Windows have no such thing and are not checked,
+#: because their `webbrowser` works without one and inventing a requirement would
+#: break the machine this was tested on first.
+DISPLAY_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
+
+
+def headless() -> bool:
+    """Is there no desktop to open a browser on?
+
+    **Linux only, and deliberately.** This is the whole difference between
+    working on a laptop and not working on a server, and it is invisible from
+    Python: `webbrowser.open` on a headless Linux box raises `Error: could not
+    locate runnable browser`, and on some builds returns `False`, and on others
+    *succeeds* by handing the URL to `xdg-open`, which then fails silently in the
+    background. All three are the same situation and only one of them says so.
+
+    Two ways out, both respected:
+
+    * `BROWSER` set — somebody has told the machine how to open a URL, which is
+      the standard override for exactly this case (a remote-desktop wrapper, an
+      SSH-forwarded browser). That wins over the absence of `DISPLAY`.
+    * no `DISPLAY`/`WAYLAND_DISPLAY` at all.
+
+    macOS and Windows are excluded rather than tested-for, because requiring a
+    display variable there would be inventing a rule the platform does not have.
+    """
+    if not sys.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")):
+        return False
+    if os.environ.get("BROWSER"):
+        return False
+    return not any(os.environ.get(name) for name in DISPLAY_VARS)
+
+
+def _open(url: str) -> int:
+    """Open `url`, and say plainly whether that worked.
+
+    Three outcomes, and only the middle one is a success:
+
+    * **no desktop** — a message naming the URL, and exit 0. This is not a
+      failure: on a headless box there is nothing to fail at, and returning 1
+      would make `make` report a broken gate for a server that is working.
+    * **opened** — a confirmation.
+    * **tried and could not** — the URL, and exit 1, because something was
+      supposed to happen and did not.
+    """
+    if headless():
+        print("  no display on this machine, so no browser to open.")
+        print(f"  open it yourself, or forward the port: {url}")
+        print("  (ssh -L 8899:127.0.0.1:8899 <this host>, then use 127.0.0.1:8899)")
+        return 0
+    if not webbrowser.open(url):
+        print("  (could not launch a browser — open the URL above by hand)",
+              file=sys.stderr)
+        return 1
+    print("  opening your browser")
+    return 0
+
+
+def wait_for_server(port: int, seconds: float = 30.0) -> bool:
+    """Block until the port answers, or the deadline passes.
+
+    `make notebooks-open` starts the server *after* handing us the URL, so an
+    opener that does not wait races it and opens a refused connection. Polling
+    the port is the smallest thing that removes the race, and it needs no
+    dependency: a `socket.connect_ex` that returns 0 is a server accepting
+    connections, which is the only fact that matters before a browser is sent.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.25)
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jupyter-url",
@@ -166,12 +247,24 @@ def main(argv: list[str] | None = None) -> int:
         help="hand the URL to the browser as well as printing it",
     )
     parser.add_argument(
+        "--wait", type=float, metavar="SECONDS", default=None,
+        help="wait up to SECONDS for the port to answer, then act",
+    )
+    parser.add_argument(
         "--stop", action="store_true", help="stop that server instead",
     )
     args = parser.parse_args(argv)
 
     if args.stop:
         return stop(args.port)
+
+    if args.wait is not None and not wait_for_server(args.port, args.wait):
+        print(
+            f"  nothing is listening on {args.port} after {args.wait:g}s; "
+            "not opening a browser for a server that did not start",
+            file=sys.stderr,
+        )
+        return 1
 
     url = find(args.port)
     if not url:
@@ -185,14 +278,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"  {url}")
     if args.open:
-        # `webbrowser` returns False rather than raising when there is no browser,
-        # and a silent no-op here is the same confusing nothing the user already
-        # hit. So say so.
-        if not webbrowser.open(url):
-            print("  (could not launch a browser — open the URL above by hand)",
-                  file=sys.stderr)
-            return 1
-        print("  opening your browser")
+        return _open(url)
     return 0
 
 

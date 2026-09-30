@@ -4065,3 +4065,80 @@ exits 0, and the reported `POSTGRES_PASSWORD` error is gone.
 > same hour took the database container down for the same reason — a second
 > checkout with a fixed `container_name` grabbing the one already running. Both
 > were recovered, and neither was a bug in the project.
+
+## `make` never opened a browser, and I was asked why it does not on another machine
+
+"you made a fix earlier to make the browser automatically when `make` is run. It
+was working on this machine, but it does not work on the clean machine."
+
+It was not working on this machine either. `notebooks-open` has always passed
+`--no-browser`, because JupyterLab masks the token in the URL it opens — so its
+own attempt lands on `token=...` and asks for a password. What I had added was
+`make notebooks-url-open`, a *separate* target, and I described it as though that
+were the same thing. There was no machine difference to explain: the behaviour
+did not exist on either, and the report was a fair reading of what I said.
+
+Which is the actual bug, and the more useful one: **there was a thing everybody
+wanted, described as a thing that existed, and neither of us checked.** The
+useful answer is not a correction. It is that `make` should open a browser, and
+here is what it takes.
+
+### `--no-browser` stays, and something else opens it
+
+Jupyter must not do the opening, for the masked-token reason above. So the
+Makefile does it, from `tools/jupyter_url.py`, which has the real token. Two
+details make it work rather than nearly work:
+
+* **`--wait 30`.** The server starts *after* the recipe hands over the URL, so an
+  opener that does not wait opens a refused connection. It polls the port with
+  `connect_ex` and opens when something is accepting, which is the only fact
+  that matters. Without a deadline it is a hang in a background subshell: no
+  output, no exit, nothing to diagnose.
+* **Its output is not discarded.** The first version backgrounded it with
+  `>/dev/null 2>&1`, which is tidy and makes the original complaint *worse* —
+  "the browser does not start, what do I do" is unanswerable when the attempt
+  says nothing. If it cannot open one, the reason and the URL are the answer, so
+  they are printed.
+
+### Headless is a different answer, not a failure
+
+On a server there is no browser, and `webbrowser.open` is useless there in three
+different ways: it raises, it returns `False`, or it hands the URL to `xdg-open`
+which fails silently in the background. Only one of those says so.
+
+`headless()` checks for `DISPLAY`/`WAYLAND_DISPLAY` **on Linux only**. macOS and
+Windows have no such variable, so a platform-agnostic version would report every
+laptop as headless and refuse to open a browser anywhere — the check has to name
+the platforms it applies to, and the platform test is the part most likely to be
+"simplified" away later. `BROWSER` overrides it, which is the standard answer for
+a headless box with a browser reachable some other way.
+
+Verified for real, not mocked: the same function returns `True` in a
+`python:3.13-slim` container with `DISPLAY` unset and `False` in the same image
+with `DISPLAY=:0`. A mock would have proved only that the mock agreed with itself.
+
+**And headless exits 0.** A server with no desktop has nothing to fail at, and
+returning 1 would make `make` report a broken gate for a server that is working
+perfectly. A browser that *should* have opened and did not is exit 1. Two halves
+of one function, and the first is the easy one to get backwards.
+
+### The fifth time a check read the prose instead of the thing
+
+`test_jupyter_is_still_told_not_to_open_its_own_browser` asserted
+`"--no-browser" in makefile`. **It passed with the flag deleted** — because the
+comment directly above the recipe names the flag, in the sentence explaining why
+it has to stay. Rewriting it to read the recipe's *tab-indented* body still
+passed, because the recipe carries `@#` comment lines too, and that is where most
+of its explanation lives.
+
+The fix is `_recipe_of()`, which keeps the tab-indented lines, drops the ones
+starting with `#` or `@#`, and joins `\` continuations. Found by mutating the
+Makefile back to the bug and checking that the test noticed — which is now the
+only reason it is right.
+
+> A check that reads text cannot tell the thing from the sentence about the
+> thing, and prose about a flag always sits next to the flag. This is the fifth
+> time in this repository, after `hypertable_size` in notebook 03, `--execute` in
+> `notebook_read.py`, `kernel_name` in the same file, and the `set -a` regex.
+> Five is enough to stop treating it as a detail: **when the thing being checked
+> is a flag in a Makefile, the check has to parse the recipe, not the file.**
