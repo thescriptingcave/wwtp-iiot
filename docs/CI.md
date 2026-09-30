@@ -41,7 +41,7 @@ and the gate covers every Python file in the project.
 ### `make lint` had been failing the whole time
 
 Worse, and the same mistake. `ruff check .` reported **159 findings** when this
-was written; it is **157** now — a `ruff --fix` pass over
+was written; it is **156** now — a `ruff --fix` pass over
 `softplc/servers/opcua.py` that took that file from 27 findings to 6, and the
 notebook work clearing the sixteen findings it had added.
 Almost all of them are `E501` (long lines) and `PLC0415` (function-local imports)
@@ -57,7 +57,7 @@ as passing because it was run over the wrong subset is worse than no gate — an
 this project has now produced that mistake twice in one day.
 
 The ratchet (`make lint-debt`, and the `lint-debt` job) fails if the finding
-count goes **up** and does not fail if it goes down. A hard gate at 157 would
+count goes **up** and does not fail if it goes down. A hard gate at 156 would
 block every commit, and deleting the debt in one sweeping commit is the thing
 this project has deliberately not done five times. The baseline lives in
 `lint-debt-baseline.txt`, so lowering it is a deliberate act with a diff that
@@ -89,7 +89,7 @@ from them, because a named volume over `/data` silently shadows the image's
 | `notebooks` | every push | the analysts' database, the eleven notebooks, and every number in their prose |
 | `drift` | every push | generated files vs the contract, and `docker compose config` |
 | `images` | every push | the three images build, and the two non-core node types resolve |
-| `lint-debt` | every push | 157 findings is the baseline; going up fails |
+| `lint-debt` | every push | 156 findings is the baseline; going up fails |
 | `nightly` | 04:17 UTC | the fault × rule coverage matrix and the four slow tests |
 
 That is six on every push and one on a schedule. The count is checked by
@@ -276,7 +276,7 @@ fourth instance of this class that no log had — see below.
   ever been run by hand.
 * **`ui/web` has no tests at all** — the least verified part of the project, and
   `docs/LEARNING-LOG.md` has it as an open thread.
-* **The pre-existing lint debt** is measured, not fixed. 157 findings, tracked
+* **The pre-existing lint debt** is measured, not fixed. 156 findings, tracked
   in `lint-debt-baseline.txt`.
 * **`tests/test_scanloop.py::test_pace_divides_by_speed_so_a_backfill_is_not_throttled`**
   fails in a full run and passes alone. It is a wall-clock flake and it is not

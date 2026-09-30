@@ -798,7 +798,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_process.py": 40,
     "tests/test_scada_contract.py": 37,
     "tests/test_scanloop.py": 31,
-    "tests/test_faults.py": 28,
+    "tests/test_faults.py": 29,
     "tests/test_control.py": 26,
     "tests/test_spool.py": 23,
     "tests/test_alarm_replay.py": 22,

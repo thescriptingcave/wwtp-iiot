@@ -4216,3 +4216,88 @@ asserted about *this* system by *this* system. **Every one of them was found by
 something outside the system asking whether the claim was portable** — a CI runner, a
 clean machine, a second person, or this time, a plan written for a different purpose.
 
+## A flatline that never let go, and a test that accused the wrong code
+
+Found the dead RNG while planning an ML workshop, and the plan then needed
+recurring instrument faults to have enough labelled events. Recurring faults mean
+arming the same fault twice, and **the second one did not behave like the first.**
+
+`FaultEngine._corrupt` held the frozen value in a single engine-level dict keyed
+by target:
+
+```python
+if target not in self._frozen:
+    self._frozen[target] = true_value
+frozen = self._frozen[target]
+```
+
+`self._frozen` was cleared in exactly one place — `FaultEngine.clear()`, whose
+docstring is *"remove every fault and undo its effects"*. It was **not** cleared by
+`_retire()`, the per-fault expiry path. So the freeze was captured once per target
+per *engine lifetime*, and every later flatline on that target reported a value
+frozen at the **first** one's onset.
+
+A transmitter that stuck in the morning went on reporting the morning's reading for
+the rest of the run and the next day. The fault appeared never to end, and the
+reported value corresponded to no moment the process had actually been in.
+
+Nothing observed it, because every seeded week arms each sensor fault exactly
+once. **The bug was a usage pattern that did not exist yet.** That is the third
+time in this file that the same shape appears — a thing that is true only because
+nobody has done the thing that would disprove it.
+
+### The fix is a data structure, not a line of clearing
+
+`ActiveFault` now carries `frozen: dict[str, float | None]`, and the freeze is read
+and written there. A frozen value is a property of *one fault occurrence* — "the
+reading when **this** fault began" — so it belongs on the fault, and retiring the
+fault discards it automatically. Two overlapping instances each keep their own. No
+clearing logic to get wrong, and `clear()`'s promise that *"a sensor fault that has
+been frozen into a reported value must not leave that value wrong after the fault
+clears"* is now **structural** rather than a line somebody has to remember.
+
+### I got the diagnosis wrong four times, and the test believed me every time
+
+The failing test's message said the second flatline was reporting the first one's
+onset. It was right about the symptom and **wrong about the cause**, four times
+over, and each wrong cause was a real bug in the test:
+
+1. **The clarifier blanket does not move.** It shifted 0.000619 over nine simulated
+   hours, so a test on it cannot tell a stale freeze from a correct one and passes
+   whatever the code does. Switched to `AERATION:AHU-1:BLOWER_RPM`, which moves 361
+   over three hours.
+2. **Stopping on the boundary leaves the fault running.** `is_active` is inclusive
+   (`now_s > end_s` is false at equality) and retirement is checked at the *top* of
+   the next `step`. The first fault was still active, so the second freeze read an
+   already-corrupted snapshot — the overlap case, a different fault entirely.
+3. **`run()` takes hours and I passed steps.** `run(600 / 20)` intending "600 s at
+   dt=20" is **30 hours**, which carried `now_s` to 128 160 — 102 000 s past the
+   fault's end. Nothing was frozen, and the assertion failed while confidently
+   accusing `_frozen` of not being cleared.
+4. **I blamed `truth()` for mutating the plant.** It does not: `Plant.snapshot()`
+   is a pure read, and I proved it by running the sequence with and without the
+   calls. I asserted a side effect that does not exist because the numbers did not
+   match a model I had in my head.
+
+Point three is the one worth keeping. The test named a specific mechanism, and
+nothing checked that the mechanism was still in play before the test reported on it.
+So it does now:
+
+```python
+assert af2.is_active(e.now_s), (
+    f"the second flatline expired before it was measured: armed at "
+    f"{af2.start_s:.0f}, ends {af2.end_s:.0f}, now_s is {e.now_s:.0f}"
+)
+```
+
+> **A test that explains *why* it failed must establish that its explanation is the
+> reason.** Otherwise it is a confident story attached to a number, and the
+> confidence is the most expensive part.
+
+Two mutations tried, both caught: reverting the freeze to the engine-level dict, and
+deleting the `if target not in ...` guard so the value is re-captured every step.
+The seeded week is **byte-identical** — `make notebooks` reports 11/11 agreeing and
+`git status` shows no notebook touched — which is the canary that matters, because
+this is production code on the live gateway path. Lint debt 157 → 156.
+
+

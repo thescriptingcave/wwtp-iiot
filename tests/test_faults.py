@@ -453,3 +453,97 @@ def test_faults_can_be_cleared() -> None:
     e.clear()
     assert e.active_ids() == ()
     assert p.digester.souring == 0.0
+
+
+def test_a_second_flatline_freezes_at_its_own_onset() -> None:
+    """Two flatlines on one target, and the second must not reuse the first's value.
+
+    **The bug this catches.** `FaultEngine._corrupt` captures the frozen value with
+
+        if target not in self._frozen:
+            self._frozen[target] = true_value
+
+    and `self._frozen` was cleared in exactly one place: `FaultEngine.clear()`,
+    whose job is *"remove every fault and undo its effects"*. It was **not** cleared
+    by `_retire()`, the per-fault expiry path. So the freeze value was captured once
+    per target per **engine lifetime**, and every later flatline on that target
+    reported a value frozen at the first one's onset.
+
+    That was invisible until now, because every seeded week arms each sensor fault
+    exactly once. Arming a flatline a second time is the thing that exposes it, and
+    it is about to stop being hypothetical: a multi-week dataset for the ML workshop
+    needs recurring instrument faults, and `effluent_tss_stuck` is a flatline.
+
+    The symptom in production is a lie of the worst kind. A transmitter that froze
+    during the morning reports the **morning's** reading for the rest of the day and
+    the next day, so the fault appears to last forever and the reported value does
+    not correspond to any moment the process was in.
+
+    The check is that the second freeze is near the value the process had reached by
+    then, and demonstrably not the one the first fault froze. A blanket depth moving
+    over hours makes the two distinguishable, which is why this drives the plant
+    between the two faults rather than arming them back to back.
+    """
+    # **`AERATION:AHU-1:BLOWER_RPM`, not the blanket.** `sensor_flatline` freezes
+    # two targets, and the clarifier blanket is genuinely dead steady — it moved
+    # 0.000619 over nine simulated hours — so a test on it cannot tell a stale
+    # freeze from a correct one and would pass whatever the code did. The blower
+    # moves 361 over three hours with the diurnal load, which is the difference
+    # that makes the two freezes distinguishable at all.
+    target = "AERATION:AHU-1:BLOWER_RPM"
+    p = Plant()
+    e = FaultEngine(p)
+
+    def run(hours: float) -> None:
+        for _ in range(int(hours * 3600 / 20)):
+            e.step(20.)
+
+    run(1.0)                                   # settle, as `drive` does
+    e.arm("sensor_flatline")
+    # **Past the duration, not equal to it.** `ActiveFault.is_active` is inclusive
+    # at the boundary (`now_s > end_s` fails at equality) and retirement is checked
+    # at the *top* of the next `step`, so stopping exactly on `end_s` leaves the
+    # first fault active. The second freeze would then read an already-corrupted
+    # snapshot — a different fault entirely, the overlap case, and one that makes
+    # this test fail for the wrong reason.
+    run(5400 / 3600 + 0.1)
+    assert not e.active_ids(), (
+        f"the first flatline never retired, so this test is measuring two "
+        f"overlapping faults rather than two successive ones: {e.active_ids()}"
+    )
+    first_frozen = e.truth()[target]
+
+    run(3.0)                                   # the process moves on
+    moved_on = e.truth()[target]
+    assert abs(moved_on - first_frozen) > 1.0, (
+        f"the blower did not move between the two faults ({first_frozen:.3f} -> "
+        f"{moved_on:.3f}), so this test cannot tell a stale freeze from a correct one"
+    )
+
+    e.arm("sensor_flatline")
+    af2 = e.active[-1]
+    run(0.2)                                   # 720 s, just past ramp_s
+    # **The fault must still be running, or this measures nothing.** `run()` takes
+    # *hours*, and the first version of this line passed `600 / 20` intending "600
+    # seconds at dt=20". That is 30 **hours**, which carried `now_s` to 128 160 —
+    # 102 000 s past the fault's end. It retired, nothing was frozen, the assertion
+    # failed, and the message confidently accused `_frozen` of not being cleared.
+    #
+    # The check below would have caught that immediately, and it is the reason it is
+    # here: a test that names a mechanism should establish that the mechanism is
+    # still in play before it reports on it.
+    assert af2.is_active(e.now_s), (
+        f"the second flatline expired before it was measured: armed at "
+        f"{af2.start_s:.0f}, ends {af2.end_s:.0f}, now_s is {e.now_s:.0f}"
+    )
+    reported = e.step(20.).values[target]
+    reported_after = e.step(20.).values[target]
+
+    # Frozen against the *second* onset, not the first.
+    assert abs(reported_after - moved_on) < abs(reported_after - first_frozen), (
+        f"the second flatline is reporting a value frozen at the first one's "
+        f"onset ({first_frozen:.6f}) rather than its own ({moved_on:.6f}). "
+        "`ActiveFault.frozen` is not being reset when a fault retires."
+    )
+    # And it is actually frozen, not merely closer to the truth.
+    assert reported_after == reported, "the value must not move while frozen"

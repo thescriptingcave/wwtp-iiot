@@ -137,7 +137,7 @@ jobs:
       - name: ruff, the gated packages
         # **Scoped, and the scoping is stated rather than hidden.**
         #
-        # `ruff check .` reports 157 findings today. The overwhelming majority is
+        # `ruff check .` reports 156 findings today. The overwhelming majority is
         # `E501` (long lines) and `PLC0415` (function-local imports) in
         # `softplc/process/units.py`, `softplc/servers/opcua.py` and the older
         # test files — a debt this project has tracked openly as an open thread
@@ -585,9 +585,9 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --all-extras --frozen
 
-      # **A ratchet, not a gate.** 157 findings today. This job fails if the
+      # **A ratchet, not a gate.** 156 findings today. This job fails if the
       # number goes *up* and does not fail if it goes down, which is the only shape
-      # that works on an existing debt: a hard gate at 157 blocks every commit,
+      # that works on an existing debt: a hard gate at 156 blocks every commit,
       # and deleting the debt in one sweeping commit is the thing this project has
       # deliberately not done five times.
       #

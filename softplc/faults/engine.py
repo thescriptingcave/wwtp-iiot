@@ -95,6 +95,24 @@ class ActiveFault:
     start_s: float
     end_s: float | None
 
+    #: Targets this *instance* has frozen, and the value each was frozen at.
+    #:
+    #: **It belongs here rather than on the engine, and that is the whole fix.**
+    #: A frozen value is a property of one fault occurrence — "the reading when
+    #: *this* fault began" — and the engine used to hold it in a single
+    #: `self._frozen: dict[str, ...]` keyed by target alone. One dict, one capture
+    #: per target per *engine lifetime*, cleared only by `clear()` and never by
+    #: `_retire()`. So a second flatline on the same target reported a value
+    #: frozen at the **first** one's onset: a transmitter that stuck in the morning
+    #: went on reporting the morning's reading for the rest of the run, and the
+    #: fault appeared never to end.
+    #:
+    #: Nothing observed it, because every seeded week arms each sensor fault exactly
+    #: once. It is here on the instance so that retiring the fault discards the
+    #: freeze automatically — no clearing logic to get wrong, and two overlapping
+    #: instances each keep their own.
+    frozen: dict[str, float | None] = field(default_factory=dict)
+
     @property
     def id(self) -> str:
         return self.spec.id
@@ -201,9 +219,6 @@ class FaultEngine:
         self.faults, self.scenarios = load_faults()
         self.active: list[ActiveFault] = []
         self.now_s: float = 0.0
-        #: Reported values frozen by sensor faults, so a flatline holds rather
-        #: than tracking whatever the process happens to be doing.
-        self._frozen: dict[str, float | None] = {}
         #: Equipment states forced by process faults, and the states to restore.
         self._forced_states: dict[str, int] = {}
         self._original_states: dict[str, int] = {}
@@ -240,13 +255,17 @@ class FaultEngine:
         Effects are reverted rather than merely stopped, because a sensor fault
         that has been frozen into a reported value must not leave that value
         wrong after the fault clears.
+
+        The frozen values themselves need no reverting here: they live on
+        ``ActiveFault.frozen``, so emptying ``self.active`` discards them. That is
+        the point of putting them there — the guarantee this docstring promises is
+        now structural rather than a line somebody has to remember to clear.
         """
         for eq, state in self._forced_states.items():
             self.plant.snapshot  # no-op: states are rebuilt each snapshot
             self._restore_state(eq, state)
         self._forced_states.clear()
         self._original_states.clear()
-        self._frozen.clear()
         for dig_id, saved in self._digester_original.items():
             if dig_id == "DIG-1":
                 self.plant.digester.souring = saved["souring"]
@@ -479,15 +498,19 @@ class FaultEngine:
             snap.values[target] = min(hi, max(lo, true_value + bias))
 
         elif kind == "sensor_flatline":
-            # Freeze at the value captured when the fault began, and keep it
-            # there. A flatline that still wanders is not a flatline.
+            # Freeze at the value captured when **this instance** began, and keep
+            # it there. A flatline that still wanders is not a flatline.
             #
             # A frozen ``None`` is legitimate: an instrument that had already
             # stopped answering freezes at "not answering", and a dead
             # instrument is exactly as flat as a stuck one.
-            if target not in self._frozen:
-                self._frozen[target] = true_value
-            frozen = self._frozen[target]
+            #
+            # Keyed on the fault, not on the engine — see ``ActiveFault.frozen`` for
+            # why that is the whole difference between a fault that ends when it
+            # says it does and one that reports its first reading forever.
+            if target not in af.frozen:
+                af.frozen[target] = true_value
+            frozen = af.frozen[target]
             if frozen is None:
                 snap.values[target] = None
             else:

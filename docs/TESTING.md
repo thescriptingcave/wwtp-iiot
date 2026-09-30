@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 750 | no |
+| Unit, no database | 751 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -22,7 +22,7 @@ not**.
 | Extracted queries (`sql/TablePlus/`) | 78 files, run against a live database | yes |
 | Analyst notebooks | 11 notebooks, 4 checks each | yes — and their own pinned database |
 | `mypy` | clean across 66 source files | no |
-| `ruff` | clean on the gated packages; 157 tracked findings elsewhere | no |
+| `ruff` | clean on the gated packages; 156 tracked findings elsewhere | no |
 
 `mypy` runs over `softplc gateway storage alarms scada tools ui` and the count
 is what it reports, so it moves whenever a module is added. The notebook row
@@ -48,7 +48,7 @@ Per file, for the ones worth naming:
 | `test_process.py` | 40 | the chemistry and the control loops, dimensionally |
 | `test_scada_contract.py` | 37 | the generated flows — and it *executes their SQL* |
 | `test_scanloop.py` | 31 | pacing, metrics, fault propagation |
-| `test_faults.py` | 28 | the eleven faults and what each one does to the plant |
+| `test_faults.py` | 29 | the eleven faults and what each one does to the plant, and that a second flatline freezes at its own onset |
 | `test_control.py` | 26 | DO control, chlorine dose, SRT |
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |

@@ -201,7 +201,7 @@ check: lint lint-debt types test sql lessons  ## everything CI would run
 
 # **Scoped, and the scoping is on the label.**
 #
-# `ruff check .` reports 157 findings, almost all `E501` and `PLC0415` in
+# `ruff check .` reports 156 findings, almost all `E501` and `PLC0415` in
 # `softplc/process/units.py`, `softplc/servers/opcua.py` and the Phase 1-2 test
 # files. That debt has been tracked as an open thread since Phase 1 rather than
 # swept into a commit claiming to be about something else, and
