@@ -20,7 +20,8 @@ That is the whole thing, and it is one command because the first version of this
 section was five and every one of them was a thing you could get wrong in the
 order. `make notebooks` brings up the database, seeds **its own** database,
 executes all eleven, and fails if a number in the prose no longer matches what
-that database says. It takes about six minutes, most of it the first seed.
+that database says. **About 90 seconds once `wwtp_notebooks` exists**; the first
+run adds the seed, which is most of the time either way.
 
 **They read a separate database, `wwtp_notebooks`, and not `wwtp`.** This is the
 one design decision in the series that needs justifying, so here is the whole of
@@ -96,6 +97,19 @@ with `open notebooks/read/`:
 open notebooks/read/
 ```
 
+It also takes a subset, which is the difference between a minute and a minute
+forty:
+
+```bash
+make notebooks-read NB_ONLY="05 09"        # just those two
+python -m tools.notebook_read --no-execute 03   # re-render, do not run
+```
+
+`--no-execute` re-renders the **committed** outputs without touching the
+database. It is much faster and it is worth knowing which one you are looking at:
+an executed render is evidence the notebook runs, a re-render is only a
+formatting change.
+
 Read it, do not cite it. If a number in that HTML disagrees with the source
 markdown, the source markdown is right, because the markdown is what
 `make notebooks` checks.
@@ -133,8 +147,27 @@ interpreter*, which has no `psycopg` and no pandas, and the failure is a
 `ModuleNotFoundError` on cell one that reads like the project is broken. That is
 why JupyterLab lives in the venv: `uv run` and the dependencies are the same
 environment by construction. If JupyterLab shows a kernel picker, pick
-`Python 3 (ipykernel)` and check the status bar says
-`/Users/dev/Developer/wwtp-iiot/.venv`.
+`Python 3 (ipykernel)` and check the status bar names this repository's
+`.venv` — if it names anything under `anaconda3`, `miniconda3`, `pyenv` or
+`/usr/`, you are in the wrong interpreter and cell one will tell you so.
+
+**`make notebooks-read` had exactly that bug, and it is the reason
+`tools/notebook_read.py` exists.** It used to shell out to
+
+    jupyter nbconvert --to html --execute
+
+and `nbconvert`'s command line resolves a kernel by *name*. Every notebook here
+declares `kernelspec.name = "python3"`, and on a machine with more than one
+Python that is not a name that identifies anything. Here it resolved to
+`/opt/homebrew/anaconda3/bin/python`, so all eleven died on cell one — while
+`make notebooks`, running the same eleven through nbclient in-process, was
+green on the same machine on the same day. The two paths agreed about nothing.
+
+So `make notebooks-read` now goes through the same `NotebookClient` call the gate
+uses and renders with `HTMLExporter` *without* `--execute`, which means the
+rendering half has no kernel to choose and cannot drift from the gate later.
+`tests/test_notebook_kernels.py` fails if anything in this repository starts a
+notebook through nbconvert's command line again.
 
 All three of these read `notebooks/_data.py` for the port, so the port in a
 connection error tells you which database you reached and nothing else.

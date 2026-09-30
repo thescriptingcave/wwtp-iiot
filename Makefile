@@ -158,6 +158,12 @@ TEST_PORT  ?= 55432
 NB_PORT  ?= 8899
 NB_TOKEN := $(shell uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
 
+# Which notebooks `make notebooks-read` should do, as name fragments. Empty means
+# all of them. A variable rather than a positional argument because the recipe
+# line is quoted — without one, `make notebooks-read 05 09` reads `09` as a make
+# goal and fails with a message about a target.
+NB_ONLY ?=
+
 .PHONY: help check lint lint-all lint-debt types test integration sql sql-check \
         up seed wait down clean logs \
         scada scada-flows scada-check dashboards dashboards-check grafana \
@@ -292,15 +298,27 @@ notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 # It goes through this Makefile on purpose. Invoking `python -m jupyter` by hand
 # does not load `.env`, so `dsn()` falls back to port 5432 and fails with a
 # message that names a password rather than the port.
+# **`tools/notebook_read.py`, not `jupyter nbconvert --execute`.** The nbconvert
+# command line resolves a kernel by *name*, and every notebook here declares
+# `kernelspec.name = "python3"` — a name several interpreters answer to. On this
+# machine it answered with `/opt/homebrew/anaconda3/bin/python`, which has no
+# psycopg and no pandas, so every notebook died on cell one with
+# `ModuleNotFoundError: No module named 'notebooks'`.
+#
+# `tools/check_notebooks.py` runs the same eleven notebooks through nbclient
+# in-process and gets the venv interpreter, because the kernel it starts is the
+# process it is running in. Gate green, read path red, same notebooks, same
+# machine, same day: two code paths that execute the same thing and agree
+# nowhere.
+#
+# So both go through the same nbclient call, and this one renders with
+# `HTMLExporter` *without* `--execute`, which means the rendering half has no
+# kernel to choose and cannot disagree with the gate about which one it is.
+#
+# `NB_ONLY` restricts it to notebooks whose names contain one of the fragments:
+#     make notebooks-read NB_ONLY="05 09"
 notebooks-read: notebooks-has-data  ## execute every notebook to notebooks/read/*.html, for reading
-	@mkdir -p notebooks/read
-	@for nb in notebooks/*.ipynb; do \
-		echo "  $$nb"; \
-		MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyter nbconvert \
-			--to html --execute --no-prompt "$$nb" \
-			--output-dir notebooks/read || exit 1; \
-	done
-	@echo "  open: notebooks/read/  ($$(ls notebooks/read/*.html 2>/dev/null | wc -l | tr -d ' ') file(s))"
+	@$(PY) -m tools.notebook_read $(NB_ONLY)
 
 # `make` with no arguments. The prerequisites are the whole point: install
 # everything, bring up the database, stop the gateway, build the notebooks, check
