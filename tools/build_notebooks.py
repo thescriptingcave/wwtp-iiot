@@ -85,6 +85,38 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "notebooks" / "src"
 OUT = ROOT / "notebooks"
 
+#: Every authored-notebook track, by name. A track is a directory holding `src/*.md`
+#: and the generated `*.ipynb` beside them; the only thing that differs between the
+#: analyst notebooks and the ML workshop is which directory and which data the
+#: notebooks read, and that second difference is why `has_database` is here rather
+#: than guessed at.
+#:
+#: **Added for the workshop and deliberately not in place of anything.** The analyst
+#: notebooks are the reason this tool exists and their behaviour is the default, so a
+#: track added here cannot change what `make notebooks` does -- the only way to be
+#: sure of that is to keep running it, which is what the gate does.
+TRACKS: dict[str, Path] = {
+    "notebooks": ROOT / "notebooks",
+    "workshop": ROOT / "workshops" / "ml",
+}
+
+
+def track_paths(name: str) -> tuple[Path, Path]:
+    """`(src, out)` for a track name, refusing anything unrecognised.
+
+    The refusal is the point of passing a name rather than a path. A typo in
+    `--track worksho` would otherwise build nothing, print nothing wrong, and exit
+    zero -- a build step that silently does nothing is the one failure a Makefile
+    cannot detect, because the target after it still runs.
+    """
+    if name not in TRACKS:
+        raise SystemExit(
+            f"unknown notebook track {name!r}; known tracks: "
+            f"{', '.join(sorted(TRACKS))}"
+        )
+    out = TRACKS[name]
+    return out / "src", out
+
 #: Fences that are a code cell and get executed.
 EXECUTED = {"python", "py", "python3"}
 
@@ -304,18 +336,27 @@ def build_one(source: Path) -> dict[str, Any]:
     }
 
 
-def build() -> dict[Path, dict[str, Any]]:
+def build(
+    src_dir: Path | None = None,
+    out_dir: Path | None = None,
+) -> dict[Path, dict[str, Any]]:
     """Every source markdown, paired with the notebook it generates.
 
-    The output is `notebooks/<name>.ipynb`, **not** alongside the source. The
-    first version used `src.with_suffix(".ipynb")`, which keeps the directory
-    and wrote the notebook into `notebooks/src/` — where it would have sat next
-    to its own source and been picked up by the next `SRC.glob`, generating a
-    notebook from a notebook.
+    The output is `<track>/<name>.ipynb`, **not** alongside the source. The first
+    version used `src.with_suffix(".ipynb")`, which keeps the directory and wrote
+    the notebook into `notebooks/src/` — where it would have sat next to its own
+    source and been picked up by the next `src_dir.glob`, generating a notebook
+    from a notebook.
+
+    Both directories default to the analyst notebooks, and they are the only two
+    paths this function writes to, so a caller that passes neither cannot change
+    where anything lands.
     """
+    src_dir = SRC if src_dir is None else src_dir
+    out_dir = OUT if out_dir is None else out_dir
     return {
-        OUT / (src.stem + ".ipynb"): build_one(src)
-        for src in sorted(SRC.glob("*.md"))
+        out_dir / (src.stem + ".ipynb"): build_one(src)
+        for src in sorted(src_dir.glob("*.md"))
     }
 
 
@@ -323,10 +364,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="build_notebooks")
     parser.add_argument("--check", action="store_true",
                         help="report drift instead of writing")
+    parser.add_argument("--track", default="notebooks", choices=sorted(TRACKS),
+                        help="which authored-notebook track to build "
+                             "(default: notebooks, the analyst series)")
     args = parser.parse_args(argv)
 
+    src_dir, out_dir = track_paths(args.track)
     problems: list[str] = []
-    for path, notebook in build().items():
+    for path, notebook in build(src_dir, out_dir).items():
         encoded = json.dumps(notebook, indent=1, ensure_ascii=False) + "\n"
         if args.check:
             if not path.exists():
@@ -349,7 +394,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {problem}", file=sys.stderr)
         return 1
     if not args.check:
-        print("  notebooks are in step with notebooks/src")
+        print(f"  {args.track} are in step with "
+              f"{src_dir.relative_to(ROOT)}")
     return 0
 
 

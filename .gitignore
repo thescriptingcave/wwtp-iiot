@@ -171,3 +171,12 @@ notebooks/.jupyter-url
 
 # Executed HTML from `make notebooks-read`. Derived from the data, like figures.
 notebooks/read/
+
+# The workshop's modelling panel: 3.3 MB for three weeks, 28 MB for twenty-five, and
+# reproducible from `make workshop-seed && make workshop-dataset` against a seeded
+# window. A build artefact that is committed is a build artefact that goes stale,
+# and this one would go stale silently -- the numbers in the prose would be checked
+# against a file nobody remembers regenerating.
+#
+# The *builder* is committed. The panel is not.
+workshops/ml/dataset.csv

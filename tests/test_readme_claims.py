@@ -849,7 +849,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_workshop_dataset.py": 15,
     "tests/test_makefile_env.py": 7,
     "tests/test_lessons_gate_ports.py": 4,
-    "tests/test_notebook_kernels.py": 4,
+    "tests/test_notebook_kernels.py": 7,
     "tests/test_notebook_reset.py": 4,
     "tests/test_jupyter_url.py": 12,
     "tests/test_clean_checkout.py": 5,

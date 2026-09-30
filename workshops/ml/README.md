@@ -114,8 +114,27 @@ not notice any of it, and neither does a `DummyClassifier`.
 
 | File | What it is |
 |---|---|
+| **[`TRAINER.md`](TRAINER.md)** | **Read this before teaching.** The arc, the number at each of six beats, three of which are not in the original plan, and a list of things that will go wrong |
 | `build_dataset.py` | The builder. Pure functions over a frame, IO in `main()`, so `tests/test_workshop_dataset.py` runs without a database |
-| `test_workshop_dataset.py` | 15 tests: the panel is dense, the baseline cannot see the hour it judges, the two row states stay apart, the storm is not a fault |
+| — | 15 tests, in `tests/test_workshop_dataset.py`: the panel is dense, the baseline cannot see the hour it judges, the two row states stay apart, the storm is not a fault |
+
+`make workshop` seeds and builds. `make workshop-notebooks` runs the gate.
+
+## The six beats, and the number at each
+
+Full detail and the failure modes in `TRAINER.md`.
+
+| # | Beat | The number the room should be holding |
+|---|---|---|
+| 1 | The metric turn | accuracy **0.9995** for a model that learned nothing |
+| 2 | The dense panel | **2 of 3** fault kinds have no row in the stored table |
+| 3 | The per-signal baseline | F1 **0.500 → 0.800** |
+| 4 | The forward window | F1 **1.000**, and it cannot ship |
+| 5 | Unsupervised | **0 of 22** fault hours found; 285 of 288 flags are one tag |
+| 6 | Predictive | a seasonal naive beats every model; **90%** of variance is the clock |
+
+**Accuracy never moves** — 0.9995, 0.9997, 0.9998, 1.0000 across all six. That is
+the thesis of the two days.
 
 ## Known limitation, recorded rather than fixed
 

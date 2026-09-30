@@ -31,6 +31,9 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+from tools import build_notebooks, check_notebooks
+
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Anything that hands a notebook to a *command* that will pick a kernel itself.
@@ -270,3 +273,48 @@ def test_the_readme_tells_the_truth_about_how_to_read_them() -> None:
         "notebooks/README.md recommends `make notebooks` and the Makefile has "
         "no such target"
     )
+
+
+# ── the track parameterisation ───────────────────────────────────────────────
+#
+# `build_notebooks` and `check_notebooks` grew a `--track` so the ML workshop can
+# use the same claim-checking gate. The risk is not that it breaks: the risk is that
+# adding a track *silently changes* the analyst notebooks, which are the reason the
+# tool exists. So these tests are about the default, not about the new thing.
+
+
+def test_the_default_track_is_the_analyst_notebooks() -> None:
+    """`--track` omitted must mean today's behaviour, exactly.
+
+    The alternative -- a required argument, or a default that could be overridden by
+    an environment variable -- makes "which track" answerable by something other than
+    the command, and then `make notebooks` stops meaning the analyst series.
+    """
+    assert build_notebooks.track_paths("notebooks") == (
+        build_notebooks.ROOT / "notebooks" / "src",
+        build_notebooks.ROOT / "notebooks",
+    )
+
+
+def test_an_unknown_track_refuses_rather_than_building_nothing() -> None:
+    """A typo must fail loudly.
+
+    `build()` globs a directory. Pointed at one that does not exist it returns an
+    empty dict, and an empty dict is indistinguishable from "everything is up to
+    date" -- so a typo would give a green build that generated nothing, and the
+    Makefile target after it would still run.
+    """
+    with pytest.raises(SystemExit, match="unknown notebook track"):
+        build_notebooks.track_paths("worksho")
+
+
+def test_the_workshop_track_is_csv_backed_and_the_analyst_one_is_not() -> None:
+    """The tracks differ in *kind*, not just in directory, and the flag says so.
+
+    A database-backed track can have its `sql` fences executed and can be
+    fingerprinted. A CSV-backed one has neither, and a gate that asked for them
+    anyway would either fail on a track with no database to miss, or pass vacuously.
+    """
+    assert "notebooks" in check_notebooks.DATABACKED_TRACKS
+    assert "workshop" not in check_notebooks.DATABACKED_TRACKS
+    assert set(build_notebooks.TRACKS) >= set(check_notebooks.DATABACKED_TRACKS)

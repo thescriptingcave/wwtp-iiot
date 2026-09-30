@@ -64,6 +64,16 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 NB = ROOT / "notebooks"
 
+#: Tracks that read a **database**, and so need the connectivity probe and can have
+#: ```sql fences executed. A track that reads a CSV needs neither, and asserting one
+#: would be worse than useless: the probe would fail with "no notebook database" on a
+#: track that has no database to miss.
+#:
+#: This is the one place the two tracks genuinely differ in kind rather than in
+#: degree, and it is why the parameterisation is a flag on the track rather than a
+#: path. Passing a directory would have looked general and been wrong.
+DATABACKED_TRACKS = {"notebooks"}
+
 sys.path.insert(0, str(ROOT))
 
 #: An `output` block in a notebook source. Matched in the *source markdown*, not
@@ -342,7 +352,7 @@ NOT_PORTABLE = re.compile(
 )
 
 
-def check_portable_numbers() -> list[str]:
+def check_portable_numbers(src_dir: Path | None = None) -> list[str]:
     """No notebook may state a number that is a fact about this machine.
 
     **The existing checks cannot catch this, and that is not a gap in them.** Every
@@ -397,7 +407,7 @@ def check_portable_numbers() -> list[str]:
     produces a `# noqa` comment, and from there every line is one.
     """
     problems: list[str] = []
-    for source in sorted((NB / "src").glob("*.md")):
+    for source in sorted((NB / "src" if src_dir is None else src_dir).glob("*.md")):
         in_python = False
         for number, line in enumerate(
             source.read_text(encoding="utf-8").splitlines(), 1
@@ -422,17 +432,26 @@ def check_portable_numbers() -> list[str]:
     return problems
 
 
-def main(argv: list[str] | None = None) -> int:
-    from tools import build_notebooks
+def _database_is_the_pinned_one() -> bool:
+    """Is the notebook database reachable, and is it the seed the prose describes?
 
-    only = list(argv if argv is not None else sys.argv[1:])
+    The seed fingerprint is the one gate here that is about *this* data rather than
+    about the prose: the analyst notebooks' numbers are written for a pinned week, so
+    a database that is merely reachable is not enough. A CSV-backed track has no
+    fingerprint to check, and asking for one would be asking a question with no
+    answer available — which is why the caller guards on `DATABACKED_TRACKS` rather
+    than this returning something unhelpful.
 
-    # Probe the connection rather than reading an environment variable. The
-    # seeder checks `POSTGRES_HOST` because it runs *in a container* where
-    # compose sets it to `db`; run from a laptop the variable is legitimately
-    # unset and `storage.postgres.schema.dsn()` defaults to 127.0.0.1. Copying
-    # the seeder's check would have refused to run here, which is the one place
-    # this gate actually gets used.
+    Extracted from `main` because the two checks are a preamble with a contract
+    between them (print, explain, return the exit code) and inlining it twice in
+    different shapes is how a gate ends up reporting a different problem on the way
+    out than on the way in.
+    """
+    # Probe the connection rather than reading an environment variable. The seeder
+    # checks `POSTGRES_HOST` because it runs *in a container* where compose sets it
+    # to `db`; run from a laptop the variable is legitimately unset and
+    # `storage.postgres.schema.dsn()` defaults to 127.0.0.1. Copying the seeder's
+    # check would have refused to run here, which is the one place this gate is used.
     try:
         from notebooks._data import connect
 
@@ -443,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         print("    python -m tools.notebook_data    (or: make notebooks-data)",
               file=sys.stderr)
-        return 2
+        return False
 
     from tools.notebook_data import status
 
@@ -452,11 +471,32 @@ def main(argv: list[str] | None = None) -> int:
     if "the pinned seed" not in current:
         print("  the notebooks' prose was written for the pinned seed and this is "
               "not it.\n  Re-seed: python -m tools.notebook_data", file=sys.stderr)
+        return False
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    from tools import build_notebooks
+
+    parser = argparse.ArgumentParser(prog="check_notebooks")
+    parser.add_argument("--track", default="notebooks",
+                        choices=sorted(build_notebooks.TRACKS),
+                        help="which authored-notebook track to check "
+                             "(default: notebooks, the analyst series)")
+    parser.add_argument("notebooks", nargs="*",
+                        help="name fragments selecting notebooks, e.g. `05 06`")
+    args = parser.parse_args(argv)
+    only = list(args.notebooks)
+    src_dir, out_dir = build_notebooks.track_paths(args.track)
+
+    if args.track in DATABACKED_TRACKS and not _database_is_the_pinned_one():
         return 2
 
     problems: list[str] = []
 
-    built = build_notebooks.build()
+    built = build_notebooks.build(src_dir, out_dir)
     # A name fragment selects notebooks (`... 05 06`); drift is still checked for all.
     selected = {path: nb for path, nb in built.items()
                 if not only or any(o in path.name for o in only)}
@@ -496,15 +536,13 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             problems.append(f"{path.name} does not execute")
             continue
-        problems.extend(check_outputs(
-            path, NB / "src" / (path.stem + ".md"), notebook,
-        ))
-        problems.extend(check_prose_numbers(
-            NB / "src" / (path.stem + ".md"), notebook,
-        ))
-        problems.extend(check_sql_fences(NB / "src" / (path.stem + ".md")))
+        source = src_dir / (path.stem + ".md")
+        problems.extend(check_outputs(path, source, notebook))
+        problems.extend(check_prose_numbers(source, notebook))
+        if args.track in DATABACKED_TRACKS:
+            problems.extend(check_sql_fences(source))
 
-    problems.extend(check_portable_numbers())
+    problems.extend(check_portable_numbers(src_dir))
 
     if problems:
         for problem in problems:

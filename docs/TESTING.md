@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 783 | no |
+| Unit, no database | 786 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -64,7 +64,7 @@ Per file, for the ones worth naming:
 | `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
 | `test_makefile_env.py` | 7 | that make's fast path cannot strip `.env` from a recipe again |
 | `test_lessons_gate_ports.py` | 4 | that the lesson gate's port allocation is not an OS default |
-| `test_notebook_kernels.py` | 4 | that nothing runs a notebook through nbconvert's command line, which picks a kernel by name |
+| `test_notebook_kernels.py` | 7 | that nothing runs a notebook through nbconvert's command line, which picks a kernel by name |
 | `test_notebook_reset.py` | 4 | that a generated notebook stays output-free, and that discarding a Jupyter session reports before it reverts |
 | `test_jupyter_url.py` | 12 | that the JupyterLab token file can never be committed, that `--stop` cannot kill the wrong process, and that the browser is opened only where there is one |
 | `test_clean_checkout.py` | 5 | that `compose.yaml`'s required variables are all in `.env.example`, and that the template holds no real credential |

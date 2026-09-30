@@ -304,6 +304,61 @@ notebooks-build:  ## regenerate the .ipynb files from notebooks/src/*.md
 # It cannot tell you whether you meant to keep something, so it says plainly what
 # it is doing. Edits belong in `notebooks/src/*.md` — the `.ipynb` is an artefact
 # and a hand-edit there is lost the next time anyone builds.
+# ── the machine-learning workshop ──────────────────────────────────────────────
+#
+# Three targets, in dependency order, so a clean checkout can reach the dataset
+# without reading the README. The defaults are the *measured* ones from plan §4.6:
+# three weeks at 1 s is enough for every tier-A result, and 25 weeks is a flag rather
+# than the default because it is 2.2 M rows for a lesson that does not need them.
+#
+# `WORKSHOP_DAYS` and the seeder arguments below MUST stay in step: the labels are
+# derived from them rather than read from the data, and a mismatch does not fail --
+# it produces a table whose labels are confidently wrong. That is the one failure
+# mode in this repository that has no alarm, which is why the builder's README says
+# it three times.
+WORKSHOP_DB    ?= wwtp_ml
+WORKSHOP_WEEKS ?= 3
+WORKSHOP_HOURS ?= 36
+WORKSHOP_END   ?= 2026-09-29T00:00:00Z
+
+workshop-seed: setup  ## seed the workshop window: $(WORKSHOP_WEEKS) weeks, a fault every $(WORKSHOP_HOURS) h
+	@echo "── seeding $(WORKSHOP_DB): $(WORKSHOP_WEEKS) weeks, a fault every $(WORKSHOP_HOURS) h ──"
+	@echo "   $$(($(WORKSHOP_WEEKS) * 7)) days at 1 s. This writes about $$(($(WORKSHOP_WEEKS) * 7 * 1000000 / 1000000))M rows."
+	POSTGRES_DB=$(WORKSHOP_DB) $(PY) -m storage.seed.main \
+	  --days $$(($(WORKSHOP_WEEKS) * 7)) --sample-interval 1 \
+	  --fault-every-hours $(WORKSHOP_HOURS) --storm-after 36 \
+	  --end $(WORKSHOP_END) --reset
+
+workshop-dataset: setup  ## emit the tidy modelling panel from the seeded window
+	@echo "── building the panel ──"
+	@if [ -z "$$WORKSHOP_DSN" ]; then \
+	  echo "  set WORKSHOP_DSN to a connection string for the seeded window,"; \
+	  echo "  e.g.  make workshop-dataset WORKSHOP_DSN='host=127.0.0.1 port=55433 user=wwtp password=... dbname=$(WORKSHOP_DB)'"; \
+	  exit 1; \
+	fi
+	$(PY) -m workshops.ml.build_dataset \
+	  --dsn "$$WORKSHOP_DSN" \
+	  --days $$(($(WORKSHOP_WEEKS) * 7)) \
+	  --every-hours $(WORKSHOP_HOURS) \
+	  --end $(WORKSHOP_END) \
+	  --out workshops/ml/dataset.csv
+
+workshop-has-data:  ## fail unless the panel exists and is not empty
+	@if [ ! -s workshops/ml/dataset.csv ]; then \
+	  echo "  workshops/ml/dataset.csv is missing."; \
+	  echo "  run: make workshop-seed WORKSHOP_DSN=... && make workshop-dataset WORKSHOP_DSN=..."; \
+	  exit 1; \
+	fi
+	@echo "  workshops/ml/dataset.csv: $$(wc -l < workshops/ml/dataset.csv | tr -d ' ') lines"
+
+workshop-notebooks: setup workshop-has-data  ## build, execute and check the workshop notebooks
+	@echo "── the workshop notebooks ──"
+	$(PY) -m tools.build_notebooks --track workshop
+	$(PY) -m tools.check_notebooks --track workshop
+
+workshop: workshop-dataset  ## seed and build in one go
+	@echo "── done. Next: open workshops/ml/README.md ──"
+
 notebooks-reset:  ## discard what a Jupyter session wrote back, and report it
 	@dirty=$$(git diff --name-only -- 'notebooks/*.ipynb'); \
 	if [ -z "$$dirty" ]; then \
