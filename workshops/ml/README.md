@@ -30,24 +30,101 @@ The panel is 57 × 4,200 = 239,400 rows, 194 of them positive — a base rate of
 
 ## Build it
 
-The dataset is a separate database, not the plant's, and it is not built into
-`wwtp` by accident:
-
 ```bash
-# 1. seed a 25-week window with a fault every 36 hours, at 60 s sampling
-POSTGRES_DB=wwtp_ml tools/py.sh -m storage.seed.main \
-    --days 175 --sample-interval 60 --fault-every-hours 36 \
-    --storm-after 36 --end 2026-09-29T00:00:00Z --reset
-
-# 2. emit the tidy table
-WORKSHOP_DSN="host=127.0.0.1 port=55433 user=wwtp dbname=wwtp_ml" \
-    uv run --extra workshop python -m workshops.ml.build_dataset --days 175
+make workshop            # 3 weeks at 1 s -> wwtp_ml and workshops/ml/dataset.csv
 ```
 
-`--days`, `--end` and `--every-hours` **must match the seed**, because the labels
-are derived from those three numbers rather than read from the data. A mismatch
+That is the whole of it, and it is a make target rather than a pair of commands
+because of how this repository loads its environment.
+
+**Do not hand-write the seeder command.** This page used to say this — in a `bash`
+fence, as a command to run, which is why it survived review for as long as it did:
+
+```text
+POSTGRES_DB=wwtp_ml tools/py.sh -m storage.seed.main --days 175 ... --reset
+```
+
+It is a `text` fence now rather than a `bash` one on purpose. The counter-example has
+to be quotable without being runnable, and a fence language is the only thing in
+Markdown that distinguishes the two. `tests/test_readme_teaches_no_destructive_command.py`
+checks that no `bash` fence anywhere in the docs pairs `POSTGRES_DB=` with
+`--reset`, which is the shape of the mistake; a plain grep could not tell this
+warning from the advice it replaced.
+
+and it was **wrong in a way that destroys data**. `tools/py.sh` sources
+`tools/env.sh`, which sources `.env` *after* the inherited environment -- so the
+`POSTGRES_DB=wwtp_ml` in front of the command is overwritten by whatever `.env`
+says, which is `wwtp`. That command does not seed the workshop database. It seeds
+**the plant's database, with `--reset`.**
+
+`make workshop-seed` passes `--database $(WORKSHOP_DB)` as an *argument* for exactly
+this reason: an argument cannot be overridden from the environment. The seeder also
+refuses `--reset` without an explicit `--database`, so the mistake fails instead of
+wiping. See `storage/seed/main.py::_target_database`.
+
+`WORKSHOP_DSN` is not required either. `make workshop-dataset` derives the
+connection string from `.env` the way everything else here does; the old
+`WORKSHOP_DSN="host=... port=55433 ..."` was a hand-transcription of information the
+Makefile already had, and it is wrong on any machine whose `.env` port is not 55433
+-- which is every machine that has not been configured yet.
+
+The three `WORKSHOP_*` values **must match between the seed and the builder**,
+because the labels are derived from them rather than read from the data. A mismatch
 does not fail: it produces a table whose labels are confidently wrong, which is why
-the CLI takes them rather than inferring them.
+the builder takes `--days`/`--end`/`--every-hours` as arguments rather than
+inferring them, and why the defaults live in the Makefile rather than in two places.
+
+### The 25-week window
+
+```bash
+make workshop-long       # 25 weeks at 1 s -> wwtp_ml25 and dataset-25wk.csv
+```
+
+**It is not a laptop command.** Measured, by running it until it had to be stopped:
+
+| | 3 weeks (`make workshop`) | 25 weeks (`make workshop-long`) |
+|---|---|---|
+| rows stored | 2,995,731 | **97.5 M at 92.5% of the window** |
+| disk | 731 MB | **23 GB at 92.5%**, so ~25 GB complete |
+| time | under 2 min | **66 minutes to 92.5%**, so ~72 min |
+| fault hours on the panel | 22 | ~116 |
+
+Two things about that table, both of which cost somebody an hour.
+
+**The projection was wrong by 4x.** Extrapolating from the 3-week database predicted
+6.1 GB. It is at least 23 GB. Extrapolating from *one* window's row count to
+another window's is not arithmetic, it is hope -- and the error is multiplicative in
+the sampling rate, which is exactly the parameter you would change to make it
+cheaper.
+
+**The growth is not linear.** 25 weeks stored 97.5 M rows where 8.3x the duration of a
+3-week window storing 2.99 M would predict 24.9 M. Rows per day went from 998 k to
+557 k, so the historian's deadband is suppressing *fewer* writes per day on the long
+run. That is not explained here, only recorded; the 3-week panel was measured
+separately and the two datasets do not agree about their own storage ratio.
+
+If you need the long window on a machine with less than 30 GB free, build it at a
+coarser `--sample-interval`. The fault schedule is derived in **hours**, so the count
+of fault hours -- the thing notebook 03 is about -- does not change. What does
+change is `n`, and the per-signal baseline is measured in `n`.
+
+It writes to its **own database and its own CSV**. That is not tidiness: the
+`workshop-dataset` recipe originally hardcoded `--out workshops/ml/dataset.csv`, so
+`WORKSHOP_WEEKS=25 make workshop` worked and silently replaced the 3-week panel that
+every number in `TRAINER.md` and all six notebooks were measured on. Nothing failed.
+The output path is now `$(WORKSHOP_PANEL)` and `tests/test_workshop_panel_paths.py`
+keeps it that way.
+
+To check what the extra data actually buys:
+
+```bash
+uv run --extra workshop python -m workshops.ml.measure_long_window
+```
+
+It runs notebook 03's experiment on both panels and prints the one number that
+decides whether the comparison means anything: the split-to-split spread within a
+single configuration, divided by the difference between two configurations. See
+`TRAINER.md` for the measured result.
 
 ## The three row states, and why two columns
 

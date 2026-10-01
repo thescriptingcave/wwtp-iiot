@@ -333,6 +333,13 @@ WORKSHOP_DB    ?= wwtp_ml
 WORKSHOP_WEEKS ?= 3
 WORKSHOP_HOURS ?= 36
 WORKSHOP_END   ?= 2026-09-29T00:00:00Z
+# **Parameterised, not hardcoded.** `--out workshops/ml/dataset.csv` meant that
+# building any window other than the default overwrote the panel the six notebooks
+# read, so "build the 25-week one" silently replaced the 3-week dataset every
+# number in `TRAINER.md` was measured on. The name matches the environment
+# variable `workshops/ml/_data.py` reads, so `WORKSHOP_PANEL=... make workshop-dataset`
+# writes the CSV that `WORKSHOP_PANEL=... make workshop-notebooks` then reads.
+WORKSHOP_PANEL ?= workshops/ml/dataset.csv
 
 workshop-seed: setup  ## seed the workshop window: $(WORKSHOP_WEEKS) weeks, a fault every $(WORKSHOP_HOURS) h
 	@echo "── creating $(WORKSHOP_DB) if it is not there ──"
@@ -369,15 +376,15 @@ workshop-dataset: setup  ## emit the tidy modelling panel from the seeded window
 	  --days $$(($(WORKSHOP_WEEKS) * 7)) \
 	  --every-hours $(WORKSHOP_HOURS) \
 	  --end $(WORKSHOP_END) \
-	  --out workshops/ml/dataset.csv
+	  --out $(WORKSHOP_PANEL)
 
 workshop-has-data:  ## fail unless the panel exists and is not empty
-	@if [ ! -s workshops/ml/dataset.csv ]; then \
-	  echo "  workshops/ml/dataset.csv is missing."; \
+	@if [ ! -s $(WORKSHOP_PANEL) ]; then \
+	  echo "  $(WORKSHOP_PANEL) is missing."; \
 	  echo "  run: make workshop"; \
 	  exit 1; \
 	fi
-	@echo "  workshops/ml/dataset.csv: $$(wc -l < workshops/ml/dataset.csv | tr -d ' ') lines"
+	@echo "  $(WORKSHOP_PANEL): $$(wc -l < $(WORKSHOP_PANEL) | tr -d ' ') lines"
 
 # A JupyterLab for the workshop, rooted at `workshops/ml/` and on its own port.
 #
@@ -426,6 +433,33 @@ workshop-notebooks: setup workshop-has-data  ## build, execute and check the wor
 # command, from a target whose own description promised the seed.
 workshop: workshop-seed workshop-dataset  ## seed the window and build the panel, in one go
 	@echo "── done. Next: open workshops/ml/README.md ──"
+
+# The 25-week window, into its own database and its own panel.
+#
+# **Why a separate target and not just `WORKSHOP_WEEKS=25 make workshop`:** that
+# works, and it overwrites `workshops/ml/dataset.csv` -- the 3-week panel every
+# number in `TRAINER.md` and all six notebooks were measured on. This target points
+# both the database and the CSV somewhere else, so building the long window is a
+# measurement you can take without changing what the workshop reads.
+#
+# Cost, measured by running it until the disk ran short: 25 weeks at 1 s reached
+# 97.5 M rows and **23 GB at 92.5% of the window**, in 66 minutes. So it needs
+# roughly 30 GB free and about 72 minutes. Extrapolating from the 3-week database
+# instead predicted 6.1 GB and was wrong by 4x, which is why the figure here is the
+# measured one and not the arithmetic one. That is why `WORKSHOP_WEEKS` stays at 3
+# and why `TRAINER.md` says not to use 25 weeks on a laptop projector: it is a thing
+# you build once on a server to answer a question, not a thing a room builds.
+LONG_DB    ?= wwtp_ml25
+LONG_PANEL ?= workshops/ml/dataset-25wk.csv
+WORKSHOP_LONG_WEEKS ?= 25
+
+workshop-long:  ## build the 25-week window: wwtp_ml25 + dataset-25wk.csv (~25 GB, ~72 min)
+	@echo "── this writes $(LONG_DB) and $(LONG_PANEL); the 3-week panel is untouched ──"
+	@echo "── needs about 30 GB free and 72 minutes; measured, see the comment above ──"
+	$(MAKE) workshop-seed WORKSHOP_DB=$(LONG_DB) WORKSHOP_WEEKS=$(WORKSHOP_LONG_WEEKS)
+	$(MAKE) workshop-dataset WORKSHOP_DB=$(LONG_DB) WORKSHOP_WEEKS=$(WORKSHOP_LONG_WEEKS) \
+	  WORKSHOP_PANEL=$(LONG_PANEL)
+	@echo "── done. $(LONG_PANEL) ──"
 
 notebooks-reset:  ## discard what a Jupyter session wrote back, and report it
 	@dirty=$$(git diff --name-only -- 'notebooks/*.ipynb'); \

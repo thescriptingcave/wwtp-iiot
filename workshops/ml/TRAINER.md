@@ -206,11 +206,35 @@ being told.
 
 Say this if you are asked, because it is true:
 
-- **The 25-week window has never been built in the repo's own compose setup.** Every
-  number in this guide is from the 3-week default, which has 22 fault hours — and
-  notebook 03 is largely about the fact that 22 is too few to measure anything. The
-  25-week window carries 116 instances and is the obvious next thing to build; until
-  it is, beat 3's conclusion stands and beat 4's improvement stays unmeasurable.
+- **The 25-week window was built to 92.5% and then stopped, so beat 3's remedy is
+  still untested.** Every number in this guide is from the 3-week default, which has
+  22 fault hours — and notebook 03 is largely about the fact that 22 is too few to
+  measure anything. The remedy is ~116 instances.
+
+  It was attempted, on 2026-10-01, and here is what that cost, because the estimate
+  in the README at the time was wrong by 4x:
+
+  | | predicted | measured |
+  |---|---|---|
+  | disk | 6.1 GB | **23 GB at 92.5%** of the window |
+  | time | ~17 min | **66 min to 92.5%** |
+  | rows | ~25 M | **97.5 M at 92.5%** |
+
+  It was stopped with 3.7 GB free on the author's disk, which is not a margin. Two
+  things follow, and the second is the useful one:
+
+  - **"More data" is a server operation, not a laptop one.** If you tell a room that
+    the fix for notebook 03 is a bigger dataset, say the number: about 30 GB free
+    and 72 minutes.
+  - **The growth is not linear, and nobody knows why.** 25 weeks stored 97.5 M rows
+    where 8.3x the duration of the 3-week window storing 2.99 M would predict 24.9 M.
+    Rows per day fell from 998 k to 557 k, so the historian's deadband suppresses
+    *fewer* writes per day on the long run. This is recorded, not explained. If a
+    room asks, "that is a real puzzle and nobody has chased it" is the true answer
+    and a good one to give.
+
+  Until the window completes, beat 3's conclusion stands on the 3-week panel and
+  beat 4's improvement stays unmeasurable.
 - **No sequence model was fitted, and that is the recommendation.** Notebook 06 shows
   90% of the variance is the clock and a tree captures it. A `Conv1d` or `GRU` here
   would be bought to lose, and the honest test is a room building one anyway and

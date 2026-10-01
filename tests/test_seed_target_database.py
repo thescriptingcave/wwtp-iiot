@@ -373,6 +373,57 @@ def test_notebook_data_names_the_database_it_resets() -> None:
 # this test produces rather than a bug a person finds.
 
 
+#: Files allowed to contain a broken seeder invocation, because their entire job is
+#: to show a reader what not to do. Both quote `POSTGRES_DB=wwtp_ml ... --reset` as
+#: a counter-example, and the finder correctly reports both.
+#:
+#: **This list is itself checked.** `test_a_quoting_fixture_actually_quotes_one`
+#: fails if a file is added here without quoting a broken invocation, so the
+#: exclusion cannot grow into a quiet hole in the check. An exclusion list that
+#: only ever grows, with nothing verifying its members still need it, is how a gate
+#: stops being a gate while still reporting green -- the outcome this whole file
+#: exists to prevent.
+#:
+#: It was one entry when the second was added by exactly this failure: a new test
+#: documenting that the workshop README used to teach a destructive command quoted
+#: that command in its own docstring, and this check failed on its own fixture.
+QUOTING_FIXTURES = (
+    "tests/test_seed_target_database.py",
+    "tests/test_readme_teaches_no_destructive_command.py",
+)
+
+
+def _is_a_quoting_fixture(where: str) -> bool:
+    return any(where.startswith(name) for name in QUOTING_FIXTURES)
+
+
+def test_a_quoting_fixture_actually_quotes_one() -> None:
+    """Every name in `QUOTING_FIXTURES` must earn its place.
+
+    Without this, `QUOTING_FIXTURES` could absorb any file at any time and the
+    `--reset` rule would quietly stop applying to it. The failure this catches is
+    invisible: the gate stays green and the coverage is gone.
+    """
+    offenders = []
+    for name in QUOTING_FIXTURES:
+        broken = [
+            argv
+            for where, argv, _kind in _invocations()
+            if where.startswith(name)
+            and _has(argv, "--reset")
+            and not _has(argv, "--database")
+        ]
+        if not broken:
+            offenders.append(name)
+    assert not offenders, (
+        "these files are excluded from the --reset rule but no longer contain a "
+        "broken seeder invocation, so the exclusion is now pure lost coverage:\n  "
+        + "\n  ".join(offenders)
+        + "\nEither restore the counter-example or drop the name from "
+        "QUOTING_FIXTURES."
+    )
+
+
 def _invocations() -> list[tuple[str, list[str], str]]:
     """`(where, argv, kind)` for every seeder invocation in the repository.
 
@@ -463,14 +514,10 @@ def test_every_invocation_that_resets_names_its_database() -> None:
     reaches for the first time it is inconvenient — and "inconvenient" is exactly
     the moment the guard exists.
     """
-    # This file is excluded, and it has to be: its own docstring quotes the broken
-    # invocation as a counter-example, so the finder correctly reported it on the
-    # first run. A check that cannot exclude its own fixtures is a check that
-    # cannot carry any.
     offenders = [
         (where, argv)
         for where, argv, _kind in _invocations()
-        if not where.startswith("tests/test_seed_target_database.py")
+        if not _is_a_quoting_fixture(where)
         and _has(argv, "--reset") and not _has(argv, "--database")
     ]
     assert not offenders, (

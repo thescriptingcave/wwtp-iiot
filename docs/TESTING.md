@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 836 | no |
+| Unit, no database | 1038 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -22,7 +22,7 @@ not**.
 | Extracted queries (`sql/TablePlus/`) | 78 files, run against a live database | yes |
 | Analyst notebooks | 11 notebooks, 4 checks each | yes — and their own pinned database |
 | Workshop notebooks | 6 notebooks, 3 checks each | no — they read a CSV |
-| `mypy` | clean across 72 source files | no |
+| `mypy` | clean across 73 source files | no |
 | `ruff` | clean on the gated packages; 156 tracked findings elsewhere | no |
 
 `mypy` runs over `softplc gateway storage alarms scada tools ui` and the count
@@ -30,6 +30,18 @@ is what it reports, so it moves whenever a module is added. The notebook row
 counts the *checks* rather than the tests: `make notebooks` runs four gates per
 notebook (output fences, prose numbers, SQL fences, seed fingerprint) and 11
 notebooks, which is 44 assertions a reader can name.
+
+The `test_readme_teaches_no_destructive_command.py` row is 171 because it is
+parametrised over every markdown file in the repository: three rules, applied
+per file. It exists because `workshops/ml/README.md` used to teach
+
+    POSTGRES_DB=wwtp_ml tools/py.sh -m storage.seed.main ... --reset
+
+which does **not** seed `wwtp_ml`. `tools/py.sh` sources `.env` after the
+inherited environment, so the assignment is overwritten and the command resets the
+plant's own `wwtp`. The check keys on the *fence language*, because the counter-
+example has to stay quotable; a grep cannot tell the warning from the advice it
+replaced.
 
 The workshop notebooks run the **same** gate through `--track`, and get three checks
 rather than four: `sql` fences and the seed fingerprint are switched **off** rather
@@ -61,18 +73,21 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 80 |
+| `test_readme_claims.py` | 83 |
 | `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
+| `test_workshop_panel_paths.py` | 13 | that building the 25-week window cannot overwrite the 3-week panel every workshop notebook reads |
+| `test_measure_long_window.py` | 14 | that the long-window measurement does not leak the future, and measures notebook 03's ratio rather than a different one |
+| `test_readme_teaches_no_destructive_command.py` | 171 | that no runnable fence in any markdown pairs `POSTGRES_DB=` with a database reset |
 | `test_browse_is_not_values.py` | 5 | that no document promises values from `browse`, which reads none |
 | `test_py_wrapper.py` | 3 | that `tools/py.sh` refuses a missing interpreter by name, and that the targets needing Python depend on the install |
 | `test_pinned_seed_is_durable.py` | 4 | that the pinned week has no retention policy eating it, and that the plant's own database still has one |
 | `test_db_ready.py` | 5 | that the readiness check distinguishes an unreachable database from an empty one, and says why |
 | `test_getting_started_agrees.py` | 9 | that the README and the getting-started guide give the same commands, since they had drifted and broken a clean-machine setup |
-| `test_seed_target_database.py` | 18 | that the seeder seeds the database it is told to, and that `--reset` without `--database` is refused |
+| `test_seed_target_database.py` | 19 | that the seeder seeds the database it is told to, and that `--reset` without `--database` is refused |
 | `test_workshop_dataset.py` | 15 | that the modelling panel is dense, that the per-signal baseline cannot see the hour it judges, and that the two row states stay distinguishable |
 | `test_seed_schedule.py` | 15 | that the seeder and the ground truth derive the fault schedule from one function |
 | `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
