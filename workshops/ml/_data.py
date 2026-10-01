@@ -31,6 +31,7 @@ notebook 02, because a participant who hits it here learns nothing.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -150,6 +151,44 @@ def held_out(panel: pd.DataFrame, last: int = 1) -> tuple[Any, Any]:
     return panel[panel["week"] < cut], panel[panel["week"] >= cut]
 
 
+def panel_dsn(database: str | None = None) -> str:
+    """The connection string for the workshop's own database, derived not typed.
+
+    **The point of this function is that nobody has to type a connection string.**
+    `make workshop-seed` finds the database through `POSTGRES_*` in `.env`, exactly
+    as the seeder and the rest of the project do; `make workshop-dataset` used to
+    refuse to start without an explicit `--dsn`, so the workshop's only manual step
+    was:
+
+        export WORKSHOP_DSN='host=127.0.0.1 port=55433 user=wwtp ...'
+
+    which is the same information the Makefile already has, transcribed by hand, and
+    is wrong the moment the port in `.env` is not 55433. A fresh `.env` from
+    `.env.example` ships `POSTGRES_PORT=5432`, so the string in a README is wrong on
+    a machine that has never been configured — which is the machine a reader is on.
+
+    So: `WORKSHOP_DSN` still wins if it is set, because a participant who downloaded
+    a panel and wants to rebuild it elsewhere needs the override. Everything else
+    comes from the environment, the way every other target here finds its
+    database.
+    """
+    import os  # noqa: PLC0415
+
+    explicit = os.environ.get("WORKSHOP_DSN")
+    if explicit:
+        return explicit
+    from storage.postgres.schema import dsn as _dsn  # noqa: PLC0415
+
+    return re.sub(r"dbname=\S+", f"dbname={database or _default_db()}", _dsn())
+
+
+def _default_db() -> str:
+    """The database name `make workshop-seed` uses, so the two cannot disagree."""
+    import os  # noqa: PLC0415
+
+    return os.environ.get("WORKSHOP_DB", "wwtp_ml")
+
+
 def ensure_database(name: str | None = None) -> bool:
     """Create the workshop's database if it is absent. `True` if it created it.
 
@@ -169,7 +208,7 @@ def ensure_database(name: str | None = None) -> bool:
     from psycopg import sql  # noqa: PLC0415
     from storage.postgres.schema import dsn as _dsn  # noqa: PLC0415
 
-    database = name or os.environ.get("POSTGRES_DB") or "wwtp_ml"
+    database = name or _default_db()
     admin = _dsn().replace(f"dbname={database}", "dbname=postgres")
     with psycopg.connect(admin, autocommit=True) as conn:
         if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s",

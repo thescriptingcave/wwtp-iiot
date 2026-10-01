@@ -89,7 +89,6 @@ to this module. Until then, hold out a week from the *middle* of the window.
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -288,10 +287,26 @@ def summarise(panel: pd.DataFrame) -> str:
 
 
 def _read_source(dsn: str, table: str) -> tuple[Any, list[str], Any]:
-    """`(stored, signal_ids, buckets)` for one aggregate table."""
+    """`(stored, signal_ids, buckets)` for one aggregate table.
+
+    A missing database is caught here and re-raised with the command, because
+    psycopg's own message -- `FATAL: database "wwtp_ml" does not exist` -- names the
+    database and not the thing that creates it, and the reader of a workshop has no
+    reason to know that a seed step exists.
+    """
     import psycopg  # noqa: PLC0415
 
-    with psycopg.connect(dsn) as conn:
+    try:
+        conn = psycopg.connect(dsn)
+    except psycopg.OperationalError as exc:
+        if "does not exist" in str(exc):
+            raise SystemExit(
+                "  the workshop database has not been seeded yet.\n\n"
+                "      make workshop\n\n"
+                "  (which seeds the window and then builds this panel.)"
+            ) from exc
+        raise
+    with conn:
         stored = _fetch(conn, f"SELECT * FROM {table}")
         bounds = conn.execute(
             f"SELECT min(bucket), max(bucket) FROM {table}").fetchone()
@@ -343,10 +358,14 @@ def _storm_window() -> tuple[Any, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dsn", default=os.environ.get("WORKSHOP_DSN"),
-                        help="source database. Defaults to $WORKSHOP_DSN, because "
-                             "the workshop dataset is not the plant's own database "
-                             "and must not be built into it by accident.")
+    parser.add_argument(
+        "--dsn", default=None,
+        help="source database. Defaults to $WORKSHOP_DSN, and failing that to the "
+             "POSTGRES_* in .env with dbname=wwtp_ml -- the same derivation "
+             "`make workshop-seed` uses, so the two cannot disagree and nobody has "
+             "to type a connection string. The database name is the workshop's own "
+             "and never the plant's: the builder creates and fills its own.",
+    )
     parser.add_argument("--table", default="reading_1h",
                         help="source aggregate table (default: reading_1h)")
     parser.add_argument("--out", type=Path,
@@ -364,12 +383,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="trailing window for the per-signal baseline, in hours")
     args = parser.parse_args(argv)
 
-    if not args.dsn:
-        parser.error("no --dsn and no $WORKSHOP_DSN; see workshops/ml/README.md")
-
     from notebooks._data import known_event_instances  # noqa: PLC0415
 
-    stored, signals, buckets = _read_source(args.dsn, args.table)
+    from workshops.ml._data import panel_dsn  # noqa: PLC0415
+
+    dsn = args.dsn or panel_dsn()
+    stored, signals, buckets = _read_source(dsn, args.table)
     panel = dense_panel(stored, signals, buckets)
     panel = per_signal_baseline(panel, args.baseline_hours)
     panel = label_panel(panel,

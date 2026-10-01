@@ -358,13 +358,14 @@ workshop-seed: setup  ## seed the workshop window: $(WORKSHOP_WEEKS) weeks, a fa
 
 workshop-dataset: setup  ## emit the tidy modelling panel from the seeded window
 	@echo "── building the panel ──"
-	@if [ -z "$$WORKSHOP_DSN" ]; then \
-	  echo "  set WORKSHOP_DSN to a connection string for the seeded window,"; \
-	  echo "  e.g.  make workshop-dataset WORKSHOP_DSN='host=127.0.0.1 port=55433 user=wwtp password=... dbname=$(WORKSHOP_DB)'"; \
-	  exit 1; \
-	fi
+	# **No WORKSHOP_DSN required.** It used to be, and the refusal printed a
+	# connection string to copy -- the same information this Makefile already has,
+	# transcribed by hand, and wrong the moment `POSTGRES_PORT` in `.env` is not
+	# 55433. A fresh `.env` from `.env.example` ships 5432, so the string in any
+	# document is wrong on the machine a reader is on. The builder derives it now, the
+	# same way the seeder does; `WORKSHOP_DSN` still overrides it for anyone
+	# rebuilding a panel somewhere else.
 	$(PY) -m workshops.ml.build_dataset \
-	  --dsn "$$WORKSHOP_DSN" \
 	  --days $$(($(WORKSHOP_WEEKS) * 7)) \
 	  --every-hours $(WORKSHOP_HOURS) \
 	  --end $(WORKSHOP_END) \
@@ -373,7 +374,7 @@ workshop-dataset: setup  ## emit the tidy modelling panel from the seeded window
 workshop-has-data:  ## fail unless the panel exists and is not empty
 	@if [ ! -s workshops/ml/dataset.csv ]; then \
 	  echo "  workshops/ml/dataset.csv is missing."; \
-	  echo "  run: make workshop-seed WORKSHOP_DSN=... && make workshop-dataset WORKSHOP_DSN=..."; \
+	  echo "  run: make workshop"; \
 	  exit 1; \
 	fi
 	@echo "  workshops/ml/dataset.csv: $$(wc -l < workshops/ml/dataset.csv | tr -d ' ') lines"
@@ -419,7 +420,11 @@ workshop-notebooks: setup workshop-has-data  ## build, execute and check the wor
 	$(PY) -m tools.build_notebooks --track workshop
 	$(PY) -m tools.check_notebooks --track workshop
 
-workshop: workshop-dataset  ## seed and build in one go
+# **Both halves, in that order.** It said "seed and build" and depended only on the
+# build, so on a machine with no `wwtp_ml` it failed with
+# `FATAL: database "wwtp_ml" does not exist` -- which names the database and not the
+# command, from a target whose own description promised the seed.
+workshop: workshop-seed workshop-dataset  ## seed the window and build the panel, in one go
 	@echo "── done. Next: open workshops/ml/README.md ──"
 
 notebooks-reset:  ## discard what a Jupyter session wrote back, and report it
