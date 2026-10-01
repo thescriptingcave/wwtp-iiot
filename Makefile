@@ -378,6 +378,42 @@ workshop-has-data:  ## fail unless the panel exists and is not empty
 	fi
 	@echo "  workshops/ml/dataset.csv: $$(wc -l < workshops/ml/dataset.csv | tr -d ' ') lines"
 
+# A JupyterLab for the workshop, rooted at `workshops/ml/` and on its own port.
+#
+# **Its own port, and that is the whole reason.** `notebooks-open` serves
+# `--notebook-dir=notebooks` on 8899, so the workshop is not in that tree and cannot
+# be reached from it. Parameterising the notebook *tools* for a second track was the
+# first half of making the workshop usable; this is the second half, and without it
+# the gate runs a notebook nobody can open.
+#
+# Different port rather than a second directory under `notebooks/`, because the two
+# tracks are different audiences on different data and a shared server makes it easy
+# to run the wrong one — and a workshop participant following the README should not
+# have to know that `notebooks/` exists.
+WS_PORT  ?= 8898
+WS_TOKEN := $(shell uuidgen 2>/dev/null | tr 'A-Z' 'a-z' | cut -c1-12)
+
+workshop-open: sync workshop-has-data  ## open the workshop notebook in JupyterLab
+	@echo "  kernel : Python 3 (ipykernel) - check the status bar says .venv"
+	@mkdir -p workshops/ml
+	@printf 'http://127.0.0.1:%s/lab?token=%s\n' '$(WS_PORT)' '$(WS_TOKEN)' \
+		> workshops/ml/.jupyter-url
+	@echo "  open   : http://127.0.0.1:$(WS_PORT)/lab?token=$(WS_TOKEN)"
+	@echo "  again  : make workshop-url"
+	@echo "  stop   : make workshop-stop"
+	@( $(PY) -m tools.jupyter_url --port $(WS_PORT) --open --wait 30 2>&1 || true ) & \
+	MPLBACKEND=$${MPLBACKEND:-Agg} $(PY) -m jupyterlab \
+		--notebook-dir=workshops/ml \
+		--IdentityProvider.token=$(WS_TOKEN) \
+		--ServerApp.port=$(WS_PORT) \
+		--no-browser
+
+workshop-url:  ## print the workshop JupyterLab URL
+	@$(PY) -m tools.jupyter_url --port $(WS_PORT)
+
+workshop-stop:  ## stop the workshop JupyterLab
+	@$(PY) -m tools.jupyter_url --port $(WS_PORT) --stop
+
 workshop-notebooks: setup workshop-has-data  ## build, execute and check the workshop notebooks
 	@echo "── the workshop notebooks ──"
 	$(PY) -m tools.build_notebooks --track workshop

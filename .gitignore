@@ -184,3 +184,9 @@ notebooks/read/
 #
 # The *builder* is committed. The panel is not.
 workshops/ml/dataset.csv
+
+# Same reasoning as `notebooks/.jupyter-url`: it holds a token, so it cannot be
+# committed. Separate from the analyst notebooks' because the workshop serves on its
+# own port and writes its own.
+workshops/ml/.jupyter-url
+workshops/ml/.ipynb_checkpoints/
