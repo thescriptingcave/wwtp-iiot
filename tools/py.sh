@@ -60,4 +60,32 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./env.sh
 . "$here/env.sh"
-exec "$here/../.venv/bin/python" "$@"
+# ## Why the interpreter is checked rather than exec'd
+#
+# On a checkout where `uv sync` has never run, `.venv/bin/python` does not exist and
+# `exec` fails with
+#
+#     /path/to/tools/py.sh: line 63: /path/to/tools/../.venv/bin/python:
+#       No such file or directory
+#
+# which names a line of a shell script, not the missing thing and not the command
+# that creates it. `$(PY)` appears in 51 recipes, and the first one to need Python
+# on a fresh clone reported it 60 times while waiting for a database that was already
+# up and healthy -- because `db-live` calls `$(PY)` too, so every poll failed for the
+# same reason and the wait timed out.
+#
+# So: say what is missing, say the one command that fixes it, and fail. A fast,
+# specific failure is worth more here than a fast success, because the slow one
+# looks like a database problem and sends the reader to the wrong place.
+python="$here/../.venv/bin/python"
+if [ ! -x "$python" ]; then
+  echo "error: no project Python at $python" >&2
+  echo "" >&2
+  echo "  this checkout has never been installed. One command does it:" >&2
+  echo "" >&2
+  echo "      make sync" >&2
+  echo "" >&2
+  echo "  (or: uv sync --all-extras, which is what 'make sync' runs.)" >&2
+  exit 1
+fi
+exec "$python" "$@"

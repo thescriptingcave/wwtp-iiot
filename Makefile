@@ -586,17 +586,23 @@ setup:
 
 # whose whole job is "open the notebooks" should not refuse to open them because a
 # package manager is not installed and nothing needs installing.
+# Installed **before** anything that needs Python, and never *through* $(PY) to
+# decide whether it is needed: on a checkout that has never been synced there is no
+# `.venv` at all, so probing it with `$(PY)` reports every module missing and the
+# install is the right answer by accident rather than by decision. `uv.lock` is the
+# authority on what "already installed" means, and it is a file rather than an
+# interpreter.
 sync: setup
-	@missing=""; \
-	for m in asyncua pymodbus psycopg fastapi pandas matplotlib seaborn \
-	         jupyterlab nbformat nbclient; do \
-	  $(PY) -c "import $$m" >/dev/null 2>&1 || missing="$$missing $$m"; \
-	done; \
-	if [ -n "$$missing" ]; then \
-	  echo "── installing:$$missing"; \
-	  uv sync $(EXTRA); \
-	else \
+	@if [ ! -x .venv/bin/python ]; then \
+	  echo "── installing the project (first run on this checkout)"; \
+	  uv sync --all-extras; \
+	  exit 0; \
+	fi
+	@if uv sync --all-extras --locked --dry-run >/dev/null 2>&1; then \
 	  echo "── dependencies already present"; \
+	else \
+	  echo "── dependencies changed since last sync"; \
+	  uv sync --all-extras; \
 	fi
 
 # Is the database reachable, from here, right now?
@@ -635,7 +641,7 @@ db-live:
 # silently swallows the line after it. That produced
 # `/bin/bash: -c: line 1: syntax error: unexpected end of file` from a recipe whose
 # text looked correct, and the error named neither the comment nor the line it ate.
-db-up: setup
+db-up: setup sync
 	@if [ "$$($(MAKE) --no-print-directory db-live)" = "yes" ]; then \
 	  echo "── database already reachable"; \
 	else \

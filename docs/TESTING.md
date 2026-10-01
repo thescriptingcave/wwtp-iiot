@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 824 | no |
+| Unit, no database | 828 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -53,12 +53,13 @@ Per file, for the ones worth naming:
 | `test_spool.py` | 23 | durability across rotation and restart |
 | `test_alarm_replay.py` | 22, of which 3 need a database | rebuilding alarm state from the event log |
 | `test_web_page.py` | 22 | the dashboard's data path, its SQL, and its credential boundary |
-| `test_readme_claims.py` | 78 |
+| `test_readme_claims.py` | 79 |
 | `test_opcua_course.py` | 34 | the lesson gate's own behaviour, and the claims the course makes |
 | `test_opcua_minimal_client.py` | 7 | that the reference client's five safeguards actually fire |
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
+| `test_py_wrapper.py` | 3 | that `tools/py.sh` refuses a missing interpreter by name, and that the targets needing Python depend on the install |
 | `test_pinned_seed_is_durable.py` | 4 | that the pinned week has no retention policy eating it, and that the plant's own database still has one |
 | `test_db_ready.py` | 5 | that the readiness check distinguishes an unreachable database from an empty one, and says why |
 | `test_getting_started_agrees.py` | 7 | that the README and the getting-started guide give the same commands, since they had drifted and broken a clean-machine setup |

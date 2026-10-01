@@ -83,7 +83,11 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-.venv/
+# `.venv*` and not `.venv/`, because a 619 MB directory named `.venv.hidden` sat
+# untracked and unignored in this checkout for the length of a debugging session, and
+# `tests/test_readme_claims.py::test_no_source_file_is_hidden_from_git_by_ignore_rules`
+# was the only thing that noticed. Any variant of the name is the same thing.
+.venv*/
 venv/
 env/
 .python-version
