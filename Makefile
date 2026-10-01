@@ -271,7 +271,20 @@ integration: setup  ## integration tests, against a throwaway database
 # gate fails on the clock rather than on the query. `check_sql.py` detects that
 # and says so — "non-deterministic: run 3 differs from run 1" — which is the
 # checker being right and the target being wrong.
-sql: db-still  ## every SQL block in the course, against a real server
+# The course needs data, and a freshly started database has none. Failing 74 queries
+# with `relation "reading" does not exist` names a symptom; the cause is that nobody
+# seeded, and that is one command away from fixed.
+db-has-data:
+	@$(PY) -m tools.db_ready --data >/dev/null || { \
+	  echo "  the database is not ready for the SQL course. It needs a seeded week,"; \
+	  echo "  which is one command:"; \
+	  echo ""; \
+	  echo "      make up"; \
+	  echo ""; \
+	  exit 1; \
+	}
+
+sql: db-still db-has-data  ## every SQL block in the course, against a real server
 	@echo "── the SQL course ──"
 	$(PY) tools/check_sql.py sql/
 
@@ -592,10 +605,15 @@ sync: setup
 # through `.env` — the same path the notebooks take, so "reachable" means reachable
 # *the way the notebooks will find it*. A TCP probe would say yes while a notebook
 # still failed on the port.
+#: The poll itself stays silent -- sixty copies of a paragraph of error text is
+#: unreadable -- and `db-up` runs the same check again, unsilenced, when the wait
+#: fails. That is the third time a setup failure has presented as a bare timeout.
+#: The first two were real bugs (a seeder writing to the wrong database, and a
+#: compose service missing an argument) and neither was diagnosable from a boolean,
+#: because the error that would have said so was available on the first attempt and
+#: thrown away.
 db-live:
-	@$(PY) -c "from storage.postgres.schema import connect; \
-	c = connect(); c.execute('SELECT 1'); c.close()" >/dev/null 2>&1 \
-	&& echo yes || echo no
+	@$(PY) -m tools.db_ready >/dev/null 2>&1 && echo yes || echo no
 
 # Bring the database up only if it is not already answering.
 #
@@ -605,6 +623,18 @@ db-live:
 # the data is already there. The previous version called `docker compose up` first
 # unconditionally, which meant `make` failed on a machine with no docker even
 # though the database it wanted was right there.
+# **`db` *and* `init-db`, not just `db`.** `init-db` is what applies the schema and
+# creates the login roles, and nothing makes `docker compose up -d db` run it: `db`
+# is the one service in this file that everything else depends on, so it cannot
+# depend on anything. Starting the bare database therefore gives you a Postgres with
+# no `reading` table, and the first thing that says so is 74 SQL queries failing with
+# `relation "reading" does not exist`.
+#
+# **No `#` comment inside the recipe below.** Bash runs a comment to the newline and a
+# trailing backslash *continues the comment*, so a commented-out line ending in `\`
+# silently swallows the line after it. That produced
+# `/bin/bash: -c: line 1: syntax error: unexpected end of file` from a recipe whose
+# text looked correct, and the error named neither the comment nor the line it ate.
 db-up: setup
 	@if [ "$$($(MAKE) --no-print-directory db-live)" = "yes" ]; then \
 	  echo "── database already reachable"; \
@@ -614,13 +644,16 @@ db-up: setup
 	    echo "Set POSTGRES_* in .env for a database you already run, or install docker."; \
 	    exit 1; }; \
 	  echo "── starting the database"; \
-	  docker compose up -d db; \
+	  docker compose up -d db init-db; \
 	  for i in $$(seq 1 60); do \
 	    if [ "$$($(MAKE) --no-print-directory db-live)" = "yes" ]; then \
 	      echo "   database ready"; exit 0; \
 	    fi; sleep 1; \
 	  done; \
-	  echo "the database did not become reachable in 60s"; exit 1; \
+	  echo "the database did not become reachable in 60s."; \
+	  echo ""; \
+	  $(PY) -m tools.db_ready || true; \
+	  exit 1; \
 	fi
 
 # The gateway writes; the notebooks read. Left running it moves the data out from

@@ -244,6 +244,57 @@ def apply_retention(
             conn.close()
 
 
+def remove_retention(
+    *, conn: Connection | None = None,
+) -> list[str]:
+    """Drop every retention policy on `reading`. Returns the relations affected.
+
+    **The counterpart to `apply_retention`, and it exists because of a bug this
+    repository shipped.** `apply_retention` attaches its policies with
+    `if_not_exists => TRUE`, which is right for a service that restarts and wrong
+    for a database that is being *reclaimed*: a policy attached before the fix
+    outlives the code that added it, because the new code declines to add one and
+    the old one is still there, dropping rows on a schedule.
+
+    On a pinned fixture that is not a slow leak. The fixture is written once, read
+    by gates comparing exact row counts, and a policy evaluated against `now()`
+    deletes the oldest chunks as the wall clock moves past the pinned window -- with
+    no error and no re-seed. See `tools/notebook_data.py` for what that looked like.
+    """
+    own = conn is None
+    conn = conn or connect()
+    dropped: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            # **`hypertable_name`, not `view_name`.** There is no `view_name` column
+            # in `timescaledb_information.jobs` on TimescaleDB 2.19, and the first
+            # version of this query used one; it failed with `column "view_name"
+            # does not exist`, which is at least an honest error rather than a
+            # silently empty result.
+            #
+            # `proc_name` is what keeps this from removing the *refresh* policies on
+            # the same two hypertables -- those are
+            # `policy_refresh_continuous_aggregate`, and the aggregates go stale
+            # without them. Filtering on the proc rather than the hypertable is the
+            # whole reason the query is shaped this way.
+            cur.execute(
+                "SELECT hypertable_name FROM timescaledb_information.jobs "
+                "WHERE proc_name = 'policy_retention'"
+            )
+            for (relation,) in cur.fetchall():
+                cur.execute(
+                    "SELECT remove_retention_policy(%s, if_exists => TRUE)",
+                    (relation,),
+                )
+                dropped.append(relation)
+                log.info("retention removed from %s", relation)
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+    return dropped
+
+
 def apply_refresh_policies(
     start_offset_h: int = 25,
     end_offset_h: int = 1,
@@ -446,6 +497,7 @@ __all__ = [
     "connect",
     "dsn",
     "record_event",
+    "remove_retention",
     "seed_metadata",
 ]
 

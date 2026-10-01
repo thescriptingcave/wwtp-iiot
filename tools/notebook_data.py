@@ -104,6 +104,28 @@ def main(argv: list[str] | None = None) -> int:
     # environment", which was true, and was the assumption behind six separate bugs.
     os.environ["POSTGRES_DB"] = _data.NOTEBOOK_DB
 
+    # **No retention on a pinned fixture, and this is not optional housekeeping.**
+    #
+    # `apply_retention` attaches `add_retention_policy(..., drop_after => '7 days')`,
+    # and TimescaleDB evaluates that against `now()`. This database is seeded to a
+    # *fixed* instant -- `SEED_END`, 2026-09-29 -- so once the wall clock is more than
+    # seven days past the start of that window, the oldest chunks fall outside
+    # `now() - 7 days` and a **background job deletes them**. No code changes, no
+    # error, no re-seed: the rows are simply gone one day at a time.
+    #
+    # Observed on 2026-10-01, a day and a half after the seed: `wwtp_notebooks` held
+    # 2,998,009 rows instead of 4,239,284, `min(ts)` was 2026-09-24 instead of
+    # 2026-09-22, and `timescaledb_information.chunks` had **one** chunk where the
+    # seed writes one per day. Three notebooks failed their claimed numbers, and the
+    # cause was a job that logs nothing.
+    #
+    # Retention is meaningful for `wwtp`, which is an operational store that grows.
+    # This database is a fixture: it is written once, read by gates that compare
+    # exact row counts, and replacing it is the only correct way to change it. So it
+    # keeps everything, and `apply_retention` skips a policy when days <= 0.
+    os.environ["RETENTION_RAW_DAYS"] = "0"
+    os.environ["RETENTION_MINUTE_DAYS"] = "0"
+
     from storage.seed.main import main as seed  # noqa: PLC0415
 
     code = seed([
@@ -113,6 +135,18 @@ def main(argv: list[str] | None = None) -> int:
         "--storm-after", str(_data.STORM_AFTER_H),
         "--reset",
     ])
+    # Remove any retention a *previous* version of this script attached. Declining
+    # to add one is not enough, because `apply_retention` uses `if_not_exists` and
+    # the policy that was attached before this fix is still there, still on a
+    # schedule, still eating the oldest days of a pinned week.
+    from storage.postgres.schema import connect, remove_retention  # noqa: PLC0415
+
+    with connect() as conn:
+        dropped = remove_retention(conn=conn)
+    if dropped:
+        print(f"  retention removed from {', '.join(dropped)}"
+              " — this database is a fixture and keeps everything")
+
     print(f"  {_data.NOTEBOOK_DB}: {status()}")
     return code
 
