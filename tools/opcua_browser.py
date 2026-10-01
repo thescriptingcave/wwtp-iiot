@@ -19,9 +19,9 @@ now reproduces the whole thing, protocol client included.
 
 Five modes:
 
-    browse     the address space as a tree, with live values
+    browse     the address space as a tree -- structure only, no values
     watch      subscribe and follow values as they change
-    read       read one variable by browse path
+    read       read one variable by browse path, with its value and metadata
     write      set a writable value
     diagnose   server vendor, namespaces, and counters
 

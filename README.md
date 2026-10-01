@@ -148,7 +148,15 @@ in TimescaleDB.
 
 ```bash
 make query SQL="SELECT count(*) FROM reading"
+
+# one tag's value, status and metadata
+uv run python tools/opcua_browser.py read AERATION:AHU-1:DO
+
+# the address space as a tree -- structure, no values
 uv run python tools/opcua_browser.py browse
+
+# that tag, updating
+uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
 ```
 
 **The commands in this section are the same ones in

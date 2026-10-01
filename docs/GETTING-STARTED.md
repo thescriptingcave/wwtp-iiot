@@ -24,11 +24,27 @@ minutes, most of it the seed. You end up with **4.3 M readings** in TimescaleDB.
 make query SQL="SELECT count(*) FROM reading"
 ```
 
-To watch the plant's live values, and to read its tags over OPC UA:
+To look at the plant over OPC UA. **Two different things**, and it is worth being
+clear which is which:
 
 ```bash
+# the address space as a tree: areas, equipment, tags. Structure, no values.
 uv run python tools/opcua_browser.py browse
+
+# one tag's value, its status and its metadata
+uv run python tools/opcua_browser.py read AERATION:AHU-1:DO
+
+# that tag, updating
+uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO
 ```
+
+`browse` reads no values. This document used to say it showed "live values", and so
+did the tool's own docstring, and both were wrong: `browse` walks the tree and prints
+names and node classes. For a number, use `read` or `watch`.
+
+The two spellings of a tag both work — `AERATION:AHU-1:DO` and
+`AERATION.AHU-1.do_mg_l` reach the same node — and `read` prints the `SignalId` it
+resolved to, so you can always see which tag you are looking at.
 
 The rest of this document is the same four steps with the explanations, plus
 Grafana, the courses and the troubleshooting. **These three commands are the same

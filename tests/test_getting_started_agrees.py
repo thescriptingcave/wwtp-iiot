@@ -42,6 +42,8 @@ SHARED_COMMANDS = [
     "make up",
     "make query SQL=\"SELECT count(*) FROM reading\"",
     "uv run python tools/opcua_browser.py browse",
+    "uv run python tools/opcua_browser.py read AERATION:AHU-1:DO",
+    "uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO",
 ]
 
 
