@@ -130,21 +130,25 @@ is checked against what the notebook printed. The two gates that do not apply ar
 derived panel has no fingerprint — and they are switched **off** rather than left to
 pass vacuously.
 
-## The six beats, and the number at each
+## The six notebooks, and the number at each
 
 Full detail and the failure modes in `TRAINER.md`.
 
-| # | Beat | The number the room should be holding |
+| # | Notebook | The number the room should be holding |
 |---|---|---|
-| 1 | The metric turn | accuracy **0.9995** for a model that learned nothing |
-| 2 | The dense panel | **2 of 3** fault kinds have no row in the stored table |
-| 3 | The per-signal baseline | F1 **0.500 → 0.800** |
-| 4 | The forward window | F1 **1.000**, and it cannot ship |
-| 5 | Unsupervised | **0 of 22** fault hours found; 285 of 288 flags are one tag |
-| 6 | Predictive | a seasonal naive beats every model; **90%** of variance is the clock |
+| 1 | `01-the-metric-turn` | accuracy **0.9993** for a model that learned nothing; the real forest scores **0.9995** |
+| 2 | `02-the-dense-panel` | a query of the stored table keeps **10 of 22** fault hours — two of three classes gone |
+| 3 | `03-the-baseline-and-the-noise-floor` | the split-to-split spread is **42×** the difference between two feature sets |
+| 4 | `04-the-forward-window` | F1 **0.444 → 0.833**, and the 0.833 needs tomorrow |
+| 5 | `05-unsupervised` | **0 of 22** fault hours; 285 of 288 flags are one tag |
+| 6 | `06-predictive` | a random split makes the model **5.3×** better, and it is worth nothing |
 
-**Accuracy never moves** — 0.9995, 0.9997, 0.9998, 1.0000 across all six. That is
-the thesis of the two days.
+**Accuracy moves from 0.9993 to 0.833 across all six and is never once the point.**
+
+Three of these are not what the plan said, and the corrections are the useful part:
+the "seasonal naive beats every model" claim is false, the per-signal baseline cannot
+be shown to help on 22 positives, and unsupervised does not find the storm — it finds
+the odd *tag*.
 
 ## Known limitation, recorded rather than fixed
 

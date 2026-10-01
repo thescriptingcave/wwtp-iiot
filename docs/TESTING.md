@@ -21,6 +21,7 @@ not**.
 | OPC UA course | 87 snippets in 18 lessons — **all 9 teaching lessons written** | no — the gate starts its own server |
 | Extracted queries (`sql/TablePlus/`) | 78 files, run against a live database | yes |
 | Analyst notebooks | 11 notebooks, 4 checks each | yes — and their own pinned database |
+| Workshop notebooks | 6 notebooks, 3 checks each | no — they read a CSV |
 | `mypy` | clean across 72 source files | no |
 | `ruff` | clean on the gated packages; 156 tracked findings elsewhere | no |
 
@@ -29,6 +30,13 @@ is what it reports, so it moves whenever a module is added. The notebook row
 counts the *checks* rather than the tests: `make notebooks` runs four gates per
 notebook (output fences, prose numbers, SQL fences, seed fingerprint) and 11
 notebooks, which is 44 assertions a reader can name.
+
+The workshop notebooks run the **same** gate through `--track`, and get three checks
+rather than four: `sql` fences and the seed fingerprint are switched **off** rather
+than left to pass vacuously, because a CSV has no query blocks and a derived panel
+has no fingerprint. Six notebooks, 18 assertions. Two are switched off on purpose,
+which is recorded in `check_notebooks.DATABACKED_TRACKS` rather than left to be
+discovered by someone wondering why it is quieter.
 
 A fifth notebook gate — **no number that depends on the disk, the clock or the
 host** — scans every source once rather than being per-notebook, so it is not in

@@ -34,21 +34,21 @@ during a modelling workshop should be about the modelling.
 
 ## The arc, and the number at each step
 
-Everything below is the 3-week panel: 28,728 rows, 57 signals × 504 hours, **22
-positive hours, base rate 0.0766%**.
+**Re-measured 2026-10-01, and two of these numbers did not survive.** The plan's
+version of beats 3 and 6 was wrong in both directions, and the corrections are the
+interesting part. Everything below is what the notebooks now print.
 
-| # | Beat | The number the room should be holding |
+| # | Notebook | The number the room should be holding |
 |---|---|---|
-| 1 | The metric turn | accuracy **0.9995** for a model that learned nothing |
-| 2 | The dense panel | **2 of 3** fault kinds have no row in the stored table |
-| 3 | The per-signal baseline | F1 **0.500 → 0.800** |
-| 4 | The forward window | F1 **1.000**, and it cannot ship |
-| 5 | Unsupervised | **0 of 22** fault hours found; 285 of 288 flags are one tag |
+| 1 | `01-the-metric-turn` | accuracy **0.9993** for a model that learned nothing; the real forest scores **0.9995** |
+| 2 | `02-the-dense-panel` | a query of the stored table keeps **10 of 22** fault hours — two of three classes gone |
+| 3 | `03-the-baseline-and-the-noise-floor` | the split-to-split spread is **42×** the difference between two feature sets |
+| 4 | `04-the-forward-window` | F1 **0.444 → 0.833**, and the 0.833 needs tomorrow |
+| 5 | `05-unsupervised` | **0 of 22** fault hours; 285 of 288 flags are one tag |
+| 6 | `06-predictive` | a random split makes the model **5.3×** better, and it is worth nothing |
 
-**Accuracy never moves.** 0.9995, 0.9997, 0.9998, 1.0000 across the whole session.
-Say this out loud at the end. It is the thesis.
-
----
+**Accuracy moves from 0.9993 to 0.833 across six notebooks and is never once the
+point.** That is the thesis of the two days.
 
 ## Beat 1 — the metric turn (tier A, 45 min)
 
@@ -90,42 +90,43 @@ And the one to end on: **41% of ordinary hours are in exactly the state a broken
 instrument is in.** So is a frozen one and a dead one — the same state as each
 other. The room has been staring at the answer and it does not work.
 
-## Beat 3 — the per-signal baseline (tier B, 60 min)
+## Beat 3 — the feature is right and the experiment cannot prove it (tier B, 60 min)
 
-A fault hour's signal logged **326** rows in the preceding 24 h. A quiet ordinary
-hour's signal logged **20**. Same panel, same absence, opposite conclusion — the
-difference is the signal's own history.
+A fault hour's signal logged **596** rows in the previous 24 h; a quiet hour's
+logged **20**. Twenty-nine times, and it is the only thing that separates the two
+cases notebook 02 could not.
 
-Give them a trailing per-signal median of `n`. F1 **0.500 → 0.800**, precision
-still 1.000. Accuracy **0.9998**. Nobody can tell from the accuracy that anything
-happened.
+Then run the model, and it gets **worse**: F1 0.600 → 0.444.
 
-**This is where the session turns**, and the thing to say is not "we improved the
-model". It is: *the information was in the table the whole time and no model found
-it, because nobody gave the model a way to compare a signal to itself.*
+**Do not explain this away.** Run the same model, same features, twenty times,
+changing only the split. F1 ranges **0.000 to 0.857** for the naive features and
+**0.000 to 0.750** with the baseline. The two means differ by 0.020. The variation
+from which hours you tested on is **42× the thing being measured**.
 
-Optional, if the room is quick: `CONDUCTIVITY` writes **356 rows in 21 days**
-against a 5-second `sample_ms` that would give 360,000. It is near-constant, so a
-change-triggered historian almost never records it. **Any tag can be a feature;
-only a dense one can be a target.** 22 of 57 tags are under 50% covered.
+The panel has 22 positives; a 20% test fold has about 4. You want at least 10 to
+estimate a recall at all. **This experiment has no power, and no amount of modelling
+fixes that — it is a property of the sample.**
 
-## Beat 4 — the forward window (tier B, 30 min)
+**The moment:** someone will want to keep tuning until one split looks good. That is
+how you get a feature that scores 0.800 on the fold you tried and 0.000 on the next,
+and a number in a slide nobody can reproduce.
 
-Give them a *leading* 24-hour baseline as well. F1 goes to **1.000**. Recall
-**1.000**. Precision **1.000**.
+## Beat 4 — the best score is the one you cannot use (tier B, 30 min)
 
-Then ask them to deploy it.
+Add a 24-hour window looking *forward*. F1 **0.444 → 0.833**, precision 1.000, **zero
+false alarms in 9,569 ordinary hours**, and the stuck sensor goes from 0 of 2 to 2
+of 2.
 
-The detector reads tomorrow's row count to decide whether the instrument broke
-today. It cannot run on live data. **The score went up and the model got worse**,
-and it is the best number anyone saw all day.
+It works because every fault hour has future hours where the instrument is writing
+again, and a quiet hour usually does not — so the feature is asking "does this
+instrument recover?", and for a sustained fault the answer is no.
 
-Do not reveal that the prototype reported this 1.000 as its headline before anyone
-checked. It did, and the plan was built on it. If a participant asks where the
-number came from, that is the honest answer and it usually lands harder than the
-lesson.
+Then ask the room to deploy it. At 03:00, deciding whether to raise an alarm,
+tomorrow's row count does not exist.
 
-## Beat 5 — unsupervised, and it is not what the plan said (tier B/C, 45 min)
+**The best number anyone will see all day, and it is unusable.** That is the beat.
+
+## ## Beat 5 — unsupervised, and it is not what the plan said (tier B/C, 45 min)
 
 The plan said unsupervised methods confidently find the storm rather than the
 faults. **They find neither.** On the 3-week panel, with no labels used to fit:
@@ -148,31 +149,38 @@ per-signal baseline correctly reports that a fault hour looks exactly like that
 signal's normal self. **Anomaly detection finds the odd tag out, not the odd hour.**
 Same insight as beat 3, from the other direction.
 
-## Beat 6 — predictive, and do not buy a GPU (tier C, 45 min)
+## Beat 6 — a random split makes a good model out of a clock (tier C, 45 min)
 
-Predict effluent TSS an hour ahead, held-out fifth:
+Predict effluent TSS an hour ahead, held-out final fifth:
 
 | Model | MAE |
 |---|---|
-| **"same hour, previous 3 days"** — three lines of arithmetic | **0.2527** |
-| `RandomForestRegressor` on hour-of-day, **random** split | 0.1711 |
-| `RandomForestRegressor` on hour-of-day, time split | 0.3325 |
-| `RandomForestRegressor` on per-signal features, time split | 0.5171 |
-| `LinearRegression`, either way | 2.30 – 3.35 |
+| `LinearRegression` on hour-of-day | 2.3475 |
+| "same hour, previous 3 days" — three lines of arithmetic | 0.4367 |
+| `RandomForest` on the panel's own features | 0.3414 |
+| **`RandomForest` on hour-of-day** | **0.3304** |
+| the same model, **random split** | **0.0627** |
 
-**A seasonal naive beats every model.** And a random split nearly halves the error
-of the best model (0.1711 → 0.3325) — the same trap `notebooks/08` measures at
-61.7 → 494.1 m³/h, reproduced at the modelling level.
+Three findings, and the plan got two of them wrong.
 
-**There is nothing left for a sequence model.** 90.0% of the variance is explained
-by hour-of-day alone, autocorrelation at lag 24 is **+0.029**, and the sd is 3.63
-against an MAE of 0.25. A `Conv1d` or `GRU` would be a ~200 MB dependency to lose
-to three lines of arithmetic.
+**A linear model on hour-of-day is the worst row in the table** — worse than
+guessing the mean. Hour-of-day is a circle: 23:00 and 00:00 are adjacent, and a
+straight line through them puts the worst prediction at midday. A tree sees the
+wrap; a regression cannot.
 
-**If someone wants the sequence model anyway, let them build it and let it lose.**
-That is the exercise. Do not put `torch` in the environment for the room.
+**"A seasonal naive beats every model" is false.** A tree on hour-of-day beats it,
+0.330 against 0.437. It would have been a satisfying thing to believe and it is not
+true.
 
----
+**90.0% of the variance is hour-of-day**, and the baseline is already within 9.8% of
+a standard deviation. A `Conv1d` or `GRU` would be a ~200 MB dependency learning the
+rest of a small band. **That is the argument against buying a GPU, made of
+measurements rather than of principle.**
+
+And the one that matters: **the random split is 5.3× better, and the improvement is
+entirely an illusion.** With a random split the hour being predicted has neighbours
+from the same day in the training set. It is not forecasting, it is interpolating
+between two values it has already seen.
 
 ## Things that will go wrong
 
@@ -198,13 +206,22 @@ being told.
 
 Say this if you are asked, because it is true:
 
-- **Tiers B and C beyond these five beats are unwritten.** Every number in this
-  guide is measured; nothing beyond beat 6 has been run end to end.
-- **The 25-week window has never been built in the repo's own compose setup** —
-  only in a scratch instance. The `WORKSHOP_*` defaults are 3 weeks for that reason.
+- **The 25-week window has never been built in the repo's own compose setup.** Every
+  number in this guide is from the 3-week default, which has 22 fault hours — and
+  notebook 03 is largely about the fact that 22 is too few to measure anything. The
+  25-week window carries 116 instances and is the obvious next thing to build; until
+  it is, beat 3's conclusion stands and beat 4's improvement stays unmeasurable.
+- **No sequence model was fitted, and that is the recommendation.** Notebook 06 shows
+  90% of the variance is the clock and a tree captures it. A `Conv1d` or `GRU` here
+  would be bought to lose, and the honest test is a room building one anyway and
+  watching it.
 - **One fault and the storm genuinely coincide** (a drift on `AERATION:AHU-1:DO`,
-  2026-09-27 12:00–13:00, inside the storm). `is_fault` and `is_storm` are
-  therefore not disjoint. What a detector *ought* to report for those two hours is
-  an open question, and a good one to hand a room.
+  2026-09-27 12:00-13:00, inside the storm). `is_fault` and `is_storm` are therefore
+  not disjoint, and what a detector *ought* to report for those two hours is an open
+  question worth handing a room.
 - **A recurring storm does not exist yet**, so the final week of a 25-week window is
   contaminated by the single storm. Hold out a week from the *middle*.
+- **The classification beats are measured on 7 positive hours in the test fold.** Beat
+  4's 0.833 is 5 of 7. Notebook 03 explains why that number should not be trusted
+  even though it is the highest in the set, and the room should be told so before
+  they see it, not after.
