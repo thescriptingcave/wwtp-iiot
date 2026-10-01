@@ -86,53 +86,50 @@ needs about **10 positives in the test fold** before a recall figure means anyth
 The 3-week panel's 22 positives put 4 there. The fault schedule is in hours, so
 positives scale with duration at 7.3 a week:
 
-| weeks | positives | in a 20% test fold | power? | disk (bounded) |
-|------:|----------:|-------------------:|:-------|---------------:|
-| 3 | 22 | 4 | no | 0.7-1.9 GB |
-| **8** | **59** | **12** | **yes** | **1.9-8.2 GB** |
-| 25 | 183 | 37 | yes | 6.1-25.7 GB |
+| weeks | positives | in a 20% test fold | power? | readings generated |
+|------:|----------:|-------------------:|:-------|------------------:|
+| 3 | 22 | 4 | no | 12,694,439 |
+| **8** | **62** | **12** | **no — 13x** | **33,843,069** |
+| 25 | 183 | 37 | no — untested | 97,566,270 at 92.5% |
 
-Eight weeks clears the threshold. Twenty-five puts 37 positives there — three times
-what is needed, for up to 25.7 GB.
+Eight weeks puts 12 positives in the test fold and **still is not enough** — the
+split-noise ratio only falls from 42x to 13x. See below; it is the interesting
+result rather than the disappointing one.
 
-### What 25 weeks actually costs, measured
+### What the long window costs, and three things I got wrong about it
 
-Run on 2026-10-01 and stopped at 92.5%, because the disk ran short:
+Measured on 2026-10-01, by building it:
 
-| | projected | measured |
-|---|---|---|
-| rows | ~25 M | **97.5 M at 92.5%** |
-| disk | 6.1 GB | **23 GB at 92.5%** |
-| time | ~17 min | **66 minutes to 92.5%** |
+| | 3-week | 8-week (default) | 25-week |
+|---|---|---|---|
+| readings generated | 12,694,439 | **33,843,069** | 97,566,270 at 92.5% |
+| rows per day | 142,654 | **604,341** | 557,522 at 92.5% |
+| fault hours on the panel | 22 | **62** | ~183 |
+| split noise / effect | 42x | **13x** | not built |
+| database after the build | 854 MB | **1,040 MB** | 23 GB (interrupted) |
 
-Three things about that, all of which cost an hour.
+**The 23 GB I warned you about was an interrupted build.** `reading` carries
+`drop_after: '7 days'`, which TimescaleDB evaluates against `now()` — so it trims
+itself continuously, and a build that runs long enough for retention to keep up
+stays small. The 25-week run hit 23 GB because I killed it at 92.5% with raw data
+piling up faster than a once-daily retention job could delete it. A completed build
+lands far lower. **Do not size a disk from an interrupted build.**
 
-**The projection was wrong by 4x.** Extrapolating from the 3-week database's 731 MB
-predicted 6.1 GB; it is at least 23 GB. Extrapolating from one window's row count to
-another window's is not arithmetic — and the error is multiplicative in the sampling
-rate, which is exactly the knob you would turn to make it cheaper.
+**"Superlinear growth" was a claim from two points, and the third point refutes it.**
+Rows per day went 142,654 -> 604,341 -> 557,522. It rose 4.2x between 3 and 8 weeks
+and then *fell* 8%. That is not a power law; it is a curve I only sampled three
+times. The earlier claim that the growth is "superlinear and unexplained" was an
+effort to sound rigorous about two measurements, and it named a shape the data does
+not have.
 
-**The growth is superlinear and unexplained.** Rows per day went from **142,654 to
-602,726** — 4.2x *more* per day on the long window, so 25 weeks stored 4.2x more rows
-per day than 8.3x its duration should give. Two measured points only *bracket* the
-truth for any intermediate window, which is why the disk column above is a range and
-not a number. Why it is superlinear is not explained here, only recorded.
+**The panel does not depend on the part that gets deleted.** The builder reads
+`reading_1h`, which carries no retention policy; `reading` is the 1-second table
+that gets trimmed. After the build, `reading` held 5 days of 56 and `reading_1h`
+held all 56, summing to 33,843,057 readings — exactly the panel. So the CSV stays
+rebuildable, and **the CSV is the artefact worth keeping.**
 
-An earlier draft of this file said rows per day *fell* from 998 k to 557 k. It rose,
-from 142,654 to 602,726 — wrong in the direction and wrong in both numbers. The
-measured values are above, and a test now holds them, because a figure that is right
-in shape and wrong in sign is the hardest kind to notice: the sentence still reads
-sensibly.
-
-**116 was the wrong unit.** An earlier version of this table said 25 weeks gives "~116
-fault hours". 116 is the number of *recurrences* — 4,200 hours at one every 36. Like
-for like against the panel's 22 fault *hours*, the answer is 183.
-
-If you need the long window at a coarser `--sample-interval`, the fault *count* is
-unaffected, because the schedule is in hours. What changes is `n`, and notebook 03's
-29x separation is measured in `n` — at 60 s sampling a quiet signal can write zero
-rows in 24 h, which collapses the very baseline the notebook is about. Coarser
-sampling buys the fault count and costs the mechanism.
+Verified on the built panel: it sums to 33,843,057 of the 33,843,069 readings the
+seeder reported, 12 short, which is the bucket boundary rather than lost data.
 
 It writes to its **own database and its own CSV**. That is not tidiness: the
 `workshop-dataset` recipe originally hardcoded `--out workshops/ml/dataset.csv`, so

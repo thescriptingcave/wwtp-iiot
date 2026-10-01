@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import ClassVar
+
+from workshops.ml import measure_long_window as measure
 
 ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = (ROOT / "Makefile").read_text()
@@ -159,179 +160,188 @@ class TestTheLongWindowIsSeparate:
         )
 
 
-#: What a sentence must say for a superseded figure to be a correction rather than
-#: a claim. Both the Makefile and the README name 6.1 GB *while explaining that it
-#: was wrong*, and a bare `not in text` check fails on that explanation.
-#:
-#: This is the recurring failure in this repository in its purest form: a check that
-#: reads text cannot tell the thing from the sentence about the thing. Naming the
-#: bad figure in order to refute it is the correct thing to do in a document, and it
-#: is exactly what a substring test forbids.
-CORRECTION = ("predicted", "wrong", "understated", "extrapolat")
+#: The comment that introduces the long window, in the Makefile. Scoping to a
+#: target's own recipe is not enough here: the cost reasoning sits in a comment
+#: block *above* `LONG_DB`, separated from the recipe by other lines, and a check
+#: that cannot see both the number and its explanation cannot hold them together.
+LONG_WINDOW_ANCHOR = "# **Do not size a disk from an interrupted build.**"
 
 
-#: How much text either side of the figure counts as "the same claim". Markdown
-#: wraps wherever the source did, so the refutation is routinely on the previous
-#: line from the figure it refutes -- which is exactly what happened here.
-WINDOW = 160
-
-
-def _assert_only_as_a_correction(text: str, where: str) -> None:
-    """Every mention of 6.1 GB must sit near a word marking it superseded."""
-    at = text.find("6.1 GB")
-    assert at != -1, f"{where} no longer mentions 6.1 GB at all"
-    while at != -1:
-        near = text[max(0, at - WINDOW) : at + WINDOW]
-        assert any(word in near for word in CORRECTION), (
-            f"{where} states 6.1 GB without saying it was superseded. That figure "
-            "was measured wrong by 4x -- the observed cost is 23 GB at 92.5% of the "
-            "window. Delete it, or keep it only where the mistake is explained."
+def long_window_block() -> str:
+    """The Makefile's whole long-window section: anchor comment through the recipe."""
+    lines = MAKEFILE.splitlines()
+    try:
+        first = next(
+            i for i, line in enumerate(lines) if line.startswith(LONG_WINDOW_ANCHOR)
         )
-        at = text.find("6.1 GB", at + 1)
+    except StopIteration:
+        raise AssertionError(
+            f"the Makefile no longer has a {LONG_WINDOW_ANCHOR!r} comment; the "
+            "long-window reasoning moved and this test needs to follow it"
+        ) from None
+    try:
+        start = next(
+            i for i, line in enumerate(lines) if line.startswith("workshop-long:")
+        )
+    except StopIteration:
+        raise AssertionError("no workshop-long target; the Makefile moved") from None
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and not line[0].isspace() and not line.startswith("#"):
+            end = i
+            break
+    return "\n".join(lines[first:end])
 
 
-class TestTheCostIsMeasuredNotProjected:
-    """The 25-week cost was wrong by 4x once, and it was a projection.
+def _readme_section(needle: str) -> str:
+    """The `###`-delimited section of the workshop README containing `needle`.
 
-    Extrapolating from the 3-week database's 731 MB predicted 6.1 GB. Running it
-    gave 23 GB at 92.5% of the window. The number that reached the reader was
-    arithmetic dressed as a measurement, and it would have sent someone to a
-    machine with 8 GB free to build something needing 30.
+    Section-scoped rather than whole-file so that a test about one section does
+    not pass because some *other* section happens to contain the right words.
+    """
+    text = (ROOT / "workshops" / "ml" / "README.md").read_text()
+    parts = text.split("\n### ")
+    for part in parts:
+        if needle in part:
+            return part
+    return text
 
-    Two things are pinned here rather than left to good intentions:
 
-    - the figure is the **observed** one, so a later writer cannot quietly restore
-      the extrapolation;
-    - the Makefile and the README say the **same** thing, because they are read by
-      different people at different times and one of them is always stale.
+class TestTheLongWindowIsMeasuredNotExtrapolated:
+    """Three claims about the long window, each of which was once wrong.
+
+    Built and measured on 2026-10-01. Getting there took three corrections, and
+    each correction is a claim that a later writer could quietly undo:
+
+    - **The 23 GB was an interrupted build.** `reading` carries `drop_after:
+      '7 days'` against `now()`, so it trims itself mid-build. A killed build
+      accumulates raw rows faster than a daily retention job removes them.
+    - **"Superlinear growth" was a name for a shape two points do not have.**
+      Rows per day went 142,654 -> 604,341 -> 557,522: up 4.2x, then down 8%.
+    - **The panel was built from complete data.** It sums to 33,843,057 of the
+      33,843,069 readings the seeder reported.
     """
 
-    def test_the_default_window_clears_the_power_threshold(self) -> None:
-        """8 weeks, because it puts ~12 positives in a 20% test fold.
+    #: Rows per day, measured. Three points, and they are not a power law.
+    ROWS_PER_DAY = ("142,654", "604,341", "557,522")
 
-        Notebook 03's threshold is 10. Three weeks puts 4 there and 25 puts 37,
-        so the default is the smallest window that answers the question. Sizing
-        the default to the largest window anyone ever mentioned is how a dataset
-        nobody can build ends up being the documented one.
+    def test_the_interrupted_build_is_labelled_as_one(self) -> None:
+        """Every mention of 23 GB must sit in a block that says it was interrupted.
+
+        Checked per **block**, not per line and not within a fixed character
+        window. The Makefile refers backwards -- "the 23 GB above is the honest
+        counterexample" -- which is correct prose about a figure explained 500
+        characters earlier, and both a per-line check and a 400-character window
+        reject it. So the unit is the paragraph, which is where the explanation
+        and the number belong together.
         """
-        match = re.search(r"^WORKSHOP_LONG_WEEKS \?= (\d+)", MAKEFILE, re.M)
-        assert match, "WORKSHOP_LONG_WEEKS is no longer set in the Makefile"
-        weeks = int(match.group(1))
-        # 22 positives in 3 weeks, measured; the fault schedule is in hours, so
-        # positives scale with duration.
-        positives = 22 / 3 * weeks
-        assert positives * 0.2 >= 10, (
-            f"the default {weeks}-week window puts only "
-            f"{positives * 0.2:.0f} positives in a 20% test fold, and notebook 03 "
-            "needs 10 for a recall figure to mean anything."
-        )
-        assert weeks <= 12, (
-            f"the default is {weeks} weeks. Above 12 the disk cost grows faster "
-            "than the statistical return -- 25 weeks is 37 positives at up to "
-            "25.7 GB, three times what is needed for three times nothing extra."
-        )
-
-    def test_the_panel_name_follows_the_week_count(self) -> None:
-        """`WORKSHOP_LONG_WEEKS=25` must not write `dataset-8wk.csv`."""
-        assert "LONG_PANEL ?= workshops/ml/dataset-$(WORKSHOP_LONG_WEEKS)wk.csv" in (
-            MAKEFILE
-        ), (
-            "LONG_PANEL no longer derives from WORKSHOP_LONG_WEEKS, so overriding "
-            "the weeks writes a file named after the default. A file called "
-            "`dataset-8wk.csv` holding 25 weeks of data is how a later reader "
-            "stops trusting both numbers."
-        )
-
-    #: What was actually observed, at 92.5% of a 175-day window at 1 s sampling.
-    OBSERVED: ClassVar[dict[str, str]] = {
-        "rows": "97.5 M",
-        "disk": "23 GB",
-        "minutes": "66 minutes",
-    }
-
-    def test_the_makefile_states_the_observed_figures(self) -> None:
-        for value in self.OBSERVED.values():
-            assert value in MAKEFILE, (
-                f"the Makefile no longer states the observed figure {value!r}. It "
-                "must carry the measured cost, not the 6.1 GB projection that "
-                "understated it by 4x."
+        blocks = {
+            "the Makefile": long_window_block(),
+            "the workshop README": _readme_section("23 GB"),
+        }
+        for where, block in blocks.items():
+            assert "23 GB" in block, (
+                f"{where} no longer mentions 23 GB. If the figure has genuinely "
+                "gone, delete this test rather than leaving it to fail."
             )
-        _assert_only_as_a_correction(MAKEFILE, "the Makefile")
-
-    def test_the_readme_states_the_observed_figures(self) -> None:
-        readme = (ROOT / "workshops" / "ml" / "README.md").read_text()
-        for value in self.OBSERVED.values():
-            assert value in readme, (
-                f"the workshop README no longer states the observed figure "
-                f"{value!r}; it must carry the measured cost."
+            flat = block.replace("*", "")
+            assert "interrupt" in flat or "killed" in flat, (
+                f"{where} states 23 GB in a block that never says the build was "
+                "interrupted. That figure is an artefact of killing the seed at "
+                "92.5%; a completed 8-week build leaves 1,040 MB, so a reader who "
+                "sizes a disk from it brings a disk they did not need."
             )
-        _assert_only_as_a_correction(readme, "the workshop README")
 
-    def test_the_target_warns_before_it_starts(self) -> None:
-        """The warning is the only thing that arrives before the disk fills."""
-        body = target("workshop-long")
-        assert "GB" in body, (
-            "workshop-long does not say how much free disk it needs. The estimate "
-            "was wrong by 4x, so the warning has to be the measured one and it has "
-            "to be printed *before* the seed starts, not after."
-        )
-        assert "1.9-8.2 GB" in body, (
-            "the warning does not carry the bounded cost of the default 8-week "
-            "window. A bound, not a point estimate, because rows per day is "
-            "superlinear and the two measured points only bracket the truth."
-        )
+    def test_the_refuted_growth_claim_is_recorded_as_refuted(self) -> None:
+        """Three measured rates, and an explicit statement that it is not a law.
 
-    def test_the_recipe_and_the_comment_agree(self) -> None:
-        """Two copies of the cost figure, and mutation testing found only one pinned.
-
-        The Makefile states the cost in a comment *and* in the recipe's `echo`.
-        Changing the comment passed every other check in this file, because the
-        echo still said the right thing and the comment's `6.1 GB` sat within the
-        correction window of the sentence explaining the old mistake.
-
-        So both are pinned. The default is the one that matters, and both copies
-        must name it, because a reader who reads one and runs the other finds out
-        from the filesystem.
+        The superseded claim was "superlinear and unexplained", which sounded
+        rigorous and described a shape the third data point does not have.
         """
-        comment = MAKEFILE[: MAKEFILE.index("workshop-long:")]
-        assert "1.9-8.2 GB" in comment, (
-            "the comment above workshop-long no longer carries the 8-week cost. "
-            "The comment and the recipe both state it, and they have to state the "
-            "same one."
+        for where, text in (
+            ("the Makefile", MAKEFILE),
+            (
+                "the workshop README",
+                (ROOT / "workshops" / "ml" / "README.md").read_text(),
+            ),
+        ):
+            flat = text.replace("*", "")
+            for rate in self.ROWS_PER_DAY:
+                assert rate in flat, (
+                    f"{where} no longer gives the measured rows-per-day rate "
+                    f"{rate}. All three are needed: two points suggest a law, three "
+                    "refute one."
+                )
+        readme = (ROOT / "workshops" / "ml" / "README.md").read_text().replace("*", "")
+        assert "not a power law" in readme, (
+            "the README no longer says the growth is not a power law. Without that, "
+            "three points that do not fit one look like a curve somebody fitted."
         )
 
-    def test_the_nonlinear_growth_is_recorded_rather_than_explained(self) -> None:
-        """8.3x the duration stored 33x the rows, and nobody knows why.
+    def test_the_eight_week_result_is_the_headline(self) -> None:
+        """62 positives, and a 13x ratio that is still not enough.
 
-        That is recorded, not asserted as understood. The honest form of the claim
-        is "these two measurements disagree about the storage ratio and here is
-        both", and the dishonest form is a confident mechanism invented to fill the
-        gap. This test cannot tell a real explanation from an invented one, so it
-        only checks that the disagreement is still written down -- losing that is
-        how a future reader concludes the two figures were a typo.
+        The point of building it was to find out whether more data settles beat 3.
+        It does not, and that is the result worth keeping -- so it has to be
+        written down where the trainer will read it.
+        """
+        trainer = (ROOT / "workshops" / "ml" / "TRAINER.md").read_text()
+        for figure in ("62", "13x", "54 weeks"):
+            assert figure in trainer, (
+                f"TRAINER.md no longer states {figure!r}. Beat 3's remedy was "
+                "tested and the answer is 'more data moves the needle and does not "
+                "move the conclusion'; a trainer who is not told that will sell a "
+                "fix they have not tested."
+            )
+
+    def test_the_power_threshold_still_rejects_thirteen_x(self) -> None:
+        """13x must not be quietly reclassified as power.
+
+        The temptation after building something is to round it toward the
+        conclusion you wanted. `NO_POWER_ABOVE` is 10.0 and 13x is above it.
+        """
+        assert measure.NO_POWER_ABOVE == 10.0, (
+            "the no-power threshold moved, which would reclassify a 13x ratio as "
+            "power. 13x is what 8 weeks measures and it is still not enough."
+        )
+        assert measure.verdict(13.0).startswith("NO POWER"), (
+            "verdict(13) no longer says NO POWER, but 13x is the measured 8-week "
+            "ratio and the honest reading of it."
+        )
+
+    def test_the_panel_integrity_check_is_recorded(self) -> None:
+        """33,843,057 of 33,843,069 — the panel is built from complete data.
+
+        Worth stating because it was the live worry: `reading` gets trimmed by
+        retention, so the panel could have been built from a table that had
+        already lost 51 of its 56 days. It was not, because the builder reads
+        `reading_1h`.
         """
         readme = (ROOT / "workshops" / "ml" / "README.md").read_text()
-        assert "superlinear" in readme, (
-            "the README no longer records that the storage growth is superlinear. "
-            "Without it, 2.99 M and 97.5 M look like one of them is a typo."
+        assert "33,843,057" in readme, (
+            "the README no longer records the panel-integrity check. It is the "
+            "evidence that retention did not damage the build, and without it a "
+            "reader cannot tell whether the long panel is trustworthy."
         )
-        assert "not explained here" in readme, (
-            "the README claims to explain the superlinearity it does not explain. "
-            "The claim must stay a record."
-        )
-        # The two measured rates, and the *direction*. An earlier draft said rows
-        # per day fell from 998 k to 557 k; it rose, from 142,654 to 602,726. A
-        # number that is right in shape and wrong in sign is the hardest kind to
-        # notice, because the sentence still reads sensibly.
-        assert "142,654" in readme and "602,726" in readme, (
-            "the README no longer gives both measured rows-per-day rates. They are "
-            "what makes the superlinearity checkable rather than asserted."
-        )
-        # Emphasis markers are stripped before matching: the README writes `*fell*`
-        # with asterisks, and a substring check that forgets that fails on correct
-        # documentation -- which is how a check gets "fixed" by deleting the record.
         flat = readme.replace("*", "")
-        assert "fell from" in flat and "wrong in the direction" in flat, (
-            "the README no longer records that an earlier draft had the direction "
-            "of the growth backwards. It was: rows per day rose 4.2x, not fell."
+        assert "reading_1h" in flat, (
+            "the README does not say which table the panel is built from. It is "
+            "`reading_1h`."
+        )
+        # Checking only the table name was a real gap, found by mutation testing:
+        # the sentence explaining *why the panel survives* could be deleted
+        # entirely and every check still passed. The durability claim is the
+        # reason a reader knows they can rebuild, so it is checked as a claim and
+        # not as a keyword.
+        assert "no retention policy" in flat, (
+            "the README no longer says that `reading_1h` carries no retention "
+            "policy. That clause is the whole reason the panel stays rebuildable "
+            "after `reading` has been trimmed -- without it a reader is told the "
+            "database is disposable and does not know the CSV can be rebuilt."
+        )
+        assert "5 days of 56" in flat, (
+            "the README no longer records that `reading` was trimmed to 5 days of "
+            "56 while `reading_1h` kept all 56. That measured pair is the evidence "
+            "for the durability claim; without it the claim is an assertion."
         )

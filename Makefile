@@ -442,33 +442,42 @@ workshop: workshop-seed workshop-dataset  ## seed the window and build the panel
 # both the database and the CSV somewhere else, so building the long window is a
 # measurement you can take without changing what the workshop reads.
 #
-# Cost, measured rather than guessed, because guessing got it wrong by 4x. 25 weeks
-# at 1 s reached 97.5 M rows and **23 GB at 92.5% of the window** in 66 minutes; the
-# extrapolation from the 3-week database had predicted 6.1 GB. The default is 8 weeks
-# because that is the smallest window that answers notebook 03's question. See
-# `WORKSHOP_LONG_WEEKS` below for the arithmetic and `docs/TESTING.md` for the tests
-# that keep these figures measured rather than projected.
-#: 8 weeks, not25, and the reason is in the table below rather than in taste.
+# **Do not size a disk from an interrupted build.** `reading` carries
+# `drop_after: '7 days'`, evaluated against `now()`, so the 1-second table trims
+# itself while you build. An interrupted build piles up raw rows faster than a
+# once-daily retention job can remove them: 25 weeks reached 23 GB that way, while
+# a completed 8-week build leaves a 1,040 MB database. The 23 GB figure was measured
+# on a build killed at 92.5% of the window, and it was used here to warn about a
+# disk that a finished build does not need.
+#
+# The durable artefact is the CSV, not the database. `workshop-dataset` reads
+# `reading_1h`, which has no retention policy, so the panel stays rebuildable after
+# `reading` has been trimmed. Keep the CSV.
+#
+# **Rows per day, measured: 142,654 (3wk), 604,341 (8wk), 557,522 (25wk at 92.5%).**
+# Up 4.2x and then down 8% -- **not a power law.** An earlier version of this comment
+# called the growth "superlinear and unexplained", which was a name for a shape two
+# points do not have. The third point refutes it. Do not extrapolate a disk from a
+# row count here; the 23 GB above is the honest counterexample.
+
+#: 8 weeks, and the reason is measured rather than preferred.
 #:
 #: Notebook 03 needs about **10 positives in the test fold** before a recall figure
-#: means anything. At a 36 h recurrence across 3 fault kinds the 3-week panel's 22
-#: positives put 4 there, so 7.3 positives a week:
+#: means anything. Built and measured on 2026-10-01:
 #:
-#:   | weeks | positives | in a 20% test fold | disk (bounded) |
-#:   |------:|----------:|-------------------:|--------------:|
-#:   |     3 |        22 |                  4 |     0.7-1.9 GB|
-#:   |     8 |        59 |                 12 |     1.9-8.2 GB|
-#:   |    25 |       183 |                 37 |   6.1-25.7 GB|
+#:   | weeks | positives | in a 20% fold | split noise / effect | power? |
+#:   |------:|----------:|---------------:|--------------------:|:-------|
+#:   |     3 |        22 |              4 |                  42x | no     |
+#:   |     8 |        62 |             12 |                  13x | no     |
 #:
-#: Eight weeks clears the threshold. Twenty-five puts 37 positives there, which is
-#: three times what is needed, at three to thirteen times the disk — and 25.7 GB is
-#: what actually cost the author's disk. The default is 8; override it if you are
-#: checking the marginal value of the extra positives.
+#: **Eight weeks is not enough either, and that is the finding.** The ratio fell from
+#: 42x to 13x, which is real progress and not the answer. Noise/effect falls roughly
+#: as 1/positives -- the product is near-constant, 924 at 22 and 806 at 62 -- so
+#: reaching 2x needs about 416 positives, which is **about 54 weeks**.
 #:
-#: The disk figures are **bounds, not predictions**. Two points have been measured —
-#: 3 weeks at 0.73 GB and 162 days at 23 GB — and rows per day rose 4.2x between
-#: them, so extrapolating linearly in duration from either end brackets the truth
-#: instead of guessing it. Why it is superlinear is unexplained; see the README.
+#: So the honest summary for a trainer is that this is not a dataset-size problem you
+#: solve on a laptop. It is ~54 weeks at 1 s. The 8-week default exists so the trend
+#: can be shown cheaply, not because it settles the question.
 WORKSHOP_LONG_WEEKS ?= 8
 LONG_DB    ?= wwtp_ml25
 #: Named after the week count so `WORKSHOP_LONG_WEEKS=25` does not write a file
@@ -478,8 +487,9 @@ LONG_PANEL ?= workshops/ml/dataset-$(WORKSHOP_LONG_WEEKS)wk.csv
 
 workshop-long:  ## build the long window: 8wk default, wwtp_ml25 + dataset-Nwk.csv
 	@echo "── this writes $(LONG_DB) and $(LONG_PANEL); the 3-week panel is untouched ──"
-	@echo "── 8 weeks is the default: it clears notebook 03's 10-positives-in-a-test-fold"
-	@echo "   threshold at 1.9-8.2 GB. Override with WORKSHOP_LONG_WEEKS=25 for ~25.7 GB."
+	@echo "── 8 weeks gives 62 positives and cuts split noise from 42x to 13x."
+	@echo "   Still NOT enough to measure the effect; that needs ~54 weeks. See the"
+	@echo "   comment above before sizing a disk."
 	$(MAKE) workshop-seed WORKSHOP_DB=$(LONG_DB) WORKSHOP_WEEKS=$(WORKSHOP_LONG_WEEKS)
 	$(MAKE) workshop-dataset WORKSHOP_DB=$(LONG_DB) WORKSHOP_WEEKS=$(WORKSHOP_LONG_WEEKS) \
 	  WORKSHOP_PANEL=$(LONG_PANEL)

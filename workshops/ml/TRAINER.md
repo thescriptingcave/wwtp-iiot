@@ -206,40 +206,41 @@ being told.
 
 Say this if you are asked, because it is true:
 
-- **The 25-week window was built to 92.5% and then stopped, so beat 3's remedy is
-  still untested.** Every number in this guide is from the 3-week default, which has
-  22 fault hours — and notebook 03 is largely about the fact that 22 is too few to
-  measure anything. The remedy is ~116 instances.
+- **The long window was built and it changed the advice.** Every number in this
+  guide is still from the 3-week default, but beat 3's remedy has now been tested at
+  62 positives rather than asserted:
 
-  It was attempted, on 2026-10-01, and here is what that cost, because the estimate
-  in the README at the time was wrong by 4x:
-
-  | | predicted | measured |
+  | | 3 weeks | 8 weeks |
   |---|---|---|
-  | disk | 6.1 GB | **23 GB at 92.5%** of the window |
-  | time | ~17 min | **66 min to 92.5%** |
-  | rows | ~25 M | **97.5 M at 92.5%** |
+  | positives | 22 | **62** |
+  | in a 20% test fold | 4 | **12** |
+  | split noise / effect | 42x | **13x** |
+  | baseline mean F1 − naive mean F1 | +0.020 | **+0.040** |
+  | the 29x separation | 29.3x | **29.5x** |
 
-  **Eight weeks is the default instead of 25, and it is enough.** Notebook 03 needs
-  ~10 positives in a 20% test fold; the fault schedule is in hours, so positives run
-  at 7.3 a week and 8 weeks puts 12 there against 25 weeks' 37 — for 1.9-8.2 GB
-  rather than up to 25.7 GB. `make workshop-long WORKSHOP_LONG_WEEKS=8`.
+  **Still not enough.** 13x is above the threshold at which a difference means
+  something, so beat 3's conclusion stands — but it now has a shape. Noise divided
+  by effect is near-constant when multiplied by positives (924 at 22, 806 at 62), so
+  the effect falls as roughly 1/positives, and reaching 2x needs about **416
+  positives — some 54 weeks** at 36 h recurrence.
 
-  It was stopped with 3.7 GB free on the author's disk, which is not a margin. Two
-  things follow, and the second is the useful one:
+  **What to tell a room:** this is not a dataset you fix on a laptop. The direction
+  is consistent and positive in both measurements, and the *mechanism* is unchanged
+  at 29.5x, which is the part that does not depend on a split at all. But the honest
+  position after 8 weeks is that a bigger dataset moves the needle and does not move
+  the conclusion, and a trainer who says "just get more data" without that is selling
+  a fix they have not tested.
 
-  - **"More data" is a server operation, not a laptop one.** If you tell a room that
-    the fix for notebook 03 is a bigger dataset, say the number: about 30 GB free
-    and 72 minutes.
-  - **The growth is superlinear, and nobody knows why.** Rows per day went from
-    **142,654** on the 3-week window to **602,726** on the long one — 4.2x more per
-    day, where 8.3x the duration predicts 4.2x *fewer*. Only two points have been
-    measured, so every intermediate disk figure in this repository is a range rather
-    than a number. This is recorded, not explained. If a room asks, "that is a real
-    puzzle and nobody has chased it" is the true answer and a good one to give.
+  Two corrections to earlier drafts of this file, both found by measuring:
 
-  Until the window completes, beat 3's conclusion stands on the 3-week panel and
-  beat 4's improvement stays unmeasurable.
+  - **"Superlinear growth" was wrong.** Rows per day went 142,654 -> 604,341 ->
+    557,522 for 3, 8 and 25 weeks: up 4.2x, then down 8%. That is not a power law.
+    It was a name for a shape two points do not have.
+  - **"25 weeks needs 25 GB" was an artefact of interrupting it.** `reading` carries
+    `drop_after: '7 days'` against `now()`, so the raw table trims itself during a
+    build; the 25-week run reached 23 GB because I killed it mid-write, and a
+    completed 8-week build leaves 1,040 MB. The CSV is the durable artefact.
+
 - **No sequence model was fitted, and that is the recommendation.** Notebook 06 shows
   90% of the variance is the clock and a tree captures it. A `Conv1d` or `GRU` here
   would be bought to lose, and the honest test is a room building one anyway and
