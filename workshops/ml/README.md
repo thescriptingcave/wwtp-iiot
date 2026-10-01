@@ -74,39 +74,65 @@ does not fail: it produces a table whose labels are confidently wrong, which is 
 the builder takes `--days`/`--end`/`--every-hours` as arguments rather than
 inferring them, and why the defaults live in the Makefile rather than in two places.
 
-### The 25-week window
+### The long window
 
 ```bash
-make workshop-long       # 25 weeks at 1 s -> wwtp_ml25 and dataset-25wk.csv
+make workshop-long                          # 8 weeks -> wwtp_ml25, dataset-8wk.csv
+make workshop-long WORKSHOP_LONG_WEEKS=25   # 25 weeks -> dataset-25wk.csv
 ```
 
-**It is not a laptop command.** Measured, by running it until it had to be stopped:
+**Eight weeks is the default, not 25, and the reason is arithmetic.** Notebook 03
+needs about **10 positives in the test fold** before a recall figure means anything.
+The 3-week panel's 22 positives put 4 there. The fault schedule is in hours, so
+positives scale with duration at 7.3 a week:
 
-| | 3 weeks (`make workshop`) | 25 weeks (`make workshop-long`) |
+| weeks | positives | in a 20% test fold | power? | disk (bounded) |
+|------:|----------:|-------------------:|:-------|---------------:|
+| 3 | 22 | 4 | no | 0.7-1.9 GB |
+| **8** | **59** | **12** | **yes** | **1.9-8.2 GB** |
+| 25 | 183 | 37 | yes | 6.1-25.7 GB |
+
+Eight weeks clears the threshold. Twenty-five puts 37 positives there — three times
+what is needed, for up to 25.7 GB.
+
+### What 25 weeks actually costs, measured
+
+Run on 2026-10-01 and stopped at 92.5%, because the disk ran short:
+
+| | projected | measured |
 |---|---|---|
-| rows stored | 2,995,731 | **97.5 M at 92.5% of the window** |
-| disk | 731 MB | **23 GB at 92.5%**, so ~25 GB complete |
-| time | under 2 min | **66 minutes to 92.5%**, so ~72 min |
-| fault hours on the panel | 22 | ~116 |
+| rows | ~25 M | **97.5 M at 92.5%** |
+| disk | 6.1 GB | **23 GB at 92.5%** |
+| time | ~17 min | **66 minutes to 92.5%** |
 
-Two things about that table, both of which cost somebody an hour.
+Three things about that, all of which cost an hour.
 
-**The projection was wrong by 4x.** Extrapolating from the 3-week database predicted
-6.1 GB. It is at least 23 GB. Extrapolating from *one* window's row count to
-another window's is not arithmetic, it is hope -- and the error is multiplicative in
-the sampling rate, which is exactly the parameter you would change to make it
-cheaper.
+**The projection was wrong by 4x.** Extrapolating from the 3-week database's 731 MB
+predicted 6.1 GB; it is at least 23 GB. Extrapolating from one window's row count to
+another window's is not arithmetic — and the error is multiplicative in the sampling
+rate, which is exactly the knob you would turn to make it cheaper.
 
-**The growth is not linear.** 25 weeks stored 97.5 M rows where 8.3x the duration of a
-3-week window storing 2.99 M would predict 24.9 M. Rows per day went from 998 k to
-557 k, so the historian's deadband is suppressing *fewer* writes per day on the long
-run. That is not explained here, only recorded; the 3-week panel was measured
-separately and the two datasets do not agree about their own storage ratio.
+**The growth is superlinear and unexplained.** Rows per day went from **142,654 to
+602,726** — 4.2x *more* per day on the long window, so 25 weeks stored 4.2x more rows
+per day than 8.3x its duration should give. Two measured points only *bracket* the
+truth for any intermediate window, which is why the disk column above is a range and
+not a number. Why it is superlinear is not explained here, only recorded.
 
-If you need the long window on a machine with less than 30 GB free, build it at a
-coarser `--sample-interval`. The fault schedule is derived in **hours**, so the count
-of fault hours -- the thing notebook 03 is about -- does not change. What does
-change is `n`, and the per-signal baseline is measured in `n`.
+An earlier draft of this file said rows per day *fell* from 998 k to 557 k. It rose,
+from 142,654 to 602,726 — wrong in the direction and wrong in both numbers. The
+measured values are above, and a test now holds them, because a figure that is right
+in shape and wrong in sign is the hardest kind to notice: the sentence still reads
+sensibly.
+
+**116 was the wrong unit.** An earlier version of this table said 25 weeks gives "~116
+fault hours". 116 is the number of *recurrences* — 4,200 hours at one every 36. Like
+for like against the panel's 22 fault *hours*, the answer is 183.
+
+If you need the long window at a coarser `--sample-interval`, the fault *count* is
+unaffected, because the schedule is in hours. What changes is `n`, and notebook 03's
+29x separation is measured in `n` — at 60 s sampling a quiet signal can write zero
+rows in 24 h, which collapses the very baseline the notebook is about. Coarser
+sampling buys the fault count and costs the mechanism.
 
 It writes to its **own database and its own CSV**. That is not tidiness: the
 `workshop-dataset` recipe originally hardcoded `--out workshops/ml/dataset.csv`, so

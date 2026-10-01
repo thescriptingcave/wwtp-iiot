@@ -206,6 +206,42 @@ class TestTheCostIsMeasuredNotProjected:
       different people at different times and one of them is always stale.
     """
 
+    def test_the_default_window_clears_the_power_threshold(self) -> None:
+        """8 weeks, because it puts ~12 positives in a 20% test fold.
+
+        Notebook 03's threshold is 10. Three weeks puts 4 there and 25 puts 37,
+        so the default is the smallest window that answers the question. Sizing
+        the default to the largest window anyone ever mentioned is how a dataset
+        nobody can build ends up being the documented one.
+        """
+        match = re.search(r"^WORKSHOP_LONG_WEEKS \?= (\d+)", MAKEFILE, re.M)
+        assert match, "WORKSHOP_LONG_WEEKS is no longer set in the Makefile"
+        weeks = int(match.group(1))
+        # 22 positives in 3 weeks, measured; the fault schedule is in hours, so
+        # positives scale with duration.
+        positives = 22 / 3 * weeks
+        assert positives * 0.2 >= 10, (
+            f"the default {weeks}-week window puts only "
+            f"{positives * 0.2:.0f} positives in a 20% test fold, and notebook 03 "
+            "needs 10 for a recall figure to mean anything."
+        )
+        assert weeks <= 12, (
+            f"the default is {weeks} weeks. Above 12 the disk cost grows faster "
+            "than the statistical return -- 25 weeks is 37 positives at up to "
+            "25.7 GB, three times what is needed for three times nothing extra."
+        )
+
+    def test_the_panel_name_follows_the_week_count(self) -> None:
+        """`WORKSHOP_LONG_WEEKS=25` must not write `dataset-8wk.csv`."""
+        assert "LONG_PANEL ?= workshops/ml/dataset-$(WORKSHOP_LONG_WEEKS)wk.csv" in (
+            MAKEFILE
+        ), (
+            "LONG_PANEL no longer derives from WORKSHOP_LONG_WEEKS, so overriding "
+            "the weeks writes a file named after the default. A file called "
+            "`dataset-8wk.csv` holding 25 weeks of data is how a later reader "
+            "stops trusting both numbers."
+        )
+
     #: What was actually observed, at 92.5% of a 175-day window at 1 s sampling.
     OBSERVED: ClassVar[dict[str, str]] = {
         "rows": "97.5 M",
@@ -234,39 +270,35 @@ class TestTheCostIsMeasuredNotProjected:
     def test_the_target_warns_before_it_starts(self) -> None:
         """The warning is the only thing that arrives before the disk fills."""
         body = target("workshop-long")
-        assert "30 GB" in body, (
+        assert "GB" in body, (
             "workshop-long does not say how much free disk it needs. The estimate "
-            "was wrong by 4x, so the warning has to be the measured one and it "
-            "has to be printed *before* the seed starts, not after."
+            "was wrong by 4x, so the warning has to be the measured one and it has "
+            "to be printed *before* the seed starts, not after."
+        )
+        assert "1.9-8.2 GB" in body, (
+            "the warning does not carry the bounded cost of the default 8-week "
+            "window. A bound, not a point estimate, because rows per day is "
+            "superlinear and the two measured points only bracket the truth."
         )
 
     def test_the_recipe_and_the_comment_agree(self) -> None:
         """Two copies of the cost figure, and mutation testing found only one pinned.
 
         The Makefile states the cost in a comment *and* in the recipe's `echo`.
-        Changing the comment to `about 6.1 GB free` passed every other check in
-        this file, because the echo still said 30 GB and the comment's `6.1 GB` sat
-        within the correction window of the sentence explaining the old mistake.
+        Changing the comment passed every other check in this file, because the
+        echo still said the right thing and the comment's `6.1 GB` sat within the
+        correction window of the sentence explaining the old mistake.
 
-        So both are pinned, from the same `OBSERVED` table. The rounding is
-        deliberate: 23 GB at 92.5% is stated as needing "about 30 GB free", and the
-        figure in the warning is derived from the observation rather than typed
-        twice.
+        So both are pinned. The default is the one that matters, and both copies
+        must name it, because a reader who reads one and runs the other finds out
+        from the filesystem.
         """
-        body = target("workshop-long")
-        assert "72 minutes" in body, (
-            "the recipe no longer says how long this takes. A reader who sees only "
-            "the warning line should get both numbers, and they must be the "
-            "measured ones."
-        )
         comment = MAKEFILE[: MAKEFILE.index("workshop-long:")]
-        for value in ("30 GB", "72 minutes"):
-            assert value in comment, (
-                f"the comment above workshop-long no longer says {value!r}. The "
-                "comment and the recipe both state the cost, and they have to "
-                "state the same one -- a reader who reads one and runs the other "
-                "finds out from the filesystem."
-            )
+        assert "1.9-8.2 GB" in comment, (
+            "the comment above workshop-long no longer carries the 8-week cost. "
+            "The comment and the recipe both state it, and they have to state the "
+            "same one."
+        )
 
     def test_the_nonlinear_growth_is_recorded_rather_than_explained(self) -> None:
         """8.3x the duration stored 33x the rows, and nobody knows why.
@@ -279,11 +311,27 @@ class TestTheCostIsMeasuredNotProjected:
         how a future reader concludes the two figures were a typo.
         """
         readme = (ROOT / "workshops" / "ml" / "README.md").read_text()
-        assert "not linear" in readme, (
-            "the README no longer records that the storage growth is non-linear. "
+        assert "superlinear" in readme, (
+            "the README no longer records that the storage growth is superlinear. "
             "Without it, 2.99 M and 97.5 M look like one of them is a typo."
         )
         assert "not explained here" in readme, (
-            "the README claims to explain the non-linearity it does not explain. "
+            "the README claims to explain the superlinearity it does not explain. "
             "The claim must stay a record."
+        )
+        # The two measured rates, and the *direction*. An earlier draft said rows
+        # per day fell from 998 k to 557 k; it rose, from 142,654 to 602,726. A
+        # number that is right in shape and wrong in sign is the hardest kind to
+        # notice, because the sentence still reads sensibly.
+        assert "142,654" in readme and "602,726" in readme, (
+            "the README no longer gives both measured rows-per-day rates. They are "
+            "what makes the superlinearity checkable rather than asserted."
+        )
+        # Emphasis markers are stripped before matching: the README writes `*fell*`
+        # with asterisks, and a substring check that forgets that fails on correct
+        # documentation -- which is how a check gets "fixed" by deleting the record.
+        flat = readme.replace("*", "")
+        assert "fell from" in flat and "wrong in the direction" in flat, (
+            "the README no longer records that an earlier draft had the direction "
+            "of the growth backwards. It was: rows per day rose 4.2x, not fell."
         )

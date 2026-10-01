@@ -220,18 +220,23 @@ Say this if you are asked, because it is true:
   | time | ~17 min | **66 min to 92.5%** |
   | rows | ~25 M | **97.5 M at 92.5%** |
 
+  **Eight weeks is the default instead of 25, and it is enough.** Notebook 03 needs
+  ~10 positives in a 20% test fold; the fault schedule is in hours, so positives run
+  at 7.3 a week and 8 weeks puts 12 there against 25 weeks' 37 — for 1.9-8.2 GB
+  rather than up to 25.7 GB. `make workshop-long WORKSHOP_LONG_WEEKS=8`.
+
   It was stopped with 3.7 GB free on the author's disk, which is not a margin. Two
   things follow, and the second is the useful one:
 
   - **"More data" is a server operation, not a laptop one.** If you tell a room that
     the fix for notebook 03 is a bigger dataset, say the number: about 30 GB free
     and 72 minutes.
-  - **The growth is not linear, and nobody knows why.** 25 weeks stored 97.5 M rows
-    where 8.3x the duration of the 3-week window storing 2.99 M would predict 24.9 M.
-    Rows per day fell from 998 k to 557 k, so the historian's deadband suppresses
-    *fewer* writes per day on the long run. This is recorded, not explained. If a
-    room asks, "that is a real puzzle and nobody has chased it" is the true answer
-    and a good one to give.
+  - **The growth is superlinear, and nobody knows why.** Rows per day went from
+    **142,654** on the 3-week window to **602,726** on the long one — 4.2x more per
+    day, where 8.3x the duration predicts 4.2x *fewer*. Only two points have been
+    measured, so every intermediate disk figure in this repository is a range rather
+    than a number. This is recorded, not explained. If a room asks, "that is a real
+    puzzle and nobody has chased it" is the true answer and a good one to give.
 
   Until the window completes, beat 3's conclusion stands on the 3-week panel and
   beat 4's improvement stays unmeasurable.
