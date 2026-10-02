@@ -51,22 +51,41 @@ USER node-red
 
 # `settings.js` for the settings the image's environment variables do not cover
 # — chiefly `functionExternalModules: {}`, which is a real control and not a
-# preference. `ADMIN_ROOT` and `NODE_RED_EDITOR` stay environment variables
-# because the image maps them, and putting them here as well would be two places
-# to change.
+# preference. `ADMIN_ROOT` stays an environment variable because putting it here
+# as well would be two places to change.
 #
-# The credentials file Node-RED writes on first boot is the real credential; it
-# is gitignored and lives in a named volume. `settings.js` must therefore NOT go
-# in the volume — it is a build artefact that the runtime reads, and a volume
-# mounted over `/data` would shadow it. Compose mounts the two paths
-# individually; see the `volumes:` list.
-# **To `/data`, not `/opt/node-red/data`.** The runtime's user directory is
-# `/data`, which is a volume in compose.yaml, and the image's build directory is
-# `/usr/src/node-red`. Copying to the build directory's `data` folder puts the
-# file somewhere the runtime never reads — and the symptom is that every setting
-# in it is silently ignored: the admin root stays `/`, the external-modules
-# restriction is not applied, and nothing says so. The container logs the path it
-# read ("Settings file : /data/settings.js") and the file is not there.
+# **To `/data`, and the `CMD` below points Node-RED at `/data` as its user
+# directory.** Both halves are load-bearing and neither works alone.
+#
+# The base image's user directory is `/usr/src/node-red/.node-red`, *not* `/data`.
+# The container says so on every boot:
+#
+#     [info] Settings file  : /usr/src/node-red/.node-red/settings.js
+#     [info] User directory : /usr/src/node-red/.node-red
+#     [info] Flows file     : /usr/src/node-red/.node-red/flows.json
+#     [info] Creating new flow file
+#
+# That is the image's own stock `settings.js` — 24 kB of commented defaults, not
+# the 2 kB file beside this one — so every setting in ours was silently ignored.
+# The symptom is the quietest this project produces, because the runtime reports
+# health while doing nothing at all:
+#
+#   * the admin root stayed `/`, so `httpAdminRoot` never applied and the editor
+#     answered on `/red` while `ADMIN_ROOT=/scada` made `/scada` a 404;
+#   * `flowFile` resolved against the *other* directory, so the flows
+#     `entrypoint.sh` assembles into `/data/flows.json` were never read and the
+#     runtime started with **zero** nodes — `Creating new flow file`, then
+#     `Started flows`, and an operator looking at an empty editor has no way to
+#     tell that from a Node-RED with nothing deployed;
+#   * `node-red-contrib-postgresql` and `-modbus` are installed to `/data`, and
+#     `/usr/src/node-red/.node-red/node_modules` is empty, so loading a real flow
+#     produces the "Waiting for missing types to be registered" stall documented
+#     above — the very symptom the `npm install` into `/data` was meant to prevent.
+#
+# `--userDir /data` in the `CMD` is what closes all three: Node-RED then reads
+# `/data/settings.js`, resolves `flowFile: 'flows.json'` against `/data`, and
+# finds `/data/node_modules`. The base image has no `USER_DIR` environment
+# variable, so this has to be an argument.
 COPY settings.js /data/settings.js
 
 # The credential is derived from the environment rather than committed and not
@@ -90,4 +109,4 @@ USER node-red
 
 ENV NR_DATA_DIR=/data
 ENTRYPOINT ["/usr/local/bin/wwtp-entrypoint.sh"]
-CMD ["node-red"]
+CMD ["node-red", "--userDir", "/data"]

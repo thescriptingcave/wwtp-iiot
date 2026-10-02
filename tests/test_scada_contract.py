@@ -741,14 +741,39 @@ def env_cmd(name: str) -> str:
 
 
 def test_the_entrypoint_writes_valid_json() -> None:
-    """The credential file is hand-written JSON in POSIX `sh`.
+    """The credential file is encrypted in the format Node-RED actually reads.
 
     A password containing a quote or a backslash would otherwise produce a file
     Node-RED cannot parse, and the error is a JSON parse failure in a log line
     about a file the reader did not know existed. So the escaping is exercised
     here rather than in production.
+
+    **And the round trip is the real one.** This test used to read the password
+    back out of a plaintext object keyed by the credential secret, which pinned
+    the *broken* format — the file was not in a shape Node-RED reads at all.
+    Node-RED derives `sha256(credentialSecret)` as the AES key and stores
+    everything under a single literal `$` key whose value is a 16-byte IV in hex
+    followed by AES-256-CTR ciphertext in base64. Get the key *name* wrong and it
+    does not fail: it logs `Encrypted credentials not found`, adopts the raw file
+    as its credential cache, and every lookup misses, which surfaces nodes later as
+
+        TypeError: node.config.pgPool.connect is not a function
+
+    So the assertions below decrypt the file exactly as `credentials.js` does, in
+    `node` — which is what writes it. Asserting the shape instead of the round
+    trip would only have caught the next way of getting this wrong.
     """
     script = Path("scada/nodered/entrypoint.sh")
+    decrypt = (
+        'const c=require("crypto"),f=require("fs");'
+        'const s=f.readFileSync(process.argv[1],"utf8").trim();'
+        'const p=JSON.parse(f.readFileSync(process.argv[2],"utf8"));'
+        'const k=c.createHash("sha256").update(s).digest();'
+        'const iv=Buffer.from(p["$"].substring(0,32),"hex");'
+        'const d=c.createDecipheriv("aes-256-ctr",k,iv);'
+        'process.stdout.write('
+        'd.update(p["$"].substring(32),"base64","utf8")+d.final("utf8"));'
+    )
     for password in ("simple", 'has "quotes"', "back\\slash", "both \" and '", "!"):
         with tempfile.TemporaryDirectory() as tmp:
             _minimal_flows(Path(tmp) / "flows")
@@ -768,20 +793,51 @@ def test_the_entrypoint_writes_valid_json() -> None:
                 env=env, capture_output=True, text=True, check=False,
             )
             assert result.returncode == 0, result.stderr
-            payload = json.loads(
-                (Path(tmp) / "flows_cred.json").read_text(encoding="utf-8")
+
+            secret_file = Path(tmp) / ".credentialSecret"
+            cred_file = Path(tmp) / "flows_cred.json"
+
+            # The shape Node-RED looks for, and nothing else.
+            payload = json.loads(cred_file.read_text(encoding="utf-8"))
+            assert list(payload) == ["$"], (
+                f"expected a single `$` key, got {list(payload)}; Node-RED derives "
+                "its own key name from the secret and will not find the credentials "
+                "under anything else"
             )
-            secret = next(iter(payload))
-            assert payload[secret]["wwtp-db"]["postgresqldb"]["password"] == password, (
+
+            # And the key itself: one per run, kept, so a restart can read it.
+            assert secret_file.exists()
+            secret = secret_file.read_text(encoding="utf-8").strip()
+            assert len(secret) == 64, secret
+
+            decrypted = subprocess.run(
+                [env_cmd("node"), "-e", decrypt, str(secret_file), str(cred_file)],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            creds = json.loads(decrypted)
+            assert creds["wwtp-db"]["postgresqldb"]["password"] == password, (
                 f"password {password!r} did not survive the round trip"
             )
-            # And the key itself: one per run, kept, so a restart can read it.
-            assert (Path(tmp) / ".credentialSecret").exists()
-            key = (Path(tmp) / ".credentialSecret").read_text(encoding="utf-8")
-            assert key == secret, (
-                "the key in flows_cred.json is not the one in .credentialSecret, "
-                "so Node-RED cannot read back what the entrypoint wrote"
-            )
+            assert creds["wwtp-db"]["postgresqldb"]["host"] == "db"
+            assert creds["wwtp-db"]["postgresqldb"]["database"] == "wwtp"
+            assert creds["wwtp-softplc-modbus"]["modbus-client"]["host"] == "softplc"
+
+    # A credential is a credential whether or not it happens to be encrypted.
+    with tempfile.TemporaryDirectory() as tmp:
+        _minimal_flows(Path(tmp) / "flows")
+        subprocess.run(
+            [env_cmd("sh"), str(script), "true"],
+            env={
+                "NR_DATA_DIR": tmp,
+                "NR_FLOWS_DIR": str(Path(tmp) / "flows"),
+                "POSTGRES_PASSWORD": "simple",
+                "POSTGRES_USER": "wwtp",
+            },
+            capture_output=True, text=True, check=True,
+        )
+        for name in ("flows_cred.json", ".credentialSecret"):
+            mode = (Path(tmp) / name).stat().st_mode & 0o777
+            assert mode == 0o600, f"{name} is {oct(mode)}, expected 0o600"
 
 
 def test_the_entrypoint_never_overwrites_an_existing_credential() -> None:

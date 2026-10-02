@@ -127,102 +127,77 @@ if [ ! -f "$CRED_FILE" ]; then
     fi
     CREDENTIAL_SECRET="$(cat "$DATA_DIR/.credentialSecret")"
 
-    # Written as JSON, by hand, with a small helper for the escaping that actually
-    # matters. A password containing a quote or a backslash would otherwise
-    # produce a credential file Node-RED cannot parse, and the error is a JSON
-    # parse failure in a log line about a file the reader did not know existed.
-    json_escape() {
-        printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
-    }
+    # Written with `node`, in the shape `credentials.js` actually reads, and for the
+    # same reason the flow assembly above uses `node`: this file has a required
+    # shape that is not obvious, and hand-assembling it in `printf` is how you get
+    # a JSON parse error in a log line about a file the reader did not know existed.
+    #
+    # **The shape is not "an object keyed by the secret".** Node-RED derives
+    # `sha256(credentialSecret)` as the AES key, and stores the credentials under a
+    # single literal `$` key whose value is a 16-byte initialisation vector in hex
+    # followed by the AES-256-CTR ciphertext in base64. Nothing documents that
+    # except `credentials.js`, and getting it wrong does not fail loudly — with the
+    # wrong key *name* Node-RED logs
+    #
+    #     [warn] Encrypted credentials not found
+    #
+    # adopts the raw file as its credential cache, and every lookup misses. That
+    # surfaces three nodes later, in the runtime log, as
+    #
+    #     TypeError: node.config.pgPool.connect is not a function
+    #
+    # which is a Node-RED internal and tells an operator nothing whatsoever. That
+    # is precisely the symptom the top of this file exists to prevent, so the shape
+    # is written out here rather than left to be rediscovered.
+    #
+    # The password comes from the environment rather than an argument, so it does
+    # not appear in `ps` for the lifetime of this process.
+    node -e '
+      const crypto = require("crypto"), fs = require("fs");
+      const [ , out, secret, dbHost, dbPort, dbName, dbUser,
+              mbHost, mbPort, mbUnit ] = process.argv;
+      const creds = {
+        "wwtp-db": {
+          id: "wwtp-db", name: "wwtp-db", type: "postgresdb",
+          postgresqldb: {
+            host: dbHost, port: dbPort, database: dbName, user: dbUser,
+            password: process.env.POSTGRES_PASSWORD,
+            ssl: false, applicationName: "wwtp-scada",
+          },
+        },
+        "wwtp-softplc-modbus": {
+          id: "wwtp-softplc-modbus", name: "wwtp-softplc-modbus",
+          type: "modbus-client",
+          "modbus-client": {
+            host: mbHost, port: Number(mbPort), unit_id: Number(mbUnit),
+            serverType: "tcp", reconnectDelay: "1000", reconnectTries: "10",
+          },
+        },
+      };
+      const key = crypto.createHash("sha256").update(secret).digest();
+      const iv = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv("aes-256-ctr", key, iv);
+      const body = cipher.update(JSON.stringify(creds), "utf8", "base64")
+                 + cipher.final("base64");
+      fs.writeFileSync(
+        out,
+        JSON.stringify({ "$": iv.toString("hex") + body }) + "\n",
+        { mode: 0o600 });
+    ' "$CRED_FILE" "$CREDENTIAL_SECRET" \
+      "$NODE_RED_DB_HOST" "$NODE_RED_DB_PORT" "$NODE_RED_DB_NAME" "$NODE_RED_DB_USER" \
+      "${MODBUS_HOST:-softplc}" "${MODBUS_PORT:-5020}" "${MODBUS_UNIT_ID:-1}"
 
-    {
-        printf '{"%s":{\n' "$(json_escape "$CREDENTIAL_SECRET")"
-        printf '  "wwtp-db": {\n'
-        printf '    "id": "wwtp-db",\n'
-        printf '    "name": "wwtp-db",\n'
-        printf '    "type": "postgresdb",\n'
-        printf '    "postgresqldb": {\n'
-        printf '      "host": "%s",\n' "$(json_escape "$NODE_RED_DB_HOST")"
-        printf '      "port": "%s",\n' "$NODE_RED_DB_PORT"
-        printf '      "database": "%s",\n' "$(json_escape "$NODE_RED_DB_NAME")"
-        printf '      "user": "%s",\n' "$(json_escape "$NODE_RED_DB_USER")"
-        printf '      "password": "%s",\n' "$(json_escape "$POSTGRES_PASSWORD")"
-        printf '      "ssl": false,\n'
-        printf '      "applicationName": "wwtp-scada"\n'
-        printf '    }\n'
-        printf '  },\n'
-        printf '  "wwtp-softplc-modbus": {\n'
-        printf '    "id": "wwtp-softplc-modbus",\n'
-        printf '    "name": "wwtp-softplc-modbus",\n'
-        printf '    "type": "modbus-client",\n'
-        printf '    "modbus-client": {\n'
-        printf '      "host": "%s",\n' "$(json_escape "${MODBUS_HOST:-softplc}")"
-        printf '      "port": %s,\n' "${MODBUS_PORT:-5020}"
-        printf '      "unit_id": %s,\n' "${MODBUS_UNIT_ID:-1}"
-        printf '      "serverType": "tcp",\n'
-        printf '      "reconnectDelay": "1000",\n'
-        printf '      "reconnectTries": "10"\n'
-        printf '    }\n'
-        printf '  }\n'
-        # The secret map, then the document.
-        #
-        # Four opens -- the document, the secret map, and two credentials -- and
-        # this is the one place they are closed, so the count is written out
-        # rather than trusted. The first version closed three, and Node-RED's
-        # failure was `Expecting ',' delimiter: line 30 column 1`: a JSON parse
-        # error, in a log line, about a file the reader did not know existed.
-        printf '}\n'
-        printf '}\n'
-    } > "$CRED_FILE"
     chmod 600 "$CRED_FILE"
 fi
 
+# `exec`, so Node-RED *is* this process: it receives the signal `docker compose
+# down` sends, and the `tini` init above reaps what it leaves behind. Anything
+# after this line is dead — `exec` does not return.
+#
+# `credentialSecret` is not handled here. It used to be, by a Python block that
+# rewrote `settings.js` at build time to inject the function; that block sat after
+# this `exec`, so it never ran, and the setting it was adding to `settings.js` was
+# never there. The block has been removed and the function now lives in
+# `settings.js` itself, reading `$NR_DATA_DIR/.credentialSecret` at startup — which
+# is what it should have been doing all along, and needs no build step to do it.
 exec "$@"
-SHEEOF
-chmod +x scada/nodered/entrypoint.sh
-.venv/bin/python - <<'PYEOF'
-import pathlib
-p = pathlib.Path("scada/nodered/Dockerfile"); s = p.read_text()
-s = s.replace('''USER node-red''','''# The credential is derived from the environment rather than committed or typed
-# into the editor. See `entrypoint.sh` for why both of those are wrong here.
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-ENV NR_DATA_DIR=/data
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["node-red"]
-
-USER node-red''')
-p.write_text(s)
-# and the settings need credentialSecret read from the file the entrypoint writes
-p = pathlib.Path("scada/nodered/settings.js"); s = p.read_text()
-s = s.replace("""module.exports = {""","""const fs = require('fs');
-const path = require('path');
-
-/** The key `flows_cred.json` is encrypted with, read from the file the
- *  entrypoint generates.
- *
- *  Node-RED generates one itself and logs a warning that it is "system-generated"
- *  and unrecoverable, which is true and unhelpful: it means the credential this
- *  project deliberately does not commit cannot survive a volume rebuild, and
- *  nobody is told what to do about it. Reading it from a file we generate is one
- *  line and removes the warning.
- *
- *  `credentialSecret` is a *key*, not a password. It sits beside the credential
- *  it protects; the thing that is kept out of git is the whole `flows_cred.json`
- *  (see .gitignore).
- */
-function credentialSecret() {
-    const file = path.join(process.env.NR_DATA_DIR || '/data', '.credentialSecret');
-    try {
-        return fs.readFileSync(file, 'utf8').trim();
-    } catch {
-        return undefined;   // let Node-RED generate one and warn, as it would anyway
-    }
-}
-
-module.exports = {
-    credentialSecret: credentialSecret(),
-""")
-p.write_text(s); print("ok")
-PYEOF
-docker build -t wwtp-nodered-test -f scada/nodered/Dockerfile scada/nodered 2>&1 | tail -2
