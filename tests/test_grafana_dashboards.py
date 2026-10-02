@@ -67,6 +67,12 @@ def _substitute(sql: str) -> str:
     return sql
 
 
+#: psycopg type codes that Grafana would turn into a separate series. A stat
+#: panel draws one large number per one of these, which is why the count
+#: matters more than the SQL being valid.
+_NUMERIC = {20, 21, 23, 700, 701, 1700}   # int2/4/8, float4/8, numeric
+
+
 def _queries(dash: dict) -> list[tuple[str, str]]:
     out = []
     for panel in dash["panels"]:
@@ -139,6 +145,120 @@ def test_every_panel_has_a_unique_id_and_a_grid_position(dashboards: dict) -> No
                 "like a rendering bug"
             )
             occupied.add(cell)
+
+
+def test_a_stat_panel_returns_exactly_one_numeric_field(
+    dashboards: dict, live_db: bool,
+) -> None:
+    """A stat panel draws one large number *per numeric field*, so one field.
+
+    **This is the bug that shipped.** The first at-a-glance row reused
+    `_raw_query`, which returns `time`, `value`, `quality` and `samples`. The
+    postgres datasource turns every numeric column into its own series, so each
+    tile rendered as three stacked numbers:
+
+        1588.23 m3/h
+        quality      0.00 m3/h
+        samples      1.00 m3/h
+
+    Nothing errored. The SQL was valid, `test_every_dashboard_query_runs`
+    passed, and the JSON passed every structural check — because every one of
+    those checks looks at the query text or the panel shape, and the fault is in
+    how Grafana *interprets* a correct frame. It was found by somebody opening
+    the dashboard.
+
+    Asserted by executing the panel's query and counting numeric fields in the
+    returned frame, which is the only place the fault is visible.
+    """
+    for name, dash in dashboards.items():
+        for panel in dash["panels"]:
+            if panel["type"] != "stat":
+                continue
+            sql = _substitute(panel["targets"][0]["rawSql"])
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute(sql)
+                numeric = [
+                    d.name for d in cur.description if d.type_code in _NUMERIC
+                ]
+            assert numeric == ["value"], (
+                f"{name}: the {panel['title']!r} stat panel returns "
+                f"{numeric}. A stat panel draws one large number per numeric "
+                f"field, so {len(numeric)} of them is {len(numeric)} numbers "
+                f"where there should be one — and the unit is applied to all of "
+                f"them. Use `_latest_query`, which returns a single value "
+                f"column."
+            )
+
+
+def test_every_stat_panel_shows_a_stored_value(
+    dashboards: dict, live_db: bool,
+) -> None:
+    """A tile that reads *No data* is worse than no tile.
+
+    The second fault. The row originally carried effluent ammonia, whose
+    deadband is 0.1 mg/L and which moves by less than that over six hours, so the
+    gateway stored almost nothing and the tile had nothing to show. **No data**
+    beside three live numbers is read as a failed instrument, which is the one
+    misreading this plant's whole fault library exists to avoid.
+
+    **Twenty-four hours, not one hour -- and the difference is the point.** An
+    earlier version of this test demanded a reading in the last hour and failed
+    on two of the four tiles, which is not a bug in the tiles. Effluent flow and
+    aeration DO are the two numbers a plant manager most wants, and neither
+    stored anything in the last hour because the plant had genuinely settled.
+
+    That is not a reason to change the tiles; it is the reason the overview now
+    carries a *How old is the reading behind each number?* table beside them. A
+    stat panel shows one number and no timestamp, so it cannot distinguish a
+    live reading from a five-hour-old one, and the reader needs to be able to.
+    This test guards the floor -- a tile that can show *nothing* -- and the
+    table carries the currency question where it can be answered honestly.
+    """
+    for name, dash in dashboards.items():
+        for panel in dash["panels"]:
+            if panel["type"] != "stat":
+                continue
+            sql = _substitute(panel["targets"][0]["rawSql"])
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+            assert row is not None and row[0] is not None, (
+                f"{name}: the {panel['title']!r} stat panel reads No data against "
+                f"the live historian. A status row is read in five seconds and "
+                f"must show something -- check the signal's deadband against how "
+                f"fast it changes, not just that the id exists."
+            )
+
+
+def test_the_freshness_table_covers_exactly_the_stat_tiles(
+    dashboards: dict,
+) -> None:
+    """The table that answers "how old is that number?" must list the numbers.
+
+    Two lists of the same four signals and nothing joins them, so renaming a tile
+    without touching the table leaves the reader unable to check the one thing a
+    stat panel cannot tell them -- and no other check notices.
+    """
+    overview = dashboards["wwtp-overview.json"]
+    tiles = {
+        re.search(r"signal_id = '([^']+)'", p["targets"][0]["rawSql"]).group(1)
+        for p in overview["panels"] if p["type"] == "stat"
+    }
+    freshness = next(
+        p for p in overview["panels"]
+        if p["title"].startswith("How old is the reading")
+    )
+    listed = set(re.findall(
+        # The last segment needs `_` as well: AERATION:AHU-1:AIR_FLOW.
+        r"'([A-Z][A-Z0-9_]*(?::[A-Z0-9_-]+){2})'",
+        freshness["targets"][0]["rawSql"],
+    ))
+    assert listed == tiles, (
+        f"the freshness table lists {sorted(listed)} but the stat tiles show "
+        f"{sorted(tiles)}. A tile whose age is not shown is a number a reader "
+        f"has to take on trust."
+    )
+
 
 
 def test_a_panel_fits_the_grid_and_does_not_overlap_its_neighbour(

@@ -265,7 +265,7 @@ def _count_tests(path: str) -> int:
     ("path", "claimed"),
     [
         ("tests/test_scada_contract.py", 51),
-        ("tests/test_grafana_dashboards.py", 16),
+        ("tests/test_grafana_dashboards.py", 19),
         ("tests/test_web_page.py", 22),
         ("tests/test_opcua_course.py", 34),
         ("tests/test_opcua_minimal_client.py", 7),

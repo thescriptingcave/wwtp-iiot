@@ -47,7 +47,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'INFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "rawSql": "SELECT $__timeTo()::timestamptz AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value FROM reading WHERE signal_id = 'INFLUENT:FLOW:FLOW'   AND ts >= now() - interval '24 hours' -- flow_m3h, latest -- one column: a stat panel draws one per numeric field",
           "interval": "5s",
           "legendFormat": "flow_m3h"
         }
@@ -122,7 +122,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'EFFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "rawSql": "SELECT $__timeTo()::timestamptz AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value FROM reading WHERE signal_id = 'EFFLUENT:FLOW:FLOW'   AND ts >= now() - interval '24 hours' -- flow_m3h, latest -- one column: a stat panel draws one per numeric field",
           "interval": "5s",
           "legendFormat": "flow_m3h"
         }
@@ -197,7 +197,7 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- do_mg_l, raw tier",
+          "rawSql": "SELECT $__timeTo()::timestamptz AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= now() - interval '24 hours' -- do_mg_l, latest -- one column: a stat panel draws one per numeric field",
           "interval": "5s",
           "legendFormat": "do_mg_l"
         }
@@ -251,8 +251,8 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Effluent ammonia",
-      "description": "The number the permit is written against, as a current reading. The *compliance* figure is a 30-day mean and lives on the permit dashboard; this is today, not the average.",
+      "title": "Aeration air flow",
+      "description": "What the control loop is actually commanding \u2014 the output, not the result. **This was effluent ammonia, and it was the wrong tile.** Ammonia moves by less than its 0.1 mg/L deadband over six hours, so the gateway stores almost nothing and this panel showed *No data* beside three live numbers, which reads as a failed instrument rather than a quiet one. Air flow is the output an operator's setpoint *moves*, so it is the one worth a tile \u2014 and it is the signal to watch when you change the setpoint.\n\nThe ammonia is not lost: its **compliance** figure is a 30-day mean and is on the permit dashboard, and its trend is on *Effluent quality* below. A number that only changes twice a week does not belong in a row read in five seconds.",
       "datasource": {
         "type": "postgres",
         "uid": "wwtp-postgres"
@@ -272,14 +272,14 @@
           "refId": "A",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'EFFLUENT:FLOW:NH4'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- nh4_mg_l, raw tier",
+          "rawSql": "SELECT $__timeTo()::timestamptz AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value FROM reading WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'   AND ts >= now() - interval '24 hours' -- air_flow_m3h, latest -- one column: a stat panel draws one per numeric field",
           "interval": "5s",
-          "legendFormat": "nh4_mg_l"
+          "legendFormat": "air_flow_m3h"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "mg/L",
+          "unit": "m3/h",
           "decimals": 2,
           "mappings": [],
           "thresholds": {
@@ -291,16 +291,16 @@
               },
               {
                 "color": "red",
-                "value": 0.5,
+                "value": 2000.0,
                 "op": "lt"
               },
               {
                 "color": "text",
-                "value": 0.5
+                "value": 2000.0
               },
               {
                 "color": "green",
-                "value": 8.0,
+                "value": 14000.0,
                 "op": "gt"
               }
             ]
@@ -384,7 +384,40 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quality"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "samples"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -461,7 +494,40 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quality"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "samples"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -536,7 +602,40 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quality"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "samples"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -611,7 +710,40 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quality"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "samples"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -686,7 +818,40 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quality"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "samples"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -761,7 +926,40 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quality"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "samples"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -773,6 +971,42 @@
           "mode": "multi",
           "sort": "none"
         }
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "How old is the reading behind each number?",
+      "description": "**A stat panel cannot show you this, and the gap matters.** The four numbers above are the most recent *stored* reading, and the historian only stores one when it exceeds the signal's deadband \u2014 so a tile can be hours old while the instrument is perfectly healthy. Only seven of the fifty-seven signals have stored anything in the last hour, and the gateway reports filtering **94 %** of readings, which is exactly what a deadband is for.\n\nThis table is the difference between *the probe has failed* and *the ammonia moved less than 0.1 mg/L*. Same symptom, completely different action. Read it before you read a big number as a live one \u2014 and read *What has stopped reporting* below for the harder case, which is a signal with no recent reading at all.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT wanted.signal_id AS signal,\n       wanted.field,\n       now() - max(r.ts) AS age,\n       count(r.ts) AS rows_stored_24h\nFROM (VALUES ('INFLUENT:FLOW:FLOW', 'flow_m3h'), ('EFFLUENT:FLOW:FLOW', 'flow_m3h'), ('AERATION:AHU-1:DO', 'do_mg_l'), ('AERATION:AHU-1:AIR_FLOW', 'air_flow_m3h')) AS wanted(signal_id, field)\nLEFT JOIN reading r\n       ON r.signal_id = wanted.signal_id\n      AND r.ts >= now() - interval '24 hours'\nWHERE wanted.signal_id IN ('INFLUENT:FLOW:FLOW', 'EFFLUENT:FLOW:FLOW', 'AERATION:AHU-1:DO', 'AERATION:AHU-1:AIR_FLOW')\nGROUP BY wanted.signal_id, wanted.field\nORDER BY max(r.ts) NULLS FIRST"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
       }
     },
     {

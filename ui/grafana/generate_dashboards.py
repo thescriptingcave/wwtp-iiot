@@ -40,6 +40,7 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -215,7 +216,7 @@ def _timeseries_panel(
                     "steps": steps,
                 },
             },
-            "overrides": [],
+            "overrides": _hidden_fields(),
         },
         "options": {
             "legend": {"displayMode": "list", "placement": "bottom",
@@ -223,6 +224,105 @@ def _timeseries_panel(
             "tooltip": {"mode": "multi", "sort": "none"},
         },
     }
+
+
+def _latest_query(c: Contract, signal_id: str) -> str:
+    """The most recent reading of one signal, as exactly one number.
+
+    **Written separately from `_raw_query` because a stat panel cannot cope with
+    that frame, and the reason is worth recording because I got it wrong first.**
+
+    `_raw_query` returns `time`, `value`, `quality` and `samples`. That is
+    correct for a time-series panel — `quality` is what lets a panel decide
+    whether a gap is an outage — but the postgres datasource returns *every*
+    numeric column as its own series, and a stat panel draws one large number per
+    series. So the first version of the at-a-glance row rendered as:
+
+        1588.23 m3/h
+        quality      0.00 m3/h
+        samples      1.00 m3/h
+
+    which is three numbers where there should be one, the field names printed as
+    if they were labels, and the unit stamped onto a sample count. It is the
+    honest-looking failure this repository keeps producing: nothing errored, the
+    SQL was correct, and `test_every_dashboard_query_runs` passed.
+
+    **The same defect is latent in every time-series panel**, which shares the
+    frame — see `_hidden_fields()` below, which is why the fix is there and not
+    only here.
+
+    The value is still computed by the same idiom as `_raw_query`,
+    `(array_agg(value ORDER BY ts DESC))[1]`, over the same time range. That is
+    what keeps the property that mattered when this was originally written with
+    the shared query: the stat panel and the trend panel for one signal cannot
+    report different numbers, because both take the most recent reading by the
+    same rule.
+
+    `$__timeTo()::timestamptz AS time` rather than a real timestamp, because a
+    stat panel shows "as of now" and a one-row frame has no series to place a
+    time on. **The cast is not decoration.** The macro expands to a *quoted
+    string*, so without it the column comes back as text and the datasource
+    refuses the frame outright:
+
+        converting time columns failed: failed to convert time column:
+        unable to convert data to a time field
+
+    which is at least loud.
+
+    **The 24-hour lookback is fixed, and does not follow the time picker.** A
+    stat panel answers "what is it now", not "what was it in this window", so
+    honouring the dashboard's range would make the tile change meaning when
+    somebody drags the time control — and the default range of six hours is
+    shorter than the gap between two stored readings for most of this plant.
+
+    That gap is the deadband, and it is much larger than it looks. The gateway
+    reports offering 2.67 M readings and publishing 151 k — **94 % filtered** —
+    and 50 of the 57 signals have not produced a row in the last hour. Effluent
+    ammonia moves by less than its 0.1 mg/L band over six hours, so its most
+    recent stored value is six hours old while the instrument is perfectly
+    healthy. A stat panel reading `$__timeFrom()` would have shown *No data*
+    beside three live numbers, and "No data" next to a number reads as a failed
+    instrument.
+
+    With no rows in the lookback, `array_agg` yields NULL and the panel reads
+    *No data* — which by then genuinely means what it says.
+    """
+    s = _tag(c, signal_id)
+    return (
+        "SELECT $__timeTo()::timestamptz AS time, "
+        "       (array_agg(value ORDER BY ts DESC))[1] AS value "
+        "FROM reading "
+        f"WHERE signal_id = '{signal_id}' "
+        "  AND ts >= now() - interval '24 hours' "
+        f"-- {s.field}, latest -- one column: a stat panel draws one per numeric field"
+    )
+
+
+def _hidden_fields() -> list[dict[str, Any]]:
+    """Overrides hiding `quality` and `samples` from the plot.
+
+    These are in the frame because `_raw_query` returns them deliberately — the
+    `max(quality)` in the SELECT rather than the WHERE is the fix for a fault
+    filter that makes "no data" indistinguishable from "no change", and dropping
+    them from the query would undo that reasoning. But the datasource turns every
+    numeric column into a series, so a time-series panel draws `quality` and
+    `samples` as two extra lines per signal. Six hundred series of instrumentation
+    metadata, plotted on top of the one thing the panel is about.
+
+    Hidden rather than removed, because the frame is what a future rule would
+    want: instrument health is exactly the kind of thing that becomes useful the
+    moment someone decides to use it, and it should not need a query change.
+    """
+    return [
+        {
+            "matcher": {"id": "byName", "options": name},
+            "properties": [{
+                "id": "custom.hideFrom",
+                "value": {"tooltip": False, "viz": False, "legend": False},
+            }],
+        }
+        for name in ("quality", "samples")
+    ]
 
 
 def _stat_panel(
@@ -247,21 +347,16 @@ def _stat_panel(
     `reduceOptions.calcs = ["lastNotNull"]` rather than `"mean"`, and the choice
     matters: dissolved oxygen samples every five seconds and the dashboard's
     default range is six hours, so a mean over the range is a six-hour average
-    presented as if it were the current state. `lastNotNull` is the reading, and
-    `lastNotNull` rather than `last` because a signal whose most recent sample is
-    `NULL` — a failed transmitter, which this plant models — would otherwise show
-    nothing at all instead of the absence of a number.
+    presented as if it were the current state.
 
     The band is drawn as thresholds, not as a second query, for the same reason
     `_timeseries_panel` does it that way: two queries for a value and its band is
     two aggregations, and they can disagree at a point where they were not
     computed from the same rows.
 
-    Note this reuses `_raw_query`, so a stat panel carries a time range and the
-    panel ignores all but its last row. That is deliberate — one query builder,
-    one place where the raw-tier aggregation is defined — and it means the stat
-    and the trend panel for the same signal cannot disagree about what the
-    reading is, which they would if each had its own simpler query.
+    **The query returns one numeric column**, and that is load-bearing — see
+    `_latest_query`. A stat panel draws one large number per numeric field, so a
+    three-column frame is three numbers.
     """
     s = _tag(c, signal_id)
     return {
@@ -271,7 +366,7 @@ def _stat_panel(
         "description": description,
         "datasource": {"type": "postgres", "uid": DS},
         "gridPos": {"h": grid[2], "w": grid[3], "x": grid[0], "y": grid[1]},
-        "targets": [_target("A", _raw_query(c, signal_id), s.field)],
+        "targets": [_target("A", _latest_query(c, signal_id), s.field)],
         "fieldConfig": {
             "defaults": {
                 "unit": unit or UNIT_NONE,
@@ -302,6 +397,42 @@ def _stat_panel(
             "orientation": "auto",
         },
     }
+
+
+def _freshness_query(c: Contract, signal_ids: Sequence[str]) -> str:
+    """How old is the reading behind each at-a-glance tile.
+
+    **Because a stat panel cannot tell you, and the gap matters.** The tiles show
+    the most recent *stored* value, and the historian only stores a reading when
+    it exceeds the signal's deadband — so a tile can be hours old while the
+    instrument is perfectly healthy. Only seven of the fifty-seven signals have
+    stored anything in the last hour; the gateway reports filtering 94 % of
+    readings, which is correct and is the point of a deadband.
+
+    A big number with no timestamp beside it is history wearing the costume of
+    now, and the reader has no way to tell. This table is that way: it is the
+    difference between *"the probe has failed"* and *"the ammonia moved less
+    than 0.1 mg/L"*, which are the same symptom and completely different
+    actions.
+
+    `now() - max(ts)` rather than an age in seconds, because a reader comparing
+    6 h against a healthy instrument reads it immediately.
+    """
+    values = ", ".join(f"'{sid}'" for sid in signal_ids)
+    labels = ", ".join(f"('{sid}', '{_tag(c, sid).field}')" for sid in signal_ids)
+    return f"""
+SELECT wanted.signal_id AS signal,
+       wanted.field,
+       now() - max(r.ts) AS age,
+       count(r.ts) AS rows_stored_24h
+FROM (VALUES {labels}) AS wanted(signal_id, field)
+LEFT JOIN reading r
+       ON r.signal_id = wanted.signal_id
+      AND r.ts >= now() - interval '24 hours'
+WHERE wanted.signal_id IN ({values})
+GROUP BY wanted.signal_id, wanted.field
+ORDER BY max(r.ts) NULLS FIRST
+""".strip()
 
 
 def _table_panel(
@@ -454,6 +585,17 @@ def _dashboard(
     }
 
 
+#: The four signals on the at-a-glance row. Named because two things need the
+#: same list and disagreeing copies is how the freshness table ends up describing
+#: tiles that are not there.
+_STATUS_ROW_SIGNALS = (
+    "INFLUENT:FLOW:FLOW",
+    "EFFLUENT:FLOW:FLOW",
+    "AERATION:AHU-1:DO",
+    "AERATION:AHU-1:AIR_FLOW",
+)
+
+
 def build_overview(c: Contract) -> dict[str, Any]:
     return _dashboard(
         "wwtp-overview",
@@ -486,12 +628,23 @@ def build_overview(c: Contract) -> dict[str, Any]:
                             "instrument.",
             ),
             _stat_panel(
-                c, 4, "Effluent ammonia", "EFFLUENT:FLOW:NH4",
-                grid=(18, 0, 4, 6), unit="mg/L",
-                description="The number the permit is written against, as a "
-                            "current reading. The *compliance* figure is a "
-                            "30-day mean and lives on the permit dashboard; this "
-                            "is today, not the average.",
+                c, 4, "Aeration air flow", "AERATION:AHU-1:AIR_FLOW",
+                grid=(18, 0, 4, 6), unit="m3/h",
+                description="What the control loop is actually commanding — the "
+                            "output, not the result. **This was effluent "
+                            "ammonia, and it was the wrong tile.** Ammonia moves "
+                            "by less than its 0.1 mg/L deadband over six hours, "
+                            "so the gateway stores almost nothing and this panel "
+                            "showed *No data* beside three live numbers, which "
+                            "reads as a failed instrument rather than a quiet "
+                            "one. Air flow is the output an operator's setpoint "
+                            "*moves*, so it is the one worth a tile — and it is "
+                            "the signal to watch when you change the setpoint.\n\n"
+                            "The ammonia is not lost: its **compliance** figure "
+                            "is a 30-day mean and is on the permit dashboard, and "
+                            "its trend is on *Effluent quality* below. A number "
+                            "that only changes twice a week does not belong in a "
+                            "row read in five seconds.",
             ),
             _timeseries_panel(
                 c,
@@ -565,6 +718,28 @@ def build_overview(c: Contract) -> dict[str, Any]:
                             "silently be read as a pH limit. Each needs its own "
                             "panel to have a band, which is a layout decision "
                             "this generator makes by refusing to draw one here.",
+            ),
+            _table_panel(
+                12, "How old is the reading behind each number?",
+                _freshness_query(c, list(_STATUS_ROW_SIGNALS)),
+
+                grid=(0, 38, 7, 24),
+                description="**A stat panel cannot show you this, and the gap "
+                            "matters.** The four numbers above are the most "
+                            "recent *stored* reading, and the historian only "
+                            "stores one when it exceeds the signal's deadband — "
+                            "so a tile can be hours old while the instrument is "
+                            "perfectly healthy. Only seven of the fifty-seven "
+                            "signals have stored anything in the last hour, and "
+                            "the gateway reports filtering **94 %** of readings, "
+                            "which is exactly what a deadband is for.\n\n"
+                            "This table is the difference between *the probe "
+                            "has failed* and *the ammonia moved less than 0.1 "
+                            "mg/L*. Same symptom, completely different action. "
+                            "Read it before you read a big number as a live "
+                            "one — and read *What has stopped reporting* below "
+                            "for the harder case, which is a signal with no "
+                            "recent reading at all.",
             ),
             _table_panel(
                 11, "What has stopped reporting",

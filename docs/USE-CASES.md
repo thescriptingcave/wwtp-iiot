@@ -61,7 +61,7 @@ Open **Grafana → *WWTP — overview*.** Four numbers across the top:
 | **Influent flow** | how much is arriving | 1 900 – 2 200 m³/h |
 | **Effluent flow** | how much is leaving | close to influent |
 | **Aeration DO** | oxygen in the aeration basin | 1.5 – 3.0 mg/L |
-| **Effluent ammonia** | the permit number, as *today* | well under 10 mg/L |
+| **Aeration air flow** | what the control loop is commanding | moves with the setpoint |
 
 **Two of those four are comparisons, not values.**
 
@@ -72,7 +72,16 @@ Open **Grafana → *WWTP — overview*.** Four numbers across the top:
 - **DO in range is not the same as DO true.** If DO looks fine, look at the
   *DO against air flow* panel before you accept it. That is use case 3.
 
-Then scroll down:
+**Then read the freshness table, which is the fourth tile's honest caveat.**
+Bottom of the page: *How old is the reading behind each number?* A big number
+with no timestamp is history wearing the costume of now. The historian only
+stores a reading when it exceeds the signal's deadband, so on a settled plant
+two of those four can be **hours** old while the instruments are perfectly
+healthy — the gateway reports filtering 94 % of readings, which is exactly what
+a deadband is for. It is not the permit number, which is a 30-day mean and is on
+the permit dashboard (use case 6).
+
+Then scroll up:
 
 - **What has stopped reporting** — a table, not a chart. Anything here has been
   silent for over an hour, or has never reported at all.
