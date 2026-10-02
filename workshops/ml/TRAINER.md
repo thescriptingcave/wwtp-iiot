@@ -206,40 +206,39 @@ being told.
 
 Say this if you are asked, because it is true:
 
-- **The long window was built and it changed the advice.** Every number in this
-  guide is still from the 3-week default, but beat 3's remedy has now been tested at
-  62 positives rather than asserted:
+- **Beat 3's remedy was tested, and it works.** The 18-week panel at a 12 h
+  recurrence gives **419 positives**, and the experiment finally has power:
 
-  | | 3 weeks | 8 weeks |
-  |---|---|---|
-  | positives | 22 | **62** |
-  | in a 20% test fold | 4 | **12** |
-  | split noise / effect | 42x | **13x** |
-  | baseline mean F1 − naive mean F1 | +0.020 | **+0.040** |
-  | the 29x separation | 29.3x | **29.5x** |
+  | | 3 wk / 36 h | 8 wk / 36 h | 18 wk / 12 h |
+  |---|---|---|---|
+  | positives | 22 | 62 | **419** |
+  | in a 20% test fold | 4 | 12 | **84** |
+  | split noise / effect | 42x | 13x | **1x** |
+  | naive mean F1 | 0.345 | 0.416 | **0.463** |
+  | + per-signal baseline | 0.365 | 0.456 | **0.615** |
+  | difference | +0.020 | +0.040 | **+0.152** |
+  | the separation | 29.3x | 29.5x | **25.6x** |
 
-  **Still not enough.** 13x is above the threshold at which a difference means
-  something, so beat 3's conclusion stands — but it now has a shape. Noise divided
-  by effect is near-constant when multiplied by positives (924 at 22, 806 at 62), so
-  the effect falls as roughly 1/positives, and reaching 2x needs about **416
-  positives — some 54 weeks** at 36 h recurrence.
+  **The per-signal baseline does help.** The difference is +0.152 against a
+  within-configuration spread of 0.225 -- the effect is the same size as the noise,
+  which is what having power means. On the held-out final week it is 0.438 -> 0.579,
+  recall 0.292 -> 0.458. Notebook 03 was right, and it could not prove it.
 
-  **What to tell a room:** this is not a dataset you fix on a laptop. The direction
-  is consistent and positive in both measurements, and the *mechanism* is unchanged
-  at 29.5x, which is the part that does not depend on a split at all. But the honest
-  position after 8 weeks is that a bigger dataset moves the needle and does not move
-  the conclusion, and a trainer who says "just get more data" without that is selling
-  a fix they have not tested.
+  **And notebook 04's best number collapses.** The forward window went 0.833 -> 0.684,
+  and its spread across folds fell to 0.149. Most of its apparent superiority was a
+  small-sample artefact, which is exactly what notebook 04 says about it -- it just
+  could not show that either.
 
-  Two corrections to earlier drafts of this file, both found by measuring:
+  Two things the trainer should know changed:
 
-  - **"Superlinear growth" was wrong.** Rows per day went 142,654 -> 604,341 ->
-    557,522 for 3, 8 and 25 weeks: up 4.2x, then down 8%. That is not a power law.
-    It was a name for a shape two points do not have.
-  - **"25 weeks needs 25 GB" was an artefact of interrupting it.** `reading` carries
-    `drop_after: '7 days'` against `now()`, so the raw table trims itself during a
-    build; the 25-week run reached 23 GB because I killed it mid-write, and a
-    completed 8-week build leaves 1,040 MB. The CSV is the durable artefact.
+  - **The mechanism weakened slightly**: the separation fell 29.3x -> 25.6x. A 12 h
+    recurrence means a stuck sensor is often *still* broken from the previous fault,
+    so it never gets to write and `base_24` has less contrast to work with. It holds.
+  - **`row_written` is no longer 0% for the silent faults** -- 5% for
+    `effluent_tss_stuck` and 7% for `sensor_dead`, against 0% at 36 h. Denser
+    recurrence means a preceding fault has ended, so the signal writes again. The
+    "no row at all" property is being eroded by the recurrence that bought the
+    sample size.
 
 - **No sequence model was fitted, and that is the recommendation.** Notebook 06 shows
   90% of the variance is the clock and a tree captures it. A `Conv1d` or `GRU` here

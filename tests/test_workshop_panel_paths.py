@@ -280,27 +280,48 @@ class TestTheLongWindowIsMeasuredNotExtrapolated:
             "three points that do not fit one look like a curve somebody fitted."
         )
 
-    def test_the_eight_week_result_is_the_headline(self) -> None:
-        """62 positives, and a 13x ratio that is still not enough.
+    def test_the_powered_result_is_the_headline(self) -> None:
+        """419 positives, a 1x ratio, and the baseline shown to work.
 
-        The point of building it was to find out whether more data settles beat 3.
-        It does not, and that is the result worth keeping -- so it has to be
-        written down where the trainer will read it.
+        This is the answer to the workshop's central claim, so it has to be where
+        the trainer and the reader will meet it. The three sample sizes are the
+        argument -- a single powered number would not show that 22 was too few.
         """
         trainer = (ROOT / "workshops" / "ml" / "TRAINER.md").read_text()
-        for figure in ("62", "13x", "54 weeks"):
+        for figure in ("419", "0.615", "+0.152"):
             assert figure in trainer, (
                 f"TRAINER.md no longer states {figure!r}. Beat 3's remedy was "
-                "tested and the answer is 'more data moves the needle and does not "
-                "move the conclusion'; a trainer who is not told that will sell a "
-                "fix they have not tested."
+                "tested and the per-signal baseline measurably works; a trainer who "
+                "is not told that will keep teaching 'you cannot prove it' as the "
+                "finding, when it was the finding *at 22 positives*."
             )
 
-    def test_the_power_threshold_still_rejects_thirteen_x(self) -> None:
-        """13x must not be quietly reclassified as power.
+    def test_the_denser_recurrence_costs_are_recorded(self) -> None:
+        """12 h recurrence buys the sample size and erodes the mechanism.
 
-        The temptation after building something is to round it toward the
-        conclusion you wanted. `NO_POWER_ABOVE` is 10.0 and 13x is above it.
+        `row_written` for the silent faults went 0% -> 5% and 7%, because a
+        preceding fault has ended and the signal writes again. The "no row at all"
+        property is what the whole dataset exists to expose, so losing part of it
+        is a fact about the experiment, not a rounding error.
+        """
+        readme = (ROOT / "workshops" / "ml" / "README.md").read_text()
+        assert "25.6x" in readme, (
+            "the README no longer records the separation falling 29.3x -> 25.6x at "
+            "12 h recurrence."
+        )
+        assert "eroded by the recurrence" in readme, (
+            "the README no longer says the recurrence erodes the 'no row at all' "
+            "property. Without it, 18 weeks looks like a strictly better dataset "
+            "and the trade is invisible."
+        )
+
+    def test_the_power_threshold_still_splits_the_three_panels(self) -> None:
+        """The threshold must still split 13x from 1x, unchanged.
+
+        The temptation after building something is to round the threshold toward
+        the conclusion you wanted. `NO_POWER_ABOVE` is 10.0: 13x (8 weeks) is
+        NO POWER and 1x (18 weeks) is POWER, and moving the constant to reclassify
+        either would invalidate every ratio in the three documents that quote them.
         """
         assert measure.NO_POWER_ABOVE == 10.0, (
             "the no-power threshold moved, which would reclassify a 13x ratio as "

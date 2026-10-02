@@ -191,3 +191,65 @@ class TestTheVerdictThresholdIsStated:
         assert "> 10" not in source and "< 10" not in source, (
             "main() still hardcodes 10 rather than reading NO_POWER_ABOVE."
         )
+
+
+class TestTheSideBySideLabelsComeFromTheData:
+    """The column headers used to say "25-week" on an 8-week panel.
+
+    The labels were hardcoded, so `measure_long_window --panel dataset-8wk.csv`
+    printed a table headed 3-week / 25-week. Two things made that survivable:
+
+    - the numbers beside them were right, so the table looked authoritative;
+    - the label was fixed in the same session but **never committed**, and a
+      `git checkout` during mutation testing of an unrelated constant threw the
+      fix away. It came back only when an 18-week panel was measured and printed
+      under a 25-week heading.
+
+    So the label is derived from `week.nunique()` and returned by `report`, and
+    both are checked here. A file whose fix can be lost by an unrelated command is
+    a file whose fix is not really in the repository.
+    """
+
+    def test_report_returns_the_week_count(self) -> None:
+        """`report` must return the window it measured.
+
+        Checked on the module source because calling `report` needs a panel on
+        disk, and this test has to run in a unit suite that is documented as
+        needing no database and no CSV.
+        """
+        source = inspect.getsource(subject.report)
+        assert '"weeks"' in source, (
+            "report() no longer returns its week count, so main() has to label the "
+            "columns from a hardcoded string. That is how an 8-week panel came to "
+            "be printed under a 25-week heading."
+        )
+        assert "nunique()" in source, (
+            "the week count must come from the panel's own `week` column, not from "
+            "a literal, or the header is wrong for every window but one."
+        )
+
+    def test_main_does_not_hardcode_a_week_count(self) -> None:
+        """No week number may be written into main() as a literal."""
+        source = inspect.getsource(subject.main)
+        for literal in ('"3-week"', "'3-week'", '"25-week"', "'25-week'"):
+            assert literal not in source, (
+                f"main() hardcodes {literal} as a column header. Both labels must "
+                "come from the panels, or a reader is told the wrong window size "
+                "next to correct numbers -- which is worse than being told nothing."
+            )
+        assert "['weeks']" in source, (
+            "main() no longer reads the week count from report()'s return value."
+        )
+
+    def test_the_csv_is_read_without_the_dtype_warning(self) -> None:
+        """`low_memory=False`, because a mixed-type column warns on every run.
+
+        A long panel has thousands of rows per column where an ordinary one has
+        dozens, which is what pushes pandas past its chunked-inference fast path.
+        The warning is noise on the one command a trainer runs to check a claim.
+        """
+        source = inspect.getsource(subject.report)
+        assert "low_memory=False" in source, (
+            "report() reads the panel without low_memory=False, so every "
+            "fault_type column warns DtypeWarning on the long panels."
+        )

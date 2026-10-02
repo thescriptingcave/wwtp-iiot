@@ -389,19 +389,25 @@ shown to help at all — see below.
 
 ### The result worth knowing before you teach it
 
-Notebook 03 concludes that the right feature cannot be shown to work on this panel.
-Built at 8 weeks, that is measured rather than asserted:
+Notebook 03 says the right feature cannot be shown to work on the 3-week panel. That
+was tested rather than asserted:
 
-| | 3 weeks | 8 weeks |
-|---|---|---|
-| positives | 22 | 62 |
-| in a 20% test fold | 4 | 12 |
-| split noise / effect | **42x** | **13x** |
+| | 3 wk / 36 h | 8 wk / 36 h | 18 wk / 12 h |
+|---|---|---|---|
+| positives | 22 | 62 | **419** |
+| in a 20% test fold | 4 | 12 | **84** |
+| split noise / effect | **42x** | **13x** | **1x** |
+| naive mean F1 | 0.345 | 0.416 | **0.463** |
+| + per-signal baseline | 0.365 | 0.456 | **0.615** |
 
-**Still not enough.** Noise divided by effect falls as roughly 1/positives, so
-reaching a ratio of 2 needs ~416 positives — about 54 weeks at the default
-recurrence, or ~18 GB at a 12 h one. The honest line for a room is that *more data
-moves the needle and does not move the conclusion*.
+**It works.** The difference is +0.152 against a spread of 0.225 — the effect is
+finally the same size as the noise. Notebook 04's best number goes the other way:
+the forward window falls 0.833 -> 0.684, so most of its apparent superiority was a
+small-sample artefact.
+
+Reaching this took buying positives with **recurrence** rather than duration:
+18 weeks at a 12 h fault rate is ~19 GB and 46 minutes, where 54 weeks at 36 h is
+~55 GB.
 
 ### Disk, and getting it back
 

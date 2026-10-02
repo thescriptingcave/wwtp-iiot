@@ -149,7 +149,7 @@ def verdict(ratio: float) -> str:
 
 
 def report(path: Path) -> dict[str, float]:
-    panel = causal_features(pd.read_csv(path, parse_dates=["bucket"]))
+    panel = causal_features(pd.read_csv(path, parse_dates=["bucket"], low_memory=False))
     positives = int(panel["is_fault"].sum())
     fault_base, quiet_base, ratio = separation(panel)
 
@@ -224,6 +224,7 @@ def report(path: Path) -> dict[str, float]:
     print(f"    verdict                          : {verdict(ratio_spread)}")
 
     return {
+        "weeks": int(panel["week"].nunique()),
         "positives": positives,
         "separation": ratio,
         "naive_f1": naive_time[2],
@@ -239,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         "--panel",
         type=Path,
         action="append",
-        help="a panel CSV; repeatable. Defaults to the 3-week and 25-week panels.",
+        help="a panel CSV; repeatable. Defaults to the 3-week and any long panel.",
     )
     args = parser.parse_args(argv)
 
@@ -263,7 +264,9 @@ def main(argv: list[str] | None = None) -> int:
     if len(results) == 2:
         short, long = results
         print(f"\n{'=' * 78}\nSIDE BY SIDE\n{'=' * 78}")
-        print(f"  {'quantity':<36}{'3-week':>11}{'25-week':>11}{'change':>11}")
+        left = f"{short['weeks']}-week"
+        right = f"{long['weeks']}-week"
+        print(f"  {'quantity':<36}{left:>11}{right:>11}{'change':>11}")
         print(f"  {'-' * 69}")
         rows = [
             ("positive fault hours", "{:,.0f}", "positives"),
@@ -282,12 +285,20 @@ def main(argv: list[str] | None = None) -> int:
 
         print()
         if short["ratio"] > NO_POWER_ABOVE and long["ratio"] < NO_POWER_ABOVE:
-            print("  The 3-week panel has no power and the 25-week panel does, which")
+            print(f"  The {left} panel has no power and the {right} one does, which")
             print("  is exactly the claim notebook 03 makes. The baseline's effect is")
             print("  now measurable -- see the F1 rows above for whether it is real.")
         elif long["ratio"] > NO_POWER_ABOVE:
-            print("  **The 25-week panel still has no power.** Notebook 03's")
-            print("  conclusion stands, and 'more faults' is not the remedy here.")
+            needed = long["positives"] * long["ratio"] / 2
+            per_week = long["positives"] / long["weeks"]
+            print(
+                f"  **The {right} panel still has no power**, at "
+                f"{long['ratio']:.0f}x, down from {short['ratio']:.0f}x on {left}."
+            )
+            print("  Notebook 03's conclusion stands at this sample size. The effect")
+            print("  is measurable enough to extrapolate though: noise/effect falls")
+            print(f"  roughly as 1/positives, so reaching 2x needs ~{needed:.0f}.")
+            print(f"  That is about {needed / per_week:.0f} weeks.")
         else:
             print("  Both panels have power. Compare the F1 rows directly.")
     return 0

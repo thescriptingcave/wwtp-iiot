@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1046 | no |
+| Unit, no database | 1050 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -79,8 +79,8 @@ Per file, for the ones worth naming:
 | `test_opcua_address_space.py` | 12 | the serialised address space is complete, current, and load-bearing |
 | `test_extract_sql.py` | 10 | that the numbers this document states are the real ones |
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
-| `test_workshop_panel_paths.py` | 17 | that building the long window cannot overwrite the 3-week panel, and that its cost and growth claims stay measured rather than extrapolated |
-| `test_measure_long_window.py` | 14 | that the long-window measurement does not leak the future, and measures notebook 03's ratio rather than a different one |
+| `test_workshop_panel_paths.py` | 18 | that building the long window cannot overwrite the 3-week panel, and that its cost and growth claims stay measured rather than extrapolated |
+| `test_measure_long_window.py` | 17 | that the long-window measurement does not leak the future, and measures notebook 03's ratio rather than a different one |
 | `test_readme_teaches_no_destructive_command.py` | 171 | that no runnable fence in any markdown pairs `POSTGRES_DB=` with a database reset |
 | `test_browse_is_not_values.py` | 5 | that no document promises values from `browse`, which reads none |
 | `test_py_wrapper.py` | 3 | that `tools/py.sh` refuses a missing interpreter by name, and that the targets needing Python depend on the install |

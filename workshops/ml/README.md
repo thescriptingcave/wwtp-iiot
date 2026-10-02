@@ -149,6 +149,55 @@ decides whether the comparison means anything: the split-to-split spread within 
 single configuration, divided by the difference between two configurations. See
 `TRAINER.md` for the measured result.
 
+## Does the per-signal baseline actually work? Yes, and it took 419 positives
+
+Notebook 03 says the feature is right and that the 3-week panel cannot show it. That
+was tested rather than asserted, at three sample sizes:
+
+| | 3 wk / 36 h | 8 wk / 36 h | 18 wk / 12 h |
+|---|---|---|---|
+| positives | 22 | 62 | **419** |
+| in a 20% test fold | 4 | 12 | **84** |
+| split noise / effect | **42x** | **13x** | **1x** |
+| naive mean F1 | 0.345 | 0.416 | **0.463** |
+| + per-signal baseline | 0.365 | 0.456 | **0.615** |
+| difference | +0.020 | +0.040 | **+0.152** |
+| the separation | 29.3x | 29.5x | **25.6x** |
+
+**It works.** The difference is +0.152 against a within-configuration spread of
+0.225: the effect is finally the same size as the noise, which is what having power
+means. On the held-out final week it is **0.438 -> 0.579**, recall 0.292 -> 0.458.
+
+The third column is what 18 weeks buys, and note **how** it was bought: recurrence,
+not duration. 18 weeks at a 12 h fault rate is 19 GB and 46 minutes, where 54 weeks
+at 36 h is 55 GB and does not fit on a laptop.
+
+**Notebook 04's best number goes the other way.** The forward window falls 0.833 ->
+0.684 and its spread across folds drops to 0.149, so most of its apparent
+superiority was a small-sample artefact -- which is precisely what notebook 04 says
+about it, and equally something it could not show.
+
+### What the denser recurrence costs
+
+Both measured, neither fatal:
+
+- **The separation fell 29.3x -> 25.6x.** At 12 h a stuck sensor is often still
+  broken from the previous fault, so it never gets to write and `base_24` has less
+  contrast to work against. It holds.
+- **`row_written` is no longer 0% for the silent faults** -- 5% for
+  `effluent_tss_stuck` and 7% for `sensor_dead`, against 0% at 36 h. A preceding
+  fault has ended and the signal writes again. The "no row at all" property -- the
+  one this whole dataset exists to expose -- is being **eroded by the recurrence
+  that bought the sample size.** Worth a paragraph in the room.
+
+Reproduce it with:
+
+```bash
+make workshop-long WORKSHOP_LONG_WEEKS=18 WORKSHOP_HOURS=12
+uv run --extra workshop python -m workshops.ml.measure_long_window \
+  --panel workshops/ml/dataset.csv --panel workshops/ml/dataset-18wk.csv
+```
+
 ## The three row states, and why two columns
 
 A stored hour can be in one of three states, and all three are kept
