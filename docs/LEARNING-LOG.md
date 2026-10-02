@@ -4301,3 +4301,138 @@ The seeded week is **byte-identical** — `make notebooks` reports 11/11 agreein
 this is production code on the live gateway path. Lint debt 157 → 156.
 
 
+
+
+## A test and a docstring agreed with the bug, and that is why it survived
+
+The operator's setpoint — the only writable value in the project, the one thing
+an operator can actually change about the plant — had never once worked. A client
+wrote it, was told it succeeded, watched the register change, saw the historian
+record it, saw the mimic display it, saw the audit trail say *accepted*, and the
+dissolved oxygen did not move.
+
+Three separate faults had to line up, and each one hid the next.
+
+### The last fault was a field name that lied
+
+`scada/flows/03-control.json`'s write node had:
+
+```json
+{ "dataType": "HoldingRegister", "quantity": 2 }
+```
+
+`node-red-contrib-modbus` derives the Modbus function code from `dataType` and
+nothing else:
+
+```
+Coil               -> 5    write single coil
+HoldingRegister    -> 6    write single register
+MCoils             -> 15   write multiple coils
+MHoldingRegisters  -> 16   write multiple registers
+```
+
+`HoldingRegister` is **FC6**, and FC6 writes exactly one register and ignores
+`quantity` completely. So the flow sent the **high word** of a float32 and
+silently discarded the low word. The operator's number was half a number.
+
+The value is genuinely treacherous. The contract calls the thing a *holding
+register*, so `dataType: "HoldingRegister"` reads as correct and
+`MHoldingRegisters` reads like a typo. The option that means "multiple" is the
+one that looks wrong.
+
+### Why it survived: the test agreed with the bug
+
+The project had a test for this node. It asserted:
+
+```python
+assert node["dataType"] == "HoldingRegister", (
+    f"a float32 occupies two holding registers, so dataType must be "
+    f"HoldingRegister; {node['dataType']!r} is not a value the node accepts "
+    "at all"
+)
+```
+
+**The test was correct, the assertion was correct, and the failure message
+explained why in detail.** It was also wrong, in exactly the way that survives
+review. The generator's docstring said the same thing:
+
+> A float32 occupies two registers, so the node writes `quantity: 2` holding
+> registers and the two 16-bit words are built by the function node upstream.
+
+So a reader of the code saw a documented rationale, and a reader of the test saw
+a documented rationale, and both agreed. **Nobody reviewing either had anything
+to check the shared assumption against.** The bug was not hidden from review; it
+was *endorsed* by review.
+
+That is the third time in this file that this shape appears, and the sharpest
+version yet. The earlier two were a thing that was true because nobody had done
+the thing that would disprove it. This one is stronger: an assertion and its
+explanation, both wrong, agreeing with each other.
+
+### What finally found it, and it was not a test
+
+The soft PLC was given a write path, and part of that path is a **width check** —
+a float32 is two registers, so a write carrying one word is refused:
+
+```
+modbus write refused: AERATION_SETPOINT_DO is 2 register(s) of float32; got 1
+```
+
+Nothing in the test suite had been looking for the FC6 bug. What found it was a
+*refusal that explained itself*. Turning a silent corruption into a legible
+error is what made it debuggable — and the error is only legible because the
+handler knows what it wanted, not merely that something was wrong.
+
+**A refusal that names the cause is worth ten that name the category.** Both of
+these are `ModbusException`, and only one of them can be acted on:
+
+```
+Modbus exception 3: Illegal data value
+AERATION_SETPOINT_DO is 2 register(s) of float32; got 1
+```
+
+### The fix, and the two guards
+
+One token in the generator — `MHoldingRegisters`, FC16 — plus regeneration. Then
+two gates so the mistake cannot recur silently:
+
+- `test_a_multi_register_write_uses_the_multi_register_function_code` checks
+  every `modbus-write` node in the repository: `quantity > 1` requires the
+  multi-register function code. It is a *structural* check rather than a
+  per-node expectation, so it also covers a flow that has not been written yet.
+- `test_the_control_flow_targets_a_writable_signal_with_a_register` now asserts
+  the function code **and says why in the failure message**, which is the part
+  that was wrong before.
+
+### The one I nearly made twice
+
+The first version of the fix made the server *accept* a single-register write, to
+be more forgiving to clients using a naive Modbus tool. That was wrong, and it is
+worth recording why.
+
+Modbus has no transaction. Accepting half a float32 means holding a fresh high
+word on a stale low word — a **plausible but wrong** setpoint, which is a far
+more dangerous outcome than an error. Refusing costs a client compatibility and
+buys the certainty that the value in the register is the value the operator
+meant. That trade is not obvious, and I would have made it in the other direction
+while trying to be helpful.
+
+The write is applied **twice** in the scan loop, and the second assignment is the
+one that costs the most when it is missing:
+
+```python
+self.plant.aeration.setpoint_do_mg_l = value      # what the snapshot publishes
+self.aeration_control.setpoint_mg_l = value       # what the PI loop uses
+```
+
+`AerationControl` was constructed with the setpoint *by value*, so the block
+holds its own copy forever. Set only the first and every indicator says it
+worked while the loop integrates against the startup value. **No test that reads
+the register back can catch it**, because the register publishes the field you
+did set. The only evidence is behaviour — air flow must rise when the setpoint
+rises — which is why `tests/test_modbus_writeback.py` asserts on `duty_pct` and
+not on the readable value.
+
+> **A value that reads back proves the wire works. A value that changes the
+> plant proves the seam does.** Those are different questions and only the second
+> one is the one anybody cares about.

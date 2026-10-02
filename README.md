@@ -192,6 +192,7 @@ one that stops working fails a test instead of misleading you.
 
 | I want to | Go to |
 |---|---|
+| **understand how any of it works** | **[`docs/GUIDE.md`](docs/GUIDE.md)** — one value, end to end |
 | start the plant and look at it | [`make up`](docs/TASKS.md#start-the-plant-and-look-at-it) |
 | change a threshold or an alarm rule | [`docs/TASKS.md`](docs/TASKS.md#change-a-threshold-or-an-alarm-rule) |
 | add a signal, a register or an asset | [`docs/TASKS.md`](docs/TASKS.md#add-a-signal-a-register-or-an-asset) |
@@ -212,6 +213,7 @@ the list; if you do not, start at [`docs/TASKS.md`](docs/TASKS.md) above.
 | Document | What it is for |
 |---|---|
 | [`docs/TASKS.md`](docs/TASKS.md) | **Task-indexed entry point** — every task to the command that does it |
+| [`docs/GUIDE.md`](docs/GUIDE.md) | **The tour** — one value end to end, and what breaks at each hop |
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | From nothing to a running plant, step by step |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Why the architecture is shaped this way, what was rejected, and the honest weaknesses |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Components, boundaries, and the four things deliberately not here |

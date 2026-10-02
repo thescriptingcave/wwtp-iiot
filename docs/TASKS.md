@@ -32,6 +32,8 @@ If a command below is wrong, fix it here and in the same commit that broke it.
 
 ## Start the plant and look at it
 
+**If you want to know *why* something does what it does**, rather than which command to run, read [`GUIDE.md`](GUIDE.md). It follows one number — an operator's setpoint — from the keystroke to the historian, and says what can go wrong at each hop.
+
 Full walkthrough with screenshots-in-words: [`GETTING-STARTED.md`](GETTING-STARTED.md).
 
 ```bash
@@ -328,6 +330,7 @@ The two that most often surprise people:
 
 | I want to understand | Read |
 |---|---|
+| **How any of it works, end to end** | [`GUIDE.md`](GUIDE.md) — one value, seven hops, what breaks at each |
 | Why it is shaped this way, and what was rejected | [`DESIGN.md`](DESIGN.md) |
 | Components, boundaries, the thread model | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | One scan end to end | [`DATA-FLOW.md`](DATA-FLOW.md) |
