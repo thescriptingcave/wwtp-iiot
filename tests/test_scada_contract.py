@@ -31,6 +31,8 @@ from scada import build_flows, generate_tags
 from scada.build_flows import build_all_names
 from softplc.contract import Contract
 from softplc.contract import contract as get_contract
+from softplc.servers.modbus import HOLDING_BASE as MODBUS_HOLDING_BASE
+from softplc.servers.modbus_server import ModbusTcpServer
 
 FLOWS = build_flows.FLOWS_DIR
 TAGS = generate_tags.TAGS_PATH
@@ -39,6 +41,15 @@ TAGS = generate_tags.TAGS_PATH
 #: terminates a branch, a `comment` has no ports at all, and a `tab` holds the
 #: nodes rather than sitting in a path.
 TERMINALS = {"debug", "comment", "tab"}
+
+#: Fields whose value the runtime **compares against a boolean with `==`**, so a
+#: JSON string there is silently falsy and a JSON `1` is silently not `true`.
+#:
+#: Read off the installed node packages rather than remembered, for the reason
+#: `test_the_node_flag_types_match_the_runtime_comparisons` explains: the failure
+#: mode is a node that runs, receives, and publishes nothing.
+DEBUG_FLAG_TYPES = {"tosidebar": bool, "active": bool, "console": bool,
+                    "tostatus": bool}
 
 #: Every table the flows are allowed to touch. Not derived from a schema dump —
 #: stated, so that adding a query against a table nobody reviewed is a visible
@@ -267,16 +278,320 @@ def test_node_ids_are_unique_within_a_flow(flows: dict) -> None:
 
 
 def test_every_node_belongs_to_the_flows_only_tab(flows: dict) -> None:
-    """`z` is the node's tab. A node pointing at nothing is not in any flow."""
+    """`z` is the node's tab. A node pointing at nothing is not in any flow.
+
+    **Except a config node, which is not on a tab.** `postgreSQLConfig` and
+    `modbus-client` are runtime-global: Node-RED draws them outside the canvas and
+    they have no `z` key at all. Asserting `z` on them would be asserting that a
+    config node is a normal node, and it would make the one correct way to add a
+    database connection look wrong.
+
+    They are also exactly once across the whole set, which the id-uniqueness check
+    does not cover on its own -- that one looks within a file.
+    """
+    seen_config: dict[str, str] = {}
     for name, nodes in flows.items():
         tab_ids = {n["id"] for n in nodes if n["type"] == "tab"}
         for node in nodes:
             if node["type"] == "tab":
                 continue
+            if node["type"] in build_flows.CONFIG_NODE_TYPES:
+                assert "z" not in node, (
+                    f"{name}: {node['type']!r} is a config node and must not carry "
+                    "a `z`. Node-RED draws config nodes outside the canvas and "
+                    "looks them up by id, not by tab."
+                )
+                assert node["id"] not in seen_config, (
+                    f"{name}: config node {node['name']!r} also appears in "
+                    f"{seen_config[node['id']]}. Config nodes are runtime-global, "
+                    "so the assembled flows.json has to contain exactly one."
+                )
+                seen_config[node["id"]] = name
+                continue
             assert node.get("z") in tab_ids, (
                 f"{name}: {node['name']!r} has z={node.get('z')!r}, which is not "
                 f"this flow's tab {tab_ids}"
             )
+
+
+def test_every_config_node_is_referenced_and_referrers_resolve(flows: dict) -> None:
+    """A config node nobody uses, and a node pointing at one that is absent.
+
+    Both directions matter, and the second is the one that produced the loudest
+    failure this repository has had: `node-red-contrib-postgresql` resolves its
+    `postgreSQLConfig` at construction, and when it cannot, it substitutes a stub
+    rather than raising, so every query fails at run time with
+
+        TypeError: node.config.pgPool.connect is not a function
+
+    which names no database and is identical for "no such node" and "the node is
+    broken". Nothing else in the runtime complains.
+
+    So: exactly one `postgreSQLConfig` across the assembled set, exactly one
+    `modbus-client`, every reference resolves, and neither is orphaned. Because
+    the config node is defined in one file and referenced from the other two, the
+    uniqueness check has to run over all files together -- which is also the
+    boundary the entrypoint works at, and the boundary `nid()` used to get wrong.
+    """
+    assembled: dict[str, dict] = {}
+    for name, nodes in flows.items():
+        for node in nodes:
+            if node["type"] in build_flows.CONFIG_NODE_TYPES:
+                assert node["id"] not in assembled, (
+                    f"{name}: config node {node['name']!r} also defined in "
+                    f"{assembled[node['id']]}"
+                )
+                assembled[node["id"]] = node
+
+    assert {n["type"] for n in assembled.values()} == {
+        "postgreSQLConfig", "modbus-client"
+    }, f"expected both config node types, got {sorted(assembled.values())}"
+
+    # Which node type is referenced by which field, so a contrib rename is caught.
+    referring_field = {
+        "postgresql": "postgreSQLConfig",
+        "modbus-write": "server",
+    }
+    referenced: set[str] = set()
+    for name, nodes in flows.items():
+        for node in nodes:
+            field = referring_field.get(node["type"])
+            if field is None:
+                continue
+            assert node.get(field), (
+                f"{name}: {node['name']!r} is a {node['type']} with no {field!r}. "
+                f"{node['type']} requires one and fails at run time, not at deploy."
+            )
+            assert node[field] in assembled, (
+                f"{name}: {node['name']!r} points {field} at {node[field]!r}, which "
+                f"is not a config node in the assembled set. Known: "
+                f"{sorted(assembled)}"
+            )
+            referenced.add(node[field])
+
+    for node_id, node in assembled.items():
+        assert node_id in referenced, (
+            f"config node {node['name']!r} is defined and nothing uses it, so it "
+            "is a connection nobody opens"
+        )
+
+
+def test_the_output_counts_match_the_installed_node_packages(flows: dict) -> None:
+    """Re-derive the output counts from the node packages in the running container.
+
+    `_outputs()` is a table in `scada/build_flows.py`, and a table is a memory.
+    Three of its entries were wrong -- `postgresql` and `file in` said two outputs
+    when they have one, `modbus-write` said one when it has two -- and nothing
+    complained: a `wires` list with more entries than the node has ports is
+    accepted, imported and then never delivered on.
+
+    A contrib upgrade that changes a port count is the same failure with a newer
+    package, so this reads the numbers out of the packages themselves. It needs the
+    container, and skips without it rather than pretending to have checked: a
+    skipped check that reads as a pass is how the table got to be wrong in the first
+    place.
+    """
+    probe = _node_package_probe()
+    if probe is None:
+        pytest.skip("the scada container is not running, so the node packages "
+                    "cannot be read")
+
+    used = {
+        node["type"]
+        for nodes in flows.values()
+        for node in nodes
+        if node["type"] not in build_flows.CONFIG_NODE_TYPES
+    }
+    uncheckable = used - set(probe) - STRUCTURAL_TYPES
+    assert not uncheckable, (
+        f"these node types appear in the flows but not in the probe, so their "
+        f"output counts have never been checked against a package: "
+        f"{sorted(uncheckable)}. Add them to the probe's search, or confirm "
+        f"deliberately that no installed package registers them."
+    )
+
+    for name, nodes in flows.items():
+        for node in nodes:
+            kind = node["type"]
+            if kind in build_flows.CONFIG_NODE_TYPES or kind in PER_NODE_OUTPUTS:
+                continue
+            declared = build_flows._outputs(node)
+            if kind not in probe:
+                continue
+            assert declared == probe[kind], (
+                f"{name}: build_flows._outputs says {kind} has {declared} output(s), "
+                f"the installed package registers {probe[kind]}. A wrong count is "
+                f"silent: the flow imports and nothing arrives on the extra port."
+            )
+
+
+#: Node types whose output count is a property of the *instance*, read from the
+#: node's own fields rather than from its type. The probe can only see what
+#: `registerType` declares, which for these is the default — and comparing a
+#: two-output `function` node against the registered default of 1 is not a
+#: disagreement about the package, it is a disagreement about what is being
+#: measured. Listed, so adding a third such type is a visible edit.
+PER_NODE_OUTPUTS = {"function"}
+
+
+#: Node-RED structural elements, which appear in `flows.json` but are not
+#: registered node types and so have no package and no `registerType` call.
+#: Verified by grepping the installed `@node-red/nodes` for them: a `tab` is a
+#: flow container the editor creates, not something a package declares.
+#:
+#: Listed because the alternative is a probe that cannot find them, which is
+#: indistinguishable from a probe that stopped working — the exact confusion that
+#: hid the two bugs above.
+STRUCTURAL_TYPES = {"tab", "subflow", "group"}
+
+
+def _node_package_probe() -> dict[str, int] | None:
+    """Output counts straight from the installed node packages, or None.
+
+    Reads each node's `.html`, because that is the only file where `registerType`
+    carries the `outputs` field and it is not minified. **The node type is read
+    from the `registerType` call inside the file, not from the filename** — a
+    filename is a packaging detail (`file in` is `10-file.html`, `postgresql` is
+    `postgresql.html`) and the first version matched on filenames.
+
+    Two failures got this wrong in a row, both invisible:
+
+    1. `wanted.exec(p)` called on a `Set`. `Set` has no `exec`, so the script
+       threw a `TypeError` on the first file and wrote nothing.
+    2. Then it matched filenames, and found `modbus-write` and nothing else.
+
+    Either way the caller could not tell a broken probe from a missing container,
+    so the test **skipped** — with a skip reason naming Docker, while the
+    container was up and healthy. A probe that cannot fail loudly is worse than no
+    probe, because the skip reads as a pass. So a broken probe now raises, and
+    the caller asserts that every node type in the flows was actually found.
+    """
+    script = r"""
+const fs = require("fs"), path = require("path");
+// **Derived from package.json, not a hardcoded list.** An earlier version walked
+// all of /data/node_modules, which also holds npm's own bundled dependency tree
+// — tens of thousands of .html files — and blew the 60 s timeout on every run.
+// That timeout was caught and reported as "no container", the same skip that hid
+// the first two bugs in this function, so a slow probe is indistinguishable from
+// an absent one for exactly as long as nobody looks.
+//
+// So: the three declared packages, plus the core nodes package. A fourth
+// dependency means adding a root here, which is the right amount of ceremony.
+const declared = Object.keys(
+  JSON.parse(fs.readFileSync("/data/package.json", "utf8")).dependencies || {}
+);
+const roots = [];
+for (const name of declared) {
+  for (const base of ["/data/node_modules", "/usr/src/node-red/node_modules"]) {
+    const p = path.join(base, name);
+    if (fs.existsSync(p)) roots.push(p);
+  }
+}
+// Core nodes live inside @node-red/nodes and are not a declared dependency of
+// this service -- they are node-red's own.
+const core = [
+  "/usr/src/node-red/node_modules/@node-red/nodes",
+  "/data/node_modules/@node-red/nodes",
+];
+for (const p of core) if (fs.existsSync(p)) roots.push(p);
+
+const out = {};
+const files = {};
+
+// Find `outputs: N` at the *top level* of the registerType options block.
+// Depth-aware, because a node's `defaults` block can itself contain an
+// `outputs` key and reading that one would be a different number entirely.
+function outputsIn(block) {
+  let depth = 0;
+  const re = /([{}])|(?:^|[\s,])outputs\s*:\s*(\d+)/g;
+  let m;
+  while ((m = re.exec(block)) !== null) {
+    if (m[1] === "{") { depth++; continue; }
+    if (m[1] === "}") { depth--; continue; }
+    if (depth === 1) return Number(m[2]);
+  }
+  // No `outputs` in the registration block means one output, which is Node-RED's
+  // own documented default -- and is exactly how `file in` and `postgresql`
+  // declare theirs.
+  return 1;
+}
+
+function walk(dir, depth) {
+  if (depth > 5 || !fs.existsSync(dir)) return;
+  let entries;
+  try { entries = fs.readdirSync(dir, {withFileTypes: true}); } catch (e) { return; }
+  for (const e of entries) {
+    // Locale bundles repeat the same .html many times over.
+    if (e.name === "locales" || e.name === "docs" || e.name === ".bin") continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) { walk(p, depth + 1); continue; }
+    if (!e.name.endsWith(".html")) continue;
+    const src = fs.readFileSync(p, "utf8");
+    // Only the type name here. The options block is located by brace matching
+    // rather than by regex, because editor files come in two shapes --
+    //     registerType('postgresql', { ...options... })
+    //     registerType("debug", DebugNode, { ...options... })
+    // -- and a single pattern that fits one misses the other silently. That is
+    // what this function got wrong twice.
+    const re = /registerType\(\s*['"]([^'"]+)['"]/g;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const type = m[1];
+      if (type in out) continue;
+      let i = src.indexOf("{", m.index + m[0].length);
+      // If the constructor was written inline, that first brace opens the
+      // function body rather than the options.
+      if (i > 0 && /function\b/.test(src.slice(m.index + m[0].length, i))) {
+        i = src.indexOf("{", i + 1);
+      }
+      if (i < 0) continue;
+      let depth2 = 0, end = -1;
+      for (let j = i; j < src.length; j++) {
+        if (src[j] === "{") depth2++;
+        else if (src[j] === "}" && --depth2 === 0) { end = j; break; }
+      }
+      if (end < 0) continue;
+      out[type] = outputsIn(src.slice(i, end + 1));
+      files[type] = p;
+    }
+  }
+}
+for (const r of roots) walk(r, 0);
+process.stdout.write(JSON.stringify({counts: out, files: files, roots: roots}));
+"""
+    try:
+        raw = subprocess.run(
+            ["docker", "compose", "--profile", "scada", "exec", "-T", "scada",
+             "node", "-e", script],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except (OSError, subprocess.SubprocessError) as exc:
+        if not shutil.which("docker"):
+            # Docker is not installed. That is a genuine "cannot check".
+            return None
+        raise AssertionError(
+            f"could not run the node-package probe: {exc}\n\nIf Docker is absent "
+            f"this should skip rather than fail, but a docker that exists and does "
+            f"not work is a different problem and should be visible."
+        ) from exc
+
+    if raw.returncode != 0 or not raw.stdout.strip():
+        raise AssertionError(
+            f"the node-package probe failed inside the running scada container "
+            f"(exit {raw.returncode}):\n{raw.stderr.strip()}\n\nThe container is "
+            f"reachable, so this is a bug in the probe script, not a missing "
+            f"container. Fix the script; do not skip."
+        )
+    try:
+        parsed = json.loads(raw.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"the node-package probe wrote something that is not JSON: "
+            f"{raw.stdout[:400]!r}"
+        ) from exc
+    return parsed["counts"] or None
 
 
 def test_every_wire_points_at_a_node_that_exists(flows: dict) -> None:
@@ -296,6 +611,91 @@ def test_every_wire_points_at_a_node_that_exists(flows: dict) -> None:
                         f"{name}: {node['name']!r} output {port} points at "
                         f"{target!r}, which is not a node in this flow"
                     )
+
+
+def test_a_debug_tap_is_a_tap_and_not_a_bin(flows: dict) -> None:
+    """`tosidebar` is a boolean, and every debug node in these flows was not one.
+
+    Node-RED's own default is `tosidebar: {value: true}` (`21-debug.html:79`) —
+    a boolean, from a checkbox. The node then publishes under
+
+        if (node.active && node.tosidebar)  sendDebug(...)   // complete:"true"
+        if (node.tosidebar == true)       sendDebug(...)   // complete:"payload"
+
+    These flows set `"tosidebar": "console"`, and `"console" == true` is
+    **false**: the string coerces to `NaN`, `NaN == 1` is false. So every debug
+    node in all three flows received its messages and published nothing — no
+    sidebar entry, no message count on the node in the editor, no log line.
+
+    That is the worst failure mode in this repository and it is not rare: eight
+    diagnostic taps, dead, on the flows whose entire purpose is being readable.
+    And it is invisible from outside, because nothing errors. A generator bug that
+    produces *fewer* messages than expected is indistinguishable from a plant
+    that is quiet.
+
+    So the flag types are asserted rather than their values being eyeballed: the
+    type is the part that is wrong in a way no editor will show you, and
+    `active: false` on a tap is a policy choice rather than a defect, so it is
+    not asserted.
+    """
+    taps = [n for f in flows.values() for n in f if n["type"] == "debug"]
+    assert taps, "no debug nodes at all, so nothing in these flows is observable"
+    for node in taps:
+        for field, want in DEBUG_FLAG_TYPES.items():
+            got = node.get(field)
+            assert isinstance(got, want), (
+                f"{node['name']!r}: {field} is {got!r} ({type(got).__name__}), not a "
+                f"{want.__name__}. The runtime tests these with `==` against a "
+                "boolean, so a string is silently falsy and the node publishes "
+                "nothing while reporting no error."
+            )
+
+
+def test_every_debug_tap_is_reachable_and_enabled(flows: dict) -> None:
+    """A tap with nothing upstream, or switched off, is not a tap.
+
+    Reachability is asserted on **reachability from the flow's sources**, not on
+    having a wire in each: `mimic status` sits behind a poll and three function
+    nodes, and a rule that each tap had to be wired to something would be
+    satisfied by a tap wired to a dead end. So the check is that every node
+    upstream of the tap is itself reachable from a source.
+    """
+    sources = {"trigger", "inject"}
+    for name, nodes in flows.items():
+        # id -> the ids its output ports point at, flattened.
+        wires_from: dict[str, list[str]] = {
+            node["id"]: [t for port in (node.get("wires") or []) for t in port]
+            for node in nodes
+        }
+        targets: set[str] = {
+            t for outs in wires_from.values() for t in outs
+        }
+
+        # Everything reachable by walking forward from a source node.
+        reachable: set[str] = set()
+        frontier = [n["id"] for n in nodes if n["type"] in sources]
+        while frontier:
+            current = frontier.pop()
+            if current in reachable:
+                continue
+            reachable.add(current)
+            frontier.extend(wires_from.get(current, []))
+
+        for node in nodes:
+            if node["type"] != "debug":
+                continue
+            assert node.get("active") is True, (
+                f"{name}: the tap {node['name']!r} is inactive. Nothing this "
+                "project generates should be observable only in principle."
+            )
+            assert node["id"] in reachable, (
+                f"{name}: {node['name']!r} is not reachable from any "
+                f"{sorted(sources)}. "
+                "A debug node nothing reaches receives nothing."
+            )
+            assert node["id"] in targets, (
+                f"{name}: nothing points at {node['name']!r}"
+            )
 
 
 def test_a_nodes_wire_list_matches_its_output_count(flows: dict) -> None:
@@ -338,11 +738,17 @@ def test_no_node_is_dead_and_no_wire_is_orphaned(flows: dict) -> None:
     is, which is the same mistake as getting the wiring direction backwards, and
     it is why the assertion is now in the direction that means something: *is
     this node in the path at all?*
+
+    **A config node is neither source nor terminal.** It has no ports, so it is not
+    wired to anything; and it is not wired *to*, so by the rule below it would read
+    as dead and unused. It is attached by an id field on the node that uses it,
+    which `test_every_config_node_is_referenced_and_referrers_resolve` checks
+    instead — including that it is not merely present but used.
     """
     # A `trigger` and an `inject` are sources. A `debug` and a `comment` are
     # terminals. Neither is required to have a neighbour of the other kind.
     sources = {"trigger", "inject"}
-    terminals = TERMINALS
+    terminals = TERMINALS | set(build_flows.CONFIG_NODE_TYPES)
 
     for name, nodes in flows.items():
         targeted: set[str] = set()
@@ -407,20 +813,92 @@ def test_the_mimic_watches_signals_that_exist(c: Contract) -> None:
 
 
 def test_the_control_flow_targets_a_writable_signal_with_a_register(
-    c: Contract,
+    c: Contract, flows: dict,
 ) -> None:
-    """Three conditions, all of them safety properties.
+    """Four conditions, all of them safety properties.
 
-    The signal must exist, it must be on the *writable* surface, and it must have
-    a Modbus register — because a control flow with no register has nowhere to
-    write, and a default of address zero would write to the wrong piece of plant.
+    The signal must exist, it must be on the *writable* surface, it must have a
+    Modbus register — because a control flow with no register has nowhere to write,
+    and a default of address zero would write to the wrong piece of plant — and the
+    register must be a `float32`, because that is the only encoding the flow has.
+
+    **And the flow's own node must carry the contract's numbers, not its own.** The
+    last part used not be checked at all. The write node read `adr`, which was not a
+    field the node has, and `datatype: float`, which is not a value it accepts; so
+    it imported with three `required: true` fields missing and `Number(undefined)`
+    for the address. Nothing in a flow file rejects that. Comparing the emitted node
+    against the contract is the only place the two can disagree visibly.
     """
     tag = build_flows.CONTROL_TAG
     assert tag in c.signals
     assert tag in c.writable
-    address = build_flows._modbus_address(c, tag)
+    address, word_order, unit_id = build_flows._modbus_register(c, tag)
     assert address >= 40000, (
         f"{tag}: register {address} is below the project's 40000 convention"
+    )
+    assert word_order in ("big", "little")
+
+    writes = [
+        n for n in flows["03-control.json"]
+        if n["type"] == "modbus-write"
+    ]
+    assert writes, "the control flow has no Modbus write node"
+    for node in writes:
+        # **The wire offset, not the contract address.** These are different
+        # numbers and conflating them is the bug this assertion was written to
+        # prevent — it asserted the *contract* address, so it agreed with the node
+        # that was wrong, and passed while the write went nowhere.
+        #
+        # `adr` is a PDU offset. The contract says 40102; the wire wants 102.
+        # The soft PLC's answer to the contract address was
+        #
+        #     Modbus exception 2: Illegal data address (register not supported)
+        #
+        # which names the register as unsupported rather than as 40000 too high,
+        # so nothing anywhere said "off by the block base".
+        assert node["adr"] == address - MODBUS_HOLDING_BASE, (
+            f"the write node targets PDU offset {node['adr']}, but {tag} is at "
+            f"contract address {address}, which is wire offset "
+            f"{address - MODBUS_HOLDING_BASE}. A wrong offset writes to the wrong "
+            "piece of plant, and the soft PLC will not object."
+        )
+        # And the translation is the server's own, not a subtraction repeated here.
+        assert node["adr"] == ModbusTcpServer.wire_offset(address)
+        # Regression guard on the specific number, so the failure names the plant.
+        assert node["adr"] == 102, (
+            f"adr is {node['adr']}; AERATION:AHU-1:SETPOINT_DO is at contract "
+            "40102, which is wire offset 102. If this changed, check "
+            "ModbusTcpServer.wire_offset before assuming the contract moved."
+        )
+        assert node["unitid"] == unit_id, (
+            f"the write node uses unit {node['unitid']}, the contract says {unit_id}"
+        )
+        assert node["dataType"] == "HoldingRegister", (
+            f"a float32 occupies two holding registers, so dataType must be "
+            f"HoldingRegister; {node['dataType']!r} is not a value the node accepts "
+            "at all"
+        )
+        assert node["quantity"] == 2, (
+            f"a float32 is four bytes and a Modbus register is two, so quantity "
+            f"must be 2; {node['quantity']!r} would write one register and leave "
+            "the other holding whatever was there"
+        )
+
+    # The word order is not on the write node -- contrib has nowhere to put it --
+    # so it is generated into the function node that builds the payload. Checked
+    # by name because the word appears inside a JavaScript string.
+    builder = next(
+        n for n in flows["03-control.json"]
+        if n.get("name") == "build the Modbus write"
+    )
+    body = builder["func"]
+    assert f"'{word_order}'" in body, (
+        f"the contract says {tag}'s register is {word_order}-word-order, and the "
+        f"payload builder does not say so. Wrong word order does not error -- it "
+        f"writes a plausible float that the plant reads as a different one."
+    )
+    assert "writeFloatBE" in body and "readUInt16BE" in body, (
+        "the payload builder must encode a float32 into two 16-bit words explicitly"
     )
 
 
@@ -448,6 +926,128 @@ def test_the_control_flow_refuses_rather_than_clamps(c: Contract, flows: dict) -
     )
 
 
+def test_the_permit_check_sends_a_valid_setpoint_to_the_write_and_not_the_refusal(
+    flows: dict,
+) -> None:
+    """The check node's two outputs, and which way each decision leaves.
+
+    `return [a, b]` is output 0 then output 1, so the array position *is* the
+    safety decision: output 0 goes to the `control: refused` tap and output 1
+    goes to the Modbus write.
+
+    **Every branch of this node used to `return [msg, null]` — including the
+    success.** So a setpoint that passed the permit check left on the refusal
+    port, output 1 got `null`, and the write node received nothing.
+
+    The consequence is the reason this test exists rather than a code review
+    comment: the control flow had never written to the plant, and **every
+    observable behaviour of it was correct**. All three refusals fired, with the
+    right messages. The refusals were simply the only thing that ever happened,
+    and a flow whose every reachable path is the safe one looks like a working
+    safety interlock. Found by injecting `3.5` into the running flow and watching
+    the `control: refused` tap receive `{"ok": true, ...}`.
+
+    Counted structurally: exactly one `return [null, msg]` (the success), and
+    every `return [msg, null]` is preceded by `ok: false` — because a count alone
+    would pass on three successes and one refusal.
+    """
+    raw = next(
+        n["func"] for n in flows["03-control.json"]
+        if n.get("name") == "check against the permit range"
+    )
+    # Comments are prose about this very bug and quote the old source verbatim, so
+    # counting them would count the documentation of the defect as the defect.
+    body = "\n".join(re.split(r"//", line)[0] for line in raw.splitlines())
+
+    assert body.count("return [null, msg]") == 1, (
+        "expected exactly one success exit on output 1 (the Modbus write port); "
+        f"found {body.count('return [null, msg]')}"
+    )
+    assert body.count("return [msg, null]") == 3, (
+        "expected exactly three refusal exits on output 0 (no tag list, not a "
+        f"number, out of range); found {body.count('return [msg, null]')}"
+    )
+
+    # Every remaining exit must be a refusal.
+    refusals = body.count("ok: false")
+    assert refusals == body.count("return [msg, null]"), (
+        f"{refusals} refusal payloads and "
+        f"{body.count('return [msg, null]')} exits on output 0. These must be "
+        "equal: an exit on the refusal port that is not `ok: false` is a setpoint "
+        "that reached the operator as a rejection, and an `ok: false` with no "
+        "exit is a refusal that does nothing."
+    )
+
+    # And the wiring has to agree with the port order.
+    check = next(
+        n for n in flows["03-control.json"]
+        if n.get("name") == "check against the permit range"
+    )
+    names = {
+        n["id"]: n.get("name") for n in flows["03-control.json"]
+    }
+    assert check["outputs"] == 2, f"expected two outputs, got {check['outputs']}"
+    refused = [names[t] for t in check["wires"][0]]
+    written = [names[t] for t in check["wires"][1]]
+    assert refused == ["control: refused"], (
+        f"output 0 goes to {refused}; it must be the refusal tap, since every "
+        "`return [msg, null]` in the body lands there"
+    )
+    assert written, (
+        "output 1 goes nowhere, so the `return [null, msg]` the body needs for a "
+        "valid setpoint has nowhere to land"
+    )
+
+
+def test_every_template_literal_in_a_flow_actually_interpolates(flows: dict) -> None:
+    """No `{name}` in a template literal without a `$` in front of it.
+
+    Found by driving the control flow live, which is the only way it showed up:
+    an operator typing `99` was told
+
+        {requested} {spec.unit} is outside the writable range {lo}-{hi} {spec.unit}
+
+    Backticks, braces, and no `$`. That is a **valid template literal** —
+    JavaScript happily evaluates a template with no substitutions — so the flow
+    deployed, the refusal fired, the tap received it, the flow refused to write,
+    and the safety property held. Nothing errored. The only thing that was wrong
+    is the one field whose entire purpose is telling the operator what they typed
+    and what the legal range is.
+
+    That is worth a structural check rather than a remembered one: the failure
+    mode is a flow that is *more* correct than it looks, and a reader has no way
+    to tell without evaluating the string.
+
+    Scope is template literals only. A `{...}` in a comment or in an ordinary
+    quoted string is not an interpolation and is not this bug; comments are
+    stripped before the check for that reason. An object literal is likewise not
+    matched, since only backtick-delimited runs are examined.
+    """
+    uninterpolated: list[str] = []
+    # `{ident}` or `{a.b}`, not preceded by `$`.
+    placeholder = re.compile(r"(?<!\$)\{[A-Za-z_$][\w.$]*\}")
+
+    for name, nodes in flows.items():
+        for node in nodes:
+            if node.get("type") != "function":
+                continue
+            for lineno, line in enumerate(node.get("func", "").splitlines(), 1):
+                # Strip a trailing `//` comment: its braces are prose.
+                code = re.split(r"//", line, maxsplit=1)[0]
+                for literal in re.findall(r"`[^`]*`", code):
+                    for hit in placeholder.findall(literal):
+                        uninterpolated.append(
+                            f"{name}: {node['name']!r} line {lineno}: {hit} in "
+                            f"{literal.strip()[:70]!r}"
+                        )
+
+    assert not uninterpolated, (
+        "these template literals have a placeholder with no `$`, so JavaScript "
+        "prints the placeholder text verbatim:\n  "
+        + "\n  ".join(uninterpolated)
+    )
+
+
 def test_the_control_flow_writes_over_modbus_and_not_to_the_database(
     c: Contract, flows: dict
 ) -> None:
@@ -456,16 +1056,36 @@ def test_the_control_flow_writes_over_modbus_and_not_to_the_database(
     So the flow must contain a Modbus write node, and the only `postgresql` node
     in it must be the audit trail — an `INSERT` into `event`, never an `UPDATE`
     against anything an alarm could read.
+
+    **The address lives in the `modbus-client` config node, not on the write node,
+    and this test used to assert the opposite.** It checked that `server` contained
+    `wwtp`, on the reasoning that the server was "named by config entry, not by
+    host, so the flow file contains no address". But `server` is a config-node
+    **id**: the write node did `t.nodes.getNode("wwtp-softplc-modbus")`, got
+    `undefined`, and every registration was behind an `if (client)`. The flow
+    wrote nothing, forever, with no error — on the tab whose own comment says it is
+    how a setpoint reaches the PLC. So the assertion is now that the address is a
+    literal on a config node that exists and that the write node resolves to it.
     """
     nodes = {n["name"]: n for n in flows["03-control.json"] if "name" in n}
     assert any(n["type"] == "modbus-write" for n in nodes.values()), (
         "the control flow has no Modbus write node"
     )
-    writes = [n for n in nodes.values() if n["type"] == "modbus-write"]
-    for node in writes:
-        assert "wwtp" in node["server"], (
-            "the Modbus server is named by config entry, not by host, so the flow "
-            f"file contains no address; {node['server']!r} looks like a hostname"
+    clients = [
+        n for n in nodes.values() if n["type"] == "modbus-client"
+    ]
+    assert len(clients) == 1, (
+        f"expected exactly one modbus-client, found {len(clients)}. Without one the "
+        "write node resolves nothing and silently writes nothing."
+    )
+    client = clients[0]
+    for node in nodes.values():
+        if node["type"] != "modbus-write":
+            continue
+        assert node["server"] == client["id"], (
+            f"the write node points at {node['server']!r}, which is not the "
+            f"modbus-client's id {client['id']!r}. contrib resolves this with "
+            "getNode(), so a name here resolves to nothing."
         )
     for node in nodes.values():
         if node["type"] == "postgresql":
@@ -473,6 +1093,311 @@ def test_the_control_flow_writes_over_modbus_and_not_to_the_database(
                 "the only database write in the control flow is the audit trail"
             )
             assert "UPDATE" not in node["query"].upper()
+
+
+def test_no_operator_entry_point_fires_on_its_own(flows: dict) -> None:
+    """An inject that leads to a write must not fire at deploy or on a timer.
+
+    Two things about `enter a setpoint` had to change together, and changing
+    either alone is a way to write to the plant by accident:
+
+    * It was `payloadType: "date"`, so it fired a timestamp. `Number()` of a
+      timestamp is epoch milliseconds, so the permit check refused
+      `1790925871153` — the control flow could only ever refuse, which from the
+      outside is identical to an interlock that works.
+    * Fixing that means giving it a real number, and it was `once: true`, which
+      fires **at deploy**. So the fix for the first fault is a way to write that
+      number to the plant on every container restart, on every `docker compose
+      up`, and on every deploy from the editor.
+
+    So: every inject on a path that reaches a `modbus-write`, a `postgresql`
+    write, or an `acknowledge`, must have neither `once` nor `repeat`. Those are
+    the two fields that make Node-RED fire a node without a person asking.
+    """
+    #: Statements that change something. A read is safe to automate; a write is
+    #: a decision, and a decision nobody made is not a decision.
+    writing = re.compile(
+        r"\bINSERT\s+INTO\b|\bUPDATE\b|\bDELETE\s+FROM\b", re.I
+    )
+
+    for name, nodes in flows.items():
+        by_id = {n["id"]: n for n in nodes}
+        children = {
+            n["id"]: [t for port in (n.get("wires") or []) for t in port]
+            for n in nodes
+        }
+
+        #: Does this node lead, directly or through other nodes, to something
+        #: that changes state? Computed by walking *forward*, because an inject
+        #: is a source and has no parents to inherit the answer from.
+        leads_to_write: dict[str, bool] = {}
+
+        def reaches_write(
+            node_id: str,
+            seen: frozenset[str] = frozenset(),
+            _by_id: dict = by_id,
+            _children: dict[str, list[str]] = children,
+        ) -> bool:
+            # `_by_id` and `_children` are bound as defaults rather than closed
+            # over: they are rebuilt on every iteration of the `for name` loop
+            # below, so a closure that read them late would silently consult the
+            # *last* flow's wiring. It is called within the iteration today, which
+            # is why this has not been a live bug — and "has not been a bug yet"
+            # is the reason to bind it.
+            if node_id in seen:
+                return False
+            seen = seen | {node_id}
+            node = _by_id[node_id]
+            if node["type"] == "modbus-write":
+                return True
+            if writing.search(node.get("query", "") or ""):
+                return True
+            return any(
+                reaches_write(child, seen, _by_id, _children)
+                for child in _children.get(node_id, [])
+            )
+
+        for node in nodes:
+            leads_to_write[node["id"]] = reaches_write(node["id"])
+
+        for node in nodes:
+            if node["type"] != "inject" or not leads_to_write[node["id"]]:
+                continue
+            assert not node.get("once") and not node.get("repeat"), (
+                f"{name}: the inject {node['name']!r} leads to a write but has "
+                f"once={node.get('once')!r} repeat={node.get('repeat')!r}, so "
+                f"Node-RED fires it without anyone asking and the write happens "
+                f"on every deploy. Operator entry points must be manual."
+            )
+            assert node.get("payloadType") in {"num", "json", "str"}, (
+                f"{name}: the inject {node['name']!r} feeds a write with "
+                f"payloadType {node.get('payloadType')!r}. `date` is a timestamp, "
+                f"which reaches the write path as epoch milliseconds — refused by "
+                f"a range check, which reads as a working interlock."
+            )
+
+
+def test_no_node_reads_a_message_property_nothing_writes(flows: dict) -> None:
+    """Every custom `msg.x` a function reads is written by an earlier node.
+
+    A message property is the only wiring a function node has that a flow file
+    cannot show you. There is no declaration, no type, and nothing at import time
+    that notices a name that was never set — a read of a property nobody writes is
+    `undefined` at runtime and a `TypeError` on the first property access, in
+    whatever node happened to run first.
+
+    **`msg.req` was read by `record what was written` and written by nobody.**
+    The audit node did `const req = msg.req || {}` and then
+    `req.write_range.join('-')`, so every single control write threw
+
+        TypeError: Cannot read properties of undefined (reading 'join')
+
+    *after* the setpoint had already reached the PLC. An unlogged control action
+    is not a safe failure mode; it is a control action nobody can account for.
+    The `|| {}` guard is what made it survivable as a crash rather than as
+    something readable — and it is also why the crash happened on `.join` rather
+    than on the access.
+
+    Scoped to properties this project invents. `payload`, `topic`, `params`,
+    `_msgid` and friends are set by Node-RED or by a node upstream of the
+    function, and are excluded by name rather than by pattern so that a genuinely
+    new convention has to be listed here to be checked.
+    """
+    #: Node-RED's own message properties, plus the ones contrib nodes read. Not
+    #: "anything that looks standard" — an explicit list, so a new convention
+    #: cannot slip past by looking plausible.
+    #:
+    #: `req`/`res`/`cookie` are here because `http in` sets them and this project
+    #: has no `http in` node — they are listed to document that they are *not*
+    #: this project's `msg.req`, which is its own convention and must be written
+    #: by the flows. Listing `req` as exempt made this test pass on the very bug
+    #: it was written for, which is the failure mode an exclusion list always has.
+    builtin = {
+        "payload", "topic", "params", "queryParameters", "_msgid", "parts",
+    }
+
+    #: `msg.x = ...` / `+=` and `delete msg.x` are handled positionally below,
+    #: because "this node writes it" is not enough — `record what was written`
+    #: both reads and writes `msg.req`, and asserting only that the name appears
+    #: somewhere in the body passed on the exact bug this test was written for.
+
+    for name, nodes in flows.items():
+        by_id = {n["id"]: n for n in nodes}
+        #: What each node writes, accumulated along the wire.
+        provided: dict[str, set[str]] = {}
+
+        # Walk forward from the sources so `provided` is path-dependent, which is
+        # the point: a property written on one branch is not available on another.
+        order: list[str] = []
+        seen: set[str] = set()
+        frontier = [n["id"] for n in nodes if n["type"] in {"inject", "trigger"}]
+        while frontier:
+            cur = frontier.pop(0)
+            if cur in seen:
+                continue
+            seen.add(cur)
+            order.append(cur)
+            frontier.extend(t for p in (by_id[cur].get("wires") or []) for t in p)
+
+        # Who points at each node. `wires` on a node are its *outgoing* ports,
+        # so parents have to be inverted — reading `node["wires"]` as ancestry
+        # gives every node an empty parent set and the whole check becomes a
+        # no-op that passes on everything.
+        parents: dict[str, list[str]] = {n["id"]: [] for n in nodes}
+        for node in nodes:
+            for port in (node.get("wires") or []):
+                for target in port:
+                    parents.setdefault(target, []).append(node["id"])
+
+        for node_id in order:
+            node = by_id[node_id]
+            inherited: set[str] = set()
+            for parent in parents.get(node_id, []):
+                inherited |= provided.get(parent, set())
+
+            if node["type"] == "function":
+                body = re.sub(r"//.*", "", node["func"])
+                #: Every `msg.x` occurrence with its offset, so a write only
+                #: counts for reads that come *after* it.
+                sites = [
+                    (m.start(), m.lastgroup, m.group("prop"))
+                    for m in re.finditer(
+                        r"\bmsg\.(?P<prop>[A-Za-z_$][\w$]*)"
+                        r"(?P<assign>\s*(?:=[^=]|\+=|-=|\*=|/=|\?\?=|\|\|=|&&=))?"
+                        r"|\bdelete\s+msg\.(?P<prop2>[A-Za-z_$][\w$]*)",
+                        body,
+                    )
+                ]
+                writes_at = [
+                    pos for pos, kind, prop in sites
+                    if kind in {"assign", "prop2"}
+                ]
+                missing = {
+                    prop for pos, kind, prop in sites
+                    if kind == "prop"
+                    and prop not in builtin
+                    and prop not in inherited
+                    and not any(w < pos for w in writes_at)
+                }
+                assert not missing, (
+                    f"{name}: {node['name']!r} reads {sorted(missing)} but no node "
+                    f"on its path writes them first. Available from upstream: "
+                    f"{sorted(inherited - builtin) or 'nothing'}. A read of a "
+                    "message property nothing has written yet is undefined at "
+                    "runtime, and nothing in a flow file reports it."
+                )
+                own = {prop for _, kind, prop in sites if kind in {"assign", "prop2"}}
+            else:
+                own = set()
+
+            produced = set(inherited)
+            # postgresql *reads* msg.params; modbus-write produces a fresh
+            # payload but, with keepMsgProperties, keeps everything else.
+            if node["type"] == "postgresql":
+                produced |= {"params"}
+            if node["type"] == "debug":
+                produced = set()
+            provided[node_id] = produced | own
+
+
+def test_the_modbus_address_matches_compose(flows: dict) -> None:
+    """The Modbus address in the flow, and the one compose gives the runtime.
+
+    `node-red-contrib-modbus` has no environment indirection — there is no
+    `tcpHostFieldType`, unlike the PostgreSQL config node — so the address in
+    `flows.json` is a literal and it can drift from the one in compose.yaml. There
+    is nothing clever to do about that, so this is the check: a compose change that
+    moves the soft PLC fails here instead of failing as a control flow that quietly
+    stops reaching the plant.
+
+    Parsed rather than grepped. The first version searched for
+    `MODBUS_PORT: 5020`, which fails on compose's own `MODBUS_PORT: "5020"` — a
+    quoting difference that says nothing about drift — so it would have passed on a
+    genuine mismatch and failed on a correct one.
+    """
+    import yaml
+
+    compose = yaml.safe_load(Path("compose.yaml").read_text(encoding="utf-8"))
+    env = compose["services"]["scada"]["environment"]
+
+    assert env["MODBUS_HOST"] == build_flows.MODBUS_HOST, (
+        f"the flow writes to {build_flows.MODBUS_HOST!r} but compose gives the "
+        f"scada service {env['MODBUS_HOST']!r}. Update MODBUS_HOST in "
+        f"scada/build_flows.py and regenerate the flows."
+    )
+    assert int(env["MODBUS_PORT"]) == build_flows.MODBUS_PORT, (
+        f"the flow writes to port {build_flows.MODBUS_PORT} but compose gives the "
+        f"scada service {env['MODBUS_PORT']}. Update MODBUS_PORT in "
+        "scada/build_flows.py and regenerate the flows."
+    )
+
+    clients = [
+        n for flow in flows.values() for n in flow
+        if n["type"] == "modbus-client"
+    ]
+    assert clients, "no modbus-client node to check"
+    for node in clients:
+        assert node["tcpHost"] == build_flows.MODBUS_HOST, node
+        assert node["tcpPort"] == build_flows.MODBUS_PORT, node
+        assert node["unit_id"] == int(env["MODBUS_UNIT_ID"]), (
+            f"the modbus-client uses unit {node['unit_id']}, compose says "
+            f"{env['MODBUS_UNIT_ID']}"
+        )
+
+
+def test_the_postgres_address_is_an_environment_variable(flows: dict) -> None:
+    """No address, no user and no password in any committed flow file.
+
+    `postgreSQLConfig` reads them by name from the environment
+    (`hostFieldType: env` and its four siblings), so compose.yaml is the only place
+    that knows where the database is. This asserts the flow says *which* variable
+    rather than *what* address — which is the property that makes moving a
+    container a compose change and not a commit.
+
+    The credentials are the other half and are not here at all: `userEnv` and
+    `passwordEnv` are empty and `userFieldType`/`passwordFieldType` are `cred`, so
+    the values live in `flows_cred.json`, keyed by this node's id.
+    """
+    nodes = [
+        n for flow in flows.values() for n in flow
+        if n["type"] == "postgreSQLConfig"
+    ]
+    assert len(nodes) == 1, f"expected exactly one postgreSQLConfig, got {len(nodes)}"
+    node = nodes[0]
+
+    for field, env in (
+        ("host", build_flows.PG_HOST_ENV),
+        ("port", build_flows.PG_PORT_ENV),
+        ("database", build_flows.PG_DATABASE_ENV),
+    ):
+        assert node[field] == env, (
+            f"the flow carries {field}={node[field]!r}. It should name the "
+            f"environment variable {env!r} so compose.yaml stays the only place "
+            f"that knows the address."
+        )
+        assert node[f"{field}FieldType"] == "env", (
+            f"{field}FieldType is {node[f'{field}FieldType']!r}; without 'env' the "
+            f"node reads the value literally and {node[field]!r} is a variable name "
+            "being used as a hostname."
+        )
+
+    assert node["userFieldType"] == "cred", (
+        "the user must be a credential, not a field, or it lands in a committed "
+        "flow file"
+    )
+    assert node["passwordFieldType"] == "cred", (
+        "the password must be a credential, not a field"
+    )
+    assert not node["userEnv"] and not node["passwordEnv"], (
+        "userEnv/passwordEnv set means the node reads the secret from the "
+        "environment and it is in `docker inspect` output instead of encrypted"
+    )
+    for banned in ("postgresqldb", "mydb", "password", "user"):
+        assert banned not in node, (
+            f"the config node carries a {banned!r} key. contrib-postgresql 0.16 "
+            "reads host/port/database/user/password only through the fields above; "
+            "anything else is a key nothing looks at."
+        )
 
 
 def test_no_flow_bypasses_the_tag_loader(flows: dict) -> None:
@@ -509,15 +1434,55 @@ def test_no_flow_bypasses_the_tag_loader(flows: dict) -> None:
                 f"{name}: reads {node['filename']!r}, expected "
                 f"{build_flows.TAGS_PATH_IN_FLOW!r}"
             )
-            # The file-not-found output must be watched, not left dangling.
+            # `filenameType: msg` reads `msg.payload` as the path, and the thing
+            # driving it is a trigger whose op1 is `"1"` — so the node opens a
+            # file literally named `1`, reports nothing downstream, and leaves the
+            # tag list empty for the consumer's `?? []` to swallow.
+            assert node["filenameType"] == "str", (
+                f"{name}: the tag reader is {node['filenameType']!r}, so its "
+                f"filename comes from msg.payload. Nothing on this path sets that "
+                f"to {build_flows.TAGS_PATH_IN_FLOW!r}, so it reads whatever the "
+                f"trigger carries instead. Use 'str'."
+            )
+            # The not-found case has nowhere to go on a one-output node, so the
+            # path being correct is what keeps this silent.
+            assert node["sendError"] is False, (
+                f"{name}: sendError is true, so a read failure sends a message with "
+                "msg.error onto the loader's input. The loader's `?? []` would "
+                "still swallow it, but as a different wrong value."
+            )
             assert any(node["wires"][0]), (
-                f"{name}: nothing watches tags.json's not-found output, so a "
-                "missing file is silent and every unit in the flow becomes blank"
+                f"{name}: nothing watches the tag reader's output, so a missing "
+                "file is silent and every unit in the flow becomes blank"
             )
 
+        # **`inject` with `once`, because `trigger` never fires.** The loader was
+        # driven by a `trigger` node on the belief that it fires on deploy. It does
+        # not: Node-RED 4's `trigger` registers only an `input` handler and a
+        # `close` handler, with no startup path, so with `inputs: 1` and nothing
+        # wired in, `op1` never executes. It is not a version difference -- there
+        # is no version of this node that fires unprompted.
+        # So this asserts the mechanism that does work (`20-inject.js:88` arms a
+        # `onceDelay` timer on construction), *and* that no `trigger` has crept
+        # back, because a `trigger` in this position fails silently and the only
+        # symptom is an empty plant.
         triggers = [n for n in named if n["type"] == "trigger"]
-        assert triggers, f"{name} has no trigger to fire the loader on deploy"
-        for node in triggers:
+        assert not triggers, (
+            f"{name}: {triggers[0]['name']!r} is a `trigger` driving the loader. A "
+            "trigger does not fire on deploy in any Node-RED version, so the tag "
+            "list never loads and every consumer silently reports an empty plant. "
+            "Use an inject with once=True."
+        )
+        starters = [
+            n for n in named
+            if n["type"] == "inject" and n.get("once")
+        ]
+        assert starters, (
+            f"{name}: nothing fires the tag loader on deploy. Nothing runs in "
+            "Node-RED until a message arrives, so without an inject with once=True "
+            "the file is never read."
+        )
+        for node in starters:
             assert not node.get("repeat"), (
                 f"{name}: the tag loader fires on a {node.get('repeat')!r} "
                 "interval. It should fire once on deploy; re-reading a file every "
@@ -531,6 +1496,61 @@ def test_no_flow_bypasses_the_tag_loader(flows: dict) -> None:
         assert consumers, (
             f"{name} does not use the tag list, so it should not load one"
         )
+
+
+def test_the_tag_path_is_where_compose_mounts_the_flows(flows: dict) -> None:
+    """The path in the flow, resolved against the mount that provides it.
+
+    `TAGS_PATH_IN_FLOW` is an **in-container** path, and nothing in this repository
+    checks it against anything. It read `/data/tags.json`, which is where the
+    runtime writes `flows.json` — and nothing has ever put `tags.json` there. The
+    file is at `/flows/tags.json`, because that is where compose mounts
+    `./scada/flows`.
+
+    The failure is the quietest shape this project has: the `file in` node read a
+    file that does not exist, sent its error nowhere, and every consumer fell back
+    to its `?? []` default. The result is a mimic showing six signals with blank
+    units and no normal bands, refreshing every five seconds, with no error
+    anywhere — a plant that looks alive and is displaying nothing. It survived
+    because a `postgresql` error upstream was louder and hid it.
+
+    So the container path is derived from the mount compose actually declares —
+    `FLOWS` is the *host* directory and conflating the two is how `/data/tags.json`
+    survived — and the file it names must be the one the generator writes.
+    """
+    import yaml
+
+    tag_path = Path(build_flows.TAGS_PATH_IN_FLOW)
+    assert tag_path.is_absolute(), (
+        f"{build_flows.TAGS_PATH_IN_FLOW!r} is not an absolute in-container path"
+    )
+    assert TAGS.exists(), f"{TAGS} does not exist; run `make scada-flows`"
+
+    compose = yaml.safe_load(Path("compose.yaml").read_text(encoding="utf-8"))
+    scada = compose["services"]["scada"]
+
+    # Host directory -> container directory, from the short-form mounts compose uses.
+    mounts: dict[str, Path] = {}
+    for entry in scada.get("volumes", []):
+        parts = str(entry).split(":")
+        if len(parts) >= 2 and not parts[0].startswith(("/", "$", "{")):
+            mounts[Path(parts[1])] = Path(parts[0])
+
+    host = FLOWS.resolve()
+    candidates = [c for c, h in mounts.items() if h.resolve() == host]
+    assert candidates, (
+        f"compose does not mount {FLOWS} into the scada service, so the flows "
+        f"name a file the container cannot see. Mounts: {scada.get('volumes')}"
+    )
+    target = candidates[0]
+    assert target in tag_path.parents, (
+        f"the flow reads {build_flows.TAGS_PATH_IN_FLOW!r}, which is not under "
+        f"{target}, the container directory compose mounts {FLOWS} at. Nothing "
+        f"puts the tag list there."
+    )
+    assert tag_path.name == TAGS.name, (
+        f"the flow reads {tag_path.name!r} but the generator writes {TAGS.name!r}"
+    )
 
 
 def test_a_consumer_says_so_when_the_tag_list_is_missing(flows: dict) -> None:
@@ -652,35 +1672,139 @@ def test_the_acknowledge_query_is_bound_not_interpolated(flows: dict) -> None:
     The tag ids are interpolated because they are known at generation time and
     are escaped. The acknowledgement's message, rule and value come from a person
     at run time, and a statement built by concatenation is a SQL injection one
-    mistyped number away.
+    mistyped row away.
+
+    **This test was checking that the safety property held in two places where it
+    did not hold at all.**
+
+    It asserted `"$msg" in acknowledge_query()` against a function *nothing
+    called* — its own comment said "it is not in a flow yet" — while the
+    annunciator carried its own copy inline. And it asserted `node["params"]` on
+    each query node, a `node-red-contrib-postgresql` **0.x** field that 0.16.2
+    removed: binds are read off the *message*, as `msg.params` (positional) or
+    `msg.queryParameters` (named). So `$msg` was never bound by anything; it
+    reached `pg` as a parameter literally named `msg`, which is exactly the
+    injection the placeholder existed to prevent, and the `params` list it claimed
+    to declare was read by nobody.
+
+    So it is checked where it is now true, and end to end:
+
+    * no query node carries a `params` list, which 0.16.2 ignores;
+    * no statement uses a `$name` placeholder, which 0.16.2 will not bind;
+    * a statement that **writes** binds, because a value in it came from a person
+      at run time;
+    * placeholders are `$1..$n` with no gaps, and the function node upstream
+      supplies exactly `n` values — a fourth `$4` fed by three values is the
+      unbound-parameter injection this test is named for;
+    * a read-only statement may have none, and that is checked rather than
+      assumed: the tag ids in the mimic's `WHERE` are generation-time constants
+      passed through `_sql_literal`, so binding them would be theatre.
+    * the shared `acknowledge_query()` is the statement the annunciator runs, not a
+      parallel copy that can drift.
     """
-    # The acknowledge statement lives in the module (it is not in a flow yet --
-    # the flow reads unacknowledged alarms and the *engine* is what acknowledges;
-    # see the note in `annunciator_query`) and the audit trail is in the control
-    # flow. Both must bind.
-    assert "$msg" in build_flows.acknowledge_query()
-    control = [
-        n for n in flows["03-control.json"]
+    writes: list[tuple[str, dict]] = []
+    for name, nodes in flows.items():
+        for node in nodes:
+            if node["type"] != "postgresql":
+                continue
+            assert "params" not in node, (
+                f"{name}: {node['name']!r} carries a `params` list. "
+                "contrib-postgresql 0.16.2 removed the node-level field; binds "
+                "come from msg.params or msg.queryParameters. Keeping it implies "
+                "the values are bound when nothing reads the list."
+            )
+            named = re.search(r"\$[A-Za-z_]\w*", node["query"])
+            assert named is None, (
+                f"{name}: {node['name']!r} uses a named placeholder "
+                f"({named.group(0) if named else ''}). Named binds need "
+                "msg.queryParameters; 0.16.2's `named` rewrite cannot "
+                "disambiguate a placeholder before a `::` cast, which the "
+                "jsonb_build_object arguments require. Use positional $1."
+            )
+            placeholders = sorted(set(re.findall(r"\$(\d+)", node["query"])),
+                                  key=int)
+            assert placeholders == [str(i + 1) for i in range(len(placeholders))], (
+                f"{name}: {node['name']!r} uses placeholders {placeholders}, which "
+                "are not $1..$n with no gaps. A gap means an unbound parameter and "
+                "Postgres refuses the statement."
+            )
+
+            is_write = bool(re.search(
+                r"\b(INSERT|UPDATE|DELETE)\b", node["query"], re.I
+            ))
+            if not is_write:
+                continue
+
+            assert placeholders, (
+                f"{name}: {node['name']!r} writes and binds nothing. Every value in "
+                "a write reaches it from a person at run time -- an operator's "
+                "number, a row they clicked -- so a statement built by "
+                "concatenation is a SQL injection one mistyped value away."
+            )
+
+            # The node that feeds it must set msg.params, or nothing is bound.
+            feeders = [
+                n for n in nodes
+                if n["type"] == "function"
+                and re.search(r"msg\.params\s*=", n.get("func", ""))
+            ]
+            assert feeders, (
+                f"{name}: {node['name']!r} has bind placeholders but no function "
+                "node upstream assigns msg.params, so every value is unbound."
+            )
+            for feeder in feeders:
+                literal = re.search(r"msg\.params\s*=\s*\[(.*?)\]\s*;", feeder["func"],
+                                    re.S)
+                assert literal, (
+                    f"{name}: {feeder['name']!r} assigns msg.params but not from a "
+                    "literal array; this test can only count a literal one"
+                )
+                count = len(
+                    [p for p in literal.group(1).split(",")
+                     if p.strip() and not p.strip().startswith("//")]
+                )
+                assert count == len(placeholders), (
+                    f"{name}: {feeder['name']!r} supplies {count} value(s) for "
+                    f"{len(placeholders)} placeholder(s) in {node['name']!r}'s "
+                    "statement. Mismatched counts are the injection this test is "
+                    "named for."
+                )
+            writes.append((name, node))
+
+    assert len(writes) == 2, (
+        "expected the acknowledgement insert and the control flow's audit trail, "
+        f"found {[(n, q['name']) for n, q in writes]}. Every write in these flows "
+        "takes a run-time value, so every one of them binds."
+    )
+
+    # And the acknowledgement statement is the one the annunciator runs.
+    ack = [
+        n for n in flows["02-annunciator.json"]
         if n["type"] == "postgresql"
+        and re.search(r"\bINSERT\b", n["query"], re.I)
     ]
-    for node in control:
-        assert node["params"], (
-            "the audit-trail insert must declare bind parameters; an INSERT with "
-            "no params means the values were spliced into the statement"
-        )
-        for param in node["params"]:
-            assert param["type"] == "msg", param
+    assert ack, (
+        "the annunciator has no acknowledgement insert. `acknowledge_query()` "
+        "must be what the flow runs -- a shared function plus a private inline copy "
+        "is how the copy stops being bound."
+    )
+    assert ack[0]["query"] == build_flows.acknowledge_query()
+    assert "$1" in ack[0]["query"]
 
 
-# ── the credential ids ────────────────────────────────────────────────────────
+# ── the credential, and the entrypoint that writes it ─────────────────────────
 
 
-def test_the_flows_name_a_credential_the_entrypoint_writes(flows: dict) -> None:
-    """A credential id in a committed flow is a pointer, not a secret.
+def test_the_credential_is_keyed_by_the_config_nodes_id(flows: dict) -> None:
+    """The flow names a *config node*, and the credential is filed under its id.
 
     `flows_cred.json` is generated from the environment by
-    `scada/nodered/entrypoint.sh` and gitignored. The flow names a database; the
-    credential holds the password; the two are joined at run time by the id.
+    `scada/nodered/entrypoint.sh` and gitignored. The flow names a database
+    connection; the credential holds the user and password; the two are joined at
+    run time by the config node's **id**, because that is what
+    `credentials.get(id)` is called with
+    (`@node-red/runtime/lib/nodes/index.js:98`). A credential filed under any
+    other key is present in the file and never read.
 
     Which means the *ids* have to agree, and a mismatch is the worst failure
     Node-RED has: the node loads, the type resolves, and every query fails with
@@ -689,24 +1813,87 @@ def test_the_flows_name_a_credential_the_entrypoint_writes(flows: dict) -> None:
 
     which is an internal, names no database, and is identical for "no such
     credential" and "the credential is broken".
+
+    **This test used to assert `node["mydb"]` appeared in the entrypoint's text.**
+    That was the shape `node-red-contrib-postgresql` 0.x wanted — a credential id
+    hung directly off each query node — and 0.16.2 removed the field. So the flow
+    named a credential, the entrypoint wrote a different shape, the test confirmed
+    the two halves of a match that was never used by anything, and the runtime
+    logged 77 of those TypeErrors a day.
+
+    What replaced it is not a string search. The entrypoint now *reads the id out
+    of the flow it just assembled*, so there is no second place that can invent
+    one, and the assertion here is on that mechanism rather than on agreement.
     """
     entrypoint = Path("scada/nodered/entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "postgreSQLConfig" in entrypoint, (
+        "the entrypoint no longer mentions the config node type, so it cannot find "
+        "the node to file the credential under"
+    )
+    assert "flows.json" in entrypoint, (
+        "the entrypoint must read the assembled flow to learn the config node's id. "
+        "Hardcoding the id here would mean two places inventing it."
+    )
+    # It must not hardcode a derived id back into the shell script.
+    for node in (n for f in flows.values() for n in f):
+        if node["type"] in build_flows.CONFIG_NODE_TYPES:
+            assert node["id"] not in entrypoint, (
+                f"{node['id']} appears literally in entrypoint.sh. It is derived by "
+                "scada/build_flows.py; a second copy here is how they drift."
+            )
+    # And no query node may carry a credential id directly: 0.16.2 has no such field.
     for name, nodes in flows.items():
         for node in nodes:
             if node["type"] == "postgresql":
-                cred = node.get("mydb")
-                assert cred, f"{name}: {node['name']!r} has no credential"
-                assert cred in entrypoint, (
-                    f"{name}: {node['name']!r} names credential {cred!r}, which "
-                    "scada/nodered/entrypoint.sh does not write"
+                assert "mydb" not in node, (
+                    f"{name}: {node['name']!r} still carries `mydb`, a field "
+                    "contrib-postgresql 0.16.2 removed"
                 )
-            if node["type"] == "modbus-write":
-                server = node.get("server")
-                assert server, f"{name}: {node['name']!r} has no Modbus server"
-                assert server in entrypoint, (
-                    f"{name}: {node['name']!r} names Modbus server {server!r}, "
-                    "which scada/nodered/entrypoint.sh does not write"
-                )
+
+
+def test_the_entrypoint_refuses_to_start_without_the_config_node() -> None:
+    """No `postgreSQLConfig` node means there is nowhere to file the credential.
+
+    The entrypoint exits non-zero with a message that names the problem. It must
+    not fall back to writing a credential under some other key: that produces a
+    file that exists, parses, and is never read — which is the failure this whole
+    section is about, arrived at silently.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        data = Path(tmp) / "data"
+        flows = Path(tmp) / "flows"
+        data.mkdir()
+        flows.mkdir()
+        # A valid flow with a tab and a query node, but no config node.
+        (flows / "01-test.json").write_text(
+            json.dumps([
+                {"id": "a1", "type": "tab", "name": "t", "label": "t", "wires": []},
+                {"id": "a2", "type": "postgresql", "z": "a1", "name": "q",
+                 "query": "SELECT 1", "postgreSQLConfig": "missing",
+                 "wires": [[]]},
+            ]),
+            encoding="utf-8",
+        )
+        env = {
+            "NR_DATA_DIR": str(data), "NR_FLOWS_DIR": str(flows),
+            "POSTGRES_PASSWORD": "x", "POSTGRES_USER": "u",
+            "POSTGRES_HOST": "h", "POSTGRES_DB": "d",
+        }
+        result = subprocess.run(
+            [env_cmd("sh"), "scada/nodered/entrypoint.sh", env_cmd("true")],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0, (
+            "the entrypoint started with a flow that has no postgreSQLConfig node. "
+            "It must refuse, because there is no node id to key the credential by."
+        )
+        assert "postgreSQLConfig" in result.stderr, (
+            f"the refusal must name what is missing; got: {result.stderr!r}"
+        )
+        assert not (data / "flows_cred.json").exists(), (
+            "a credential file was written anyway, keyed by nothing"
+        )
 
 
 def _minimal_flows(dirpath) -> None:
@@ -718,11 +1905,27 @@ def _minimal_flows(dirpath) -> None:
     flow one is louder. Which means every credential test now has to provide a
     flows directory, and the three that did not were failing on
     `no flows found` before they ever reached the thing they were about.
+
+    **It has to contain a `postgreSQLConfig` node.** The entrypoint files the
+    credential under that node's id, so a flow without one is refused at startup —
+    correctly, and by `test_the_entrypoint_refuses_to_start_without_the_config_
+    node`. Every other test that hands this fixture to the entrypoint needs a
+    *valid* flow, not a rejected one, or it fails on the refusal instead of on
+    what it is about.
     """
     flows = Path(dirpath)
     flows.mkdir(parents=True, exist_ok=True)
     (flows / "01-test.json").write_text(
-        '[{"id": "a1", "type": "tab", "name": "t", "label": "t", "wires": []}]',
+        json.dumps([
+            {"id": "a1", "type": "tab", "name": "t", "label": "t", "wires": []},
+            {
+                "id": "a0", "type": "postgreSQLConfig", "name": "wwtp-postgres",
+                "host": "POSTGRES_HOST", "hostFieldType": "env",
+                "port": "POSTGRES_PORT", "portFieldType": "env",
+                "database": "POSTGRES_DB", "databaseFieldType": "env",
+                "userFieldType": "cred", "passwordFieldType": "cred",
+            },
+        ]),
         encoding="utf-8",
     )
     return flows
@@ -789,7 +1992,7 @@ def test_the_entrypoint_writes_valid_json() -> None:
                 "MODBUS_PORT": "5020",
             }
             result = subprocess.run(
-                [env_cmd("sh"), str(script), "true"],
+                [env_cmd("sh"), str(script), env_cmd("true")],
                 env=env, capture_output=True, text=True, check=False,
             )
             assert result.returncode == 0, result.stderr
@@ -815,12 +2018,38 @@ def test_the_entrypoint_writes_valid_json() -> None:
                 capture_output=True, text=True, check=True,
             ).stdout
             creds = json.loads(decrypted)
-            assert creds["wwtp-db"]["postgresqldb"]["password"] == password, (
+
+            # **Keyed by the config node's id, and holding only the two things a
+            # flow file cannot.** The host, port and database are not credentials —
+            # they are `env`-typed fields on the config node, read from the
+            # environment — so putting them here wrote the address into a file
+            # whose whole purpose is not to, and the test asserted it as if it
+            # were the design.
+            assembled = json.loads(
+                (Path(tmp) / "flows.json").read_text(encoding="utf-8")
+            )
+            config_ids = [
+                n["id"] for n in assembled if n["type"] == "postgreSQLConfig"
+            ]
+            assert len(config_ids) == 1, config_ids
+            assert list(creds) == config_ids, (
+                f"the credential is keyed by {list(creds)} but the config node is "
+                f"{config_ids}. `credentials.get(id)` is called with the *node* id, "
+                "so a credential under any other key is present and never read."
+            )
+            assert creds[config_ids[0]]["password"] == password, (
                 f"password {password!r} did not survive the round trip"
             )
-            assert creds["wwtp-db"]["postgresqldb"]["host"] == "db"
-            assert creds["wwtp-db"]["postgresqldb"]["database"] == "wwtp"
-            assert creds["wwtp-softplc-modbus"]["modbus-client"]["host"] == "softplc"
+            assert creds[config_ids[0]]["user"] == "wwtp"
+            assert set(creds[config_ids[0]]) == {"user", "password"}, (
+                f"the credential holds {sorted(creds[config_ids[0]])}; contrib "
+                "declares exactly user and password, and the address belongs on the "
+                "config node as an env-typed field"
+            )
+            # And the password is nowhere in the flow file itself.
+            assert password not in (Path(tmp) / "flows.json").read_text(
+                encoding="utf-8"
+            )
 
     # A credential is a credential whether or not it happens to be encrypted.
     with tempfile.TemporaryDirectory() as tmp:

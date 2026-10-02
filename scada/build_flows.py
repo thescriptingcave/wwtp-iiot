@@ -78,6 +78,7 @@ from typing import Any
 
 from softplc.contract import Contract
 from softplc.contract import contract as get_contract
+from softplc.servers.modbus_server import ModbusTcpServer
 
 log = logging.getLogger("scada.build_flows")
 
@@ -90,8 +91,8 @@ FLOWS_DIR = Path("scada/flows")
 #: flow. Deriving them from names means a regenerated flow keeps its wires, and
 #: — more usefully — a diff shows *which node changed* rather than a page of
 #: reassigned hex.
-def nid(name: str) -> str:
-    """A stable 13-character hex id, derived from the node's name.
+def nid(*parts: str) -> str:
+    """A stable 13-character hex id, derived from a name **and its scope**.
 
     **Not `hash()`.** Python salts string hashing per process, so `hash(name)`
     returns a different value on every run, which made every regeneration of every
@@ -102,8 +103,43 @@ def nid(name: str) -> str:
     Found by `tests/test_scada_contract.py::test_the_flows_are_in_step_with_the_
     contract`, which failed on the very run that generated the file it was
     checking.
+
+    **And not the name alone.** Deriving from the name was fine while ids only had
+    to be unique *within* one flow, which is what the docstring used to claim. They
+    do not: `scada/nodered/entrypoint.sh` concatenates all three generated files
+    into the single `flows.json` a runtime reads, and Node-RED requires ids to be
+    unique across that whole document. Four nodes are deliberately emitted once per
+    flow -- the tag loader, because Node-RED's `global` context is per flow file --
+    and name-only derivation gave all three copies of each the same id. Node-RED
+    did not complain; it kept one of the three and wired the other nine endpoints
+    to whichever it happened to keep, so two of the three flows silently ran with
+    an empty tag list.
+
+    So every id is now `nid(scope, name)` with the tab id as the scope for nodes on
+    a tab, which is unique by construction. The join character is ASCII unit
+    separator, so no pair of ordinary names can produce the same digest as a
+    different pair.
     """
-    return "a" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:12]
+    return "a" + hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+#: The scope for a node that is not on any tab.
+#:
+#: Node-RED's config nodes -- `postgreSQLConfig`, `modbus-client` -- belong to the
+#: *runtime*, not to a flow. They carry no `z` and are shared by every tab that
+#: references them, which is the entire reason the type exists. So they need an id
+#: that is the same in all three generated files and is not derived from any one
+#: tab, and this is that scope.
+CONFIG_SCOPE = "config"
+
+#: The config node types these flows use.
+#:
+#: Exposed rather than re-spelled in the tests, because the properties that make
+#: them different from every other node are three separate ones -- no tab, no
+#: ports, and referenced by an id field rather than by a wire -- and three separate
+#: lists of exceptions in three separate tests is three chances to miss the fourth
+#: config node someone adds next year.
+CONFIG_NODE_TYPES: frozenset[str] = frozenset({"postgreSQLConfig", "modbus-client"})
 
 
 # ─── the watched set ──────────────────────────────────────────────────────────
@@ -132,23 +168,50 @@ MIMIC_TAGS: tuple[str, ...] = (
 #: two writable signals are fault-injection flags and belong in a test harness.
 CONTROL_TAG = "AERATION:AHU-1:SETPOINT_DO"
 
-#: The credential ids the flows refer to. These must match the keys
-#: `scada/nodered/entrypoint.sh` writes into `flows_cred.json`, and
-#: `tests/test_scada_contract.py` asserts they do — because a mismatch is the
-#: sharpest Node-RED failure there is:
+#: The name of the single PostgreSQL config node, and the single Modbus client.
 #:
-#:     [error] [postgresql:read newest values] TypeError:
-#:             node.config.pgPool.connect is not a function
-#:
-#: which is an internal, names no database, and appears for a *misconfigured* node
-#: and a *missing* node identically.
-PG_CREDENTIAL = "wwtp-db"
-MODBUS_CREDENTIAL = "wwtp-softplc-modbus"
+#: Config nodes are runtime-global in Node-RED, so there is exactly one of each and
+#: every tab that needs it refers to the same one by id. They used to be called
+#: "credential ids", which was the shape the *previous* major version of
+#: `node-red-contrib-postgresql` wanted: a credential id hung directly off each
+#: query node. That version is gone -- see `postgres_config()` -- and the name
+#: outlived the thing it named.
+PG_CONFIG = "wwtp-postgres"
+MODBUS_CONFIG = "wwtp-softplc"
 
-#: The Modbus config entry the control flow writes through, by *name*. The user
-#: creates it in the editor pointing at the soft PLC, so the flow file contains no
-#: address and nothing in git changes when a container moves.
-MODBUS_SERVER = "wwtp-softplc-modbus"
+
+def pg_config_id() -> str:
+    """The id every PostgreSQL query node points at, in every flow."""
+    return nid(CONFIG_SCOPE, PG_CONFIG)
+
+
+def modbus_config_id() -> str:
+    """The id the control flow's write node points at."""
+    return nid(CONFIG_SCOPE, MODBUS_CONFIG)
+
+
+#: Where the database connection details come from, and why it is not in git.
+#:
+#: `node-red-contrib-postgresql` has a `*FieldType` of `env` on every connection
+#: field, which reads `process.env[<the field's value>]` at startup. So the flow
+#: names the *environment variable* and the address stays in compose, which means
+#: moving a container does not change a file in git.
+#:
+#: `node-red-contrib-modbus` has no such thing -- its client reads `tcpHost`
+#: literally -- so the Modbus address is a literal in the flow. That asymmetry is
+#: the contrib node's, not a preference, and
+#: `tests/test_scada_contract.py::test_the_modbus_address_matches_compose` fails
+#: the build if the literal and compose.yaml ever disagree.
+PG_HOST_ENV = "POSTGRES_HOST"
+PG_PORT_ENV = "POSTGRES_PORT"
+PG_DATABASE_ENV = "POSTGRES_DB"
+
+#: The soft PLC's address, as a literal, because the Modbus client has no
+#: environment indirection. Mirrors compose.yaml's `MODBUS_HOST` / `MODBUS_PORT`,
+#: and `tests/test_scada_contract.py::test_the_modbus_address_matches_compose`
+#: fails the build if the two ever disagree.
+MODBUS_HOST = "softplc"
+MODBUS_PORT = 5020
 
 
 def _sql_literal(value: str) -> str:
@@ -263,19 +326,32 @@ def acknowledge_query() -> str:
     flapping rule acknowledges the rule, which is the behaviour an operator
     expects and the opposite of what an occurrence-based system does.
 
-    The `::text` cast on `$rule` is not decoration. A bind parameter inside
+    The `::text` cast on `$4` is not decoration. A bind parameter inside
     `jsonb_build_object` has **no inferable type**, and Postgres says so:
 
-        could not determine data type of parameter $3
+        could not determine data type of parameter $4
 
     Which is only visible by running it, and which was found by running it. The
-    parameters in the `VALUES` list infer fine from the column types; the ones
-    inside a function call have nothing to infer from.
+    parameters in the `VALUES` list infer fine from the column types; the one
+    inside a function call has nothing to infer from.
+
+    **Positional, not named.** This used to use `$msg`-style named placeholders,
+    which the installed contrib node does not bind: it reads `msg.params` or
+    `msg.queryParameters` off the *message* and nothing off the node. So `$msg`
+    reached `pg` as an unbound parameter literally named `msg`. Positional `$1`
+    works with `msg.params`, and unlike the `named` rewrite it is unambiguous
+    before a `::` cast.
+
+    This statement was also **dead**: the annunciator carried its own copy inline,
+    differing from this one by omitting `equipment_id`, and
+    `test_the_acknowledge_query_is_bound_not_interpolated` asserted against this
+    copy while its own docstring said "it is not in a flow yet". The flow now calls
+    this function, so the thing the test checks is the thing that runs.
     """
     return """
 INSERT INTO event (ts, kind, severity, message, signal_id, equipment_id, detail)
-VALUES (now(), 'alarm_acknowledged', 'critical', $msg, $sig, $eq,
-        jsonb_build_object('rule', $rule::text, 'acknowledged_at', now()))
+VALUES (now(), 'alarm_acknowledged', 'critical', $1, $2, $3,
+        jsonb_build_object('rule', $4::text, 'acknowledged_at', now()))
 RETURNING id
 """.strip()
 
@@ -285,7 +361,7 @@ RETURNING id
 
 def tab(name: str, label: str, disabled: bool = False) -> dict[str, Any]:
     return {
-        "id": nid(f"tab:{name}"),
+        "id": nid("tab", name),
         "type": "tab",
         # A `name` on the tab too. Node-RED's own tab template has one, and its
         # absence is the reason four assertions in the test file had to special-
@@ -322,35 +398,55 @@ _TAB_INFO: dict[str, str] = {
 
 def inject(
     name: str, tab_id: str, *, every: float = 5.0, once: bool = False,
+    manual: bool = False, payload: str = "", payload_type: str = "date",
 ) -> dict[str, Any]:
-    """A timer.
+    """A timer, or — with `manual` and a payload — the operator's button.
 
-    `once` is what the control and acknowledgement flows use to start: they are
-    event-driven and have nothing to poll for.
+    Three shapes, because they mean three different things and Node-RED will not
+    tell them apart:
+
+    * default — fires every `every` seconds.
+    * `once` — fires once at deploy. Used to start the event-driven flows.
+    * `manual` — **never fires on its own**, and can only be triggered by a
+      person from the editor sidebar.
+
+    **`manual` is what the two operator entry points use, and it is load-bearing.**
+    Both used to be `once` with `payloadType: "date"`, and that combination has
+    two separate faults:
+
+    1. The control flow's entry point could not be given a number. It fired a
+       timestamp, `Number()` turned that into epoch milliseconds, and the permit
+       check refused a setpoint of `1790925871153`. The flow could only ever
+       refuse — indistinguishable, from the outside, from an interlock working.
+    2. Giving it a real number to fix that would have written that number to the
+       plant on **every container restart**. `once` fires at deploy. So the fix
+       for (1) has to come with a node that does not fire at all on its own.
+
+    There is no dashboard in this project, so the sidebar *is* the operator
+    interface: edit the payload, then trigger the node. The placeholder payload
+    is a shape rather than a value — it names the fields the next node reads, so
+    what to edit is visible in the flow and not only in this docstring.
     """
     node: dict[str, Any] = {
-        "id": nid(name),
+        "id": nid(tab_id, name),
         "type": "inject",
         "z": tab_id,
         "name": name,
         "props": [{"p": "payload"}, {"p": "topic", "vt": "str"}],
-        "repeat": "" if once else str(every),
+        "repeat": "" if (once or manual) else str(every),
         "crontab": "",
-        "once": once,
+        "once": False if manual else once,
         "onceDelay": "0.5",
         "topic": "",
-        "payload": "",
-        "payloadType": "date",
+        "payload": payload,
+        "payloadType": payload_type,
     }
-    if once:
-        node["repeat"] = ""
-        node["crontab"] = ""
     return node
 
 
 def function(name: str, tab_id: str, body: str, *, outputs: int = 1) -> dict[str, Any]:
     return {
-        "id": nid(name),
+        "id": nid(tab_id, name),
         "type": "function",
         "z": tab_id,
         "name": name,
@@ -367,16 +463,44 @@ def function(name: str, tab_id: str, body: str, *, outputs: int = 1) -> dict[str
     }
 
 
-def debug(
-    name: str, tab_id: str, *, active: bool = False, to: str = "console",
-) -> dict[str, Any]:
+def debug(name: str, tab_id: str) -> dict[str, Any]:
+    """A diagnostic tap. Every one of these is active.
+
+    **`tosidebar` is the boolean `True`, and it used to be the string
+    `"console"`.** Node-RED's own default is `tosidebar: {value: true}` -- a
+    boolean, from a checkbox. The node then guards its publish with
+
+        if (node.active && node.tosidebar) { ... }      // `complete: "true"`
+        if (node.tosidebar == true) { sendDebug(...) } // `complete: "payload"`
+
+    and `"console" == true` is **false** in JavaScript: the string coerces to
+    `NaN`, which compares equal to `0`, and `true` is `1`. So every debug node in
+    all three flows had been receiving messages, discarding them, and publishing
+    nothing -- no sidebar entry, no message count on the node in the editor, no
+    log line. Eight diagnostic taps, all silently dead, on the flows whose whole
+    purpose is to be readable.
+
+    `mimic status` made it worse by also carrying `active: false`, which is a
+    defensible thing to want for a node that fires every five seconds, and which
+    had never been visible because the other half was broken anyway.
+
+    **`console` stays false deliberately.** `console: true` writes to the
+    container log, which is the one output an operator with `docker compose logs`
+    actually sees. It is off because `mimic status` fires every five seconds and
+    would bury everything else -- the log is a place for the once-per-event
+    taps, not for the poll. So the three operator taps (`acknowledged`,
+    `control: refused`, `control: written`) and `tag list loaded` are worth
+    logging and `mimic status` is not; if that split is wanted, it is one flag
+    per node, and the flag is `console`.
+    """
     return {
-        "id": nid(name),
+        "id": nid(tab_id, name),
         "type": "debug",
         "z": tab_id,
         "name": name,
-        "active": active,
-        "tosidebar": to,
+        "active": True,
+        # A boolean. See the docstring for what the string "console" does here.
+        "tosidebar": True,
         "console": False,
         "tostatus": False,
         "complete": "payload",
@@ -385,16 +509,19 @@ def debug(
         "statusType": "auto",
         "x": 400,
         "y": 100,
-        # A `debug` node is a terminal: it has one output and it is never wired.
-        # Present as an empty list rather than absent so the output-count check
-        # has something to compare.
-        "wires": [[]],
+        # **Empty, not `[[]]`.** Node-RED registers `debug` with `outputs: 0`
+        # (`21-debug.html:104`) — a debug node is a sink with no output port at
+        # all. This emitted `[[]]`, a single port wired to nothing, and the
+        # comment above it claimed the node "has one output", which is what kept
+        # the wrong number in place across every rewrite of this function. See
+        # `_outputs()`.
+        "wires": [],
     }
 
 
 def comment(name: str, tab_id: str, info: str) -> dict[str, Any]:
     return {
-        "id": nid(name),
+        "id": nid(tab_id, name),
         "type": "comment",
         "z": tab_id,
         "name": name,
@@ -410,16 +537,29 @@ def file_in(name: str, tab_id: str, path: str) -> dict[str, Any]:
 
     A core node, and the reason the tag list is a *file*: Node-RED cannot read
     one from inside a function, so the generated JSON has to be loaded by
-    something. `filenameType: msg` with an injected payload is the smallest way
-    to say "read this when the flow starts".
+    something.
+
+    **`filenameType: 'str'`, not `'msg'`.** The docstring here used to describe the
+    `msg` form as deliberate — "with an injected payload, the smallest way to say
+    read this when the flow starts" — but nothing injected a payload. The node is
+    driven by a `trigger` whose `op1` is `"1"`, so `msg.payload` was the string
+    `1` and the node dutifully tried to read a file *named* `1` out of the working
+    directory. Not found, sent nowhere, and the tag list stayed empty.
+
+    The docstring also said the `msg` form was chosen because Node-RED's own
+    template defaults `filename` to `["1"]`, "which is a filename, not a wire". That
+    observation is right and the conclusion drawn from it was inverted: the template
+    puts a placeholder filename there precisely so the node is inert until someone
+    fills it in, and `'str'` with a real path is the way to fill it in.
     """
     return {
-        "id": nid(name),
+        "id": nid(tab_id, name),
         "type": "file in",
         "z": tab_id,
         "name": name,
         "filename": path,
-        "filenameType": "msg",
+        # A literal, and `filename` is the path. See the docstring.
+        "filenameType": "str",
         "format": "utf8",
         "chunk": False,
         "sendError": False,
@@ -427,11 +567,21 @@ def file_in(name: str, tab_id: str, path: str) -> dict[str, Any]:
         "allProps": False,
         "x": 200,
         "y": 100,
-        # Two outputs: 0 is "file not found", 1 is the contents. The default in
-        # Node-RED's own template is `[["1"]]`, which is a *filename*, not a wire
-        # -- and it survives into the flow file and makes the first assertion in
-        # `test_every_wire_points_at_a_node_that_exists` fail on the string "1".
-        "wires": [[], []],
+        # One output, which used to be documented here as two -- "0 is file not
+        # found, 1 is the contents" -- on the strength of Node-RED 0.x. Node-RED
+        # 4's core `file in` registers `outputs: 1` and sends the contents there;
+        # a read error goes to `node.error`, not to a second port. So the wire
+        # from this node was already on the right port and the declared port count
+        # was the thing that was wrong.
+        #
+        # **`sendError` is false on purpose**, and it is what makes a wrong path
+        # silent: with it true the node sends a message with `msg.error` on output
+        # 0, which would land on the loader and fail there. With it false a
+        # missing file produces `node.error` on the node itself -- visible in the
+        # log -- and nothing downstream. Which is why the tag list being empty is
+        # reported by the *consumer*, not by the reader: `test_a_consumer_says_so_
+        # when_the_tag_list_is_missing` exists for exactly that gap.
+        "wires": [[]],
     }
 
 
@@ -442,44 +592,183 @@ def _outputs(node: dict[str, Any]) -> int:
     `tests/test_scada_contract.py` — a `wires` list whose length does not match
     the node's output count is how a Node-RED flow imports cleanly and then
     silently drops every message on an output nobody wired.
+
+    **Three of these were wrong, in the same direction, and none of them
+    complained.** `node-red-contrib-postgresql` 0.16 *and* Node-RED 4's core `file
+    in` each register with **one** output; this said two. `node-red-contrib-modbus`
+    registers with **two**; this said one. A `postgresql` node wired from output 1
+    therefore never fired at all, and every flow in this project ended on a
+    result nobody saw.
+
+    The counts are now read off the node packages rather than remembered, and
+    `tests/test_scada_contract.py::test_the_output_counts_match_the_installed_
+    node_packages` re-derives them from the running container, so a contrib
+    upgrade that changes an output count fails the build instead of the runtime.
     """
     if node["type"] in ("tab", "comment"):
         # Neither has ports. A `tab` has no `wires` key at all in Node-RED's own
         # template, and a `comment` has an empty one, so returning 1 for both
         # made the output-count check fail on two nodes that are correct.
         return 0
+    if node["type"] in CONFIG_NODE_TYPES:
+        # No ports at all, and no `wires` key in Node-RED's own export of one.
+        # They are referenced by an id field on the node that uses them.
+        return 0
     if node["type"] == "function":
         return int(node.get("outputs", 1))
-    if node["type"] in ("postgresql", "file in"):
+    if node["type"] == "modbus-write":
+        # `node-red-contrib-modbus` registers it with `outputs: 2`. Output 0 is
+        # the completed write; output 1 is the error response.
         return 2
+    if node["type"] == "debug":
+        # **Zero, and this said one.** `21-debug.html:104` registers `outputs: 0`:
+        # a debug node is a sink. So `debug()` emitted `"wires": [[]]`, one output
+        # port pointing at nothing, which Node-RED imports without complaint and
+        # which the output-count check could not see because both numbers came
+        # from the same wrong place.
+        #
+        # Found by the probe once the probe worked, which is the argument for
+        # spending the effort on it: three hand-written corrections and the first
+        # probe to actually run immediately found a fourth.
+        return 0
     return 1
 
 
-def modbus_write(name: str, tab_id: str, server: str) -> dict[str, Any]:
-    """`node-red-contrib-modbus`'s write node.
+def modbus_client(name: str, host: str, port: int, unit_id: int) -> dict[str, Any]:
+    """`node-red-contrib-modbus`'s TCP client, as a runtime-global config node.
 
-    The server name is not the host: it is a config entry the user creates in the
-    Node-RED editor, pointing at the soft PLC. Kept as a name rather than a host
-    so the flow file contains no address, which means it is portable and there is
-    nothing in git to change when a container moves.
+    **This node used not to exist.** `modbus_write()` pointed its `server` field at
+    the *string* `"wwtp-softplc-modbus"`, on the stated reasoning that "the user
+    creates it in the editor pointing at the soft PLC". The field is a config-node
+    id, so the write node did `t.nodes.getNode("wwtp-softplc-modbus")`, got
+    `undefined`, and guarded every registration with `if (client)`. It registered
+    with nothing, received nothing, wrote nothing, and reported no error. A control
+    flow that silently cannot act on the plant, on a tab whose comment says it is
+    the way a setpoint reaches the PLC.
 
-    `datatype: float` because the register is `float32` in the contract — see the
-    word-order note below, which is the single most dangerous thing about writing
-    to this plant.
+    The address is a literal because this contrib node has no environment
+    indirection -- there is no `tcpHostFieldType`, unlike the PostgreSQL config
+    node. So the drift between this and compose.yaml is guarded by a test rather
+    than by cleverness.
     """
     return {
-        "id": nid(name),
+        "id": nid(CONFIG_SCOPE, name),
+        "type": "modbus-client",
+        "name": name,
+        "clienttype": "tcp",
+        "bufferCommands": True,
+        "stateLogEnabled": False,
+        "queueLogEnabled": False,
+        "failureLogEnabled": True,
+        "tcpHost": host,
+        "tcpPort": port,
+        "tcpType": "DEFAULT",
+        "serialPort": "/dev/ttyUSB",
+        "serialType": "RTU-BUFFERD",
+        "serialBaudrate": 9600,
+        "serialDatabits": 8,
+        "serialStopbits": 1,
+        "serialParity": "none",
+        "serialConnectionDelay": 100,
+        "serialAsciiResponseStartDelimiter": "0x3A",
+        "unit_id": unit_id,
+        "commandDelay": 1,
+        "clientTimeout": 1000,
+        "reconnectOnTimeout": True,
+        "reconnectTimeout": 2000,
+        "parallelUnitIdsAllowed": True,
+        "showErrors": True,
+        "showWarnings": True,
+        "showLogs": False,
+    }
+
+
+def modbus_write(
+    name: str, tab_id: str, config_id: str, *, address: int, quantity: int,
+    data_type: str, unit_id: int,
+) -> dict[str, Any]:
+    """`node-red-contrib-modbus`'s write node.
+
+    **Almost every field name here was wrong, and none of them was required.**
+
+    The node was emitted with `datatype`, `scale`, `offset` and `polling`. The node
+    reads `dataType`, `adr` and `quantity`; it ignores the other three entirely,
+    and `dataType`, `adr` and `quantity` are all `required: true` in its editor
+    registration. So it loaded with three missing required fields, and
+    `Number(undefined)` for the address is `NaN` — a write to address NaN, which
+    the soft PLC rejects, so the failure would have been on the far side of the
+    wire where nobody is looking.
+
+    `datatype: "float"` was not a value the node has ever accepted either. Its
+    valid values are `Coil`, `HoldingRegister`, `MCoils` and `MHoldingRegisters`,
+    and it sends numbers as they are -- it has no float encoding at all. A float32
+    occupies two registers, so the node writes `quantity: 2` holding registers and
+    the two 16-bit words are built by the function node upstream, in the word order
+    the contract states. `docs/ALARMS.md` and the contract both call the
+    swapped-order registers a trap; the encoding is generated from
+    `word_order`, so the trap cannot be entered by hand here.
+
+    Two outputs: 0 is the completed write, 1 the error response.
+
+    **`address` is a contract 4xxxx address and is translated here**, because
+    `adr` is a PDU offset and the two are not the same number. The contract says
+    `40102`; the wire wants `102`.
+
+    That gap produced the most honest-looking failure in this project: every
+    layer agreed with the contract, the flow read a clean address out of the
+    contract, the write was attempted, and the soft PLC answered
+
+        Modbus exception 2: Illegal data address (register not supported by device)
+
+    Naming the register as unsupported rather than as "40000 too high". So the
+    write never landed, and the one safety-critical path in the project — the one
+    whose entire job is to move a number into the plant — did nothing, while
+    reporting that it had tried.
+
+    The translation belongs in the generator, in one place, using the server's own
+    constant rather than a literal: `softplc.servers.modbus_server.ModbusTcpServer
+    .wire_offset` is the authority on this arithmetic, and it derives from three
+    shifts (the model's `address - 40000`, a one-slot block lead-in, and pymodbus
+    resolving `PDU = index - 1`) that cancel to a subtraction. Importing it means
+    a change to the block layout cannot leave this writing to the wrong offset.
+    """
+    return {
+        "id": nid(tab_id, name),
         "type": "modbus-write",
         "z": tab_id,
         "name": name,
-        "server": server,
-        "datatype": "float",
-        "scale": 1,
-        "offset": 0,
-        "polling": "",
+        # A config-node **id**, not a name. See `modbus_client()`.
+        "server": config_id,
+        "showStatusActivities": False,
+        "showErrors": True,
+        "showWarnings": True,
+        "unitid": unit_id,
+        "dataType": data_type,
+        # The wire offset, not the contract's 4xxxx address. See the docstring.
+        "adr": ModbusTcpServer.wire_offset(address),
+        "quantity": quantity,
+        "emptyMsgOnFail": False,
+        # **True, and this was False.** `modbus-write` builds its output with
+        #   keepMsgProperties ? Object.assign(msg, built) : built
+        # so `false` means the output is *only* the Modbus payload
+        # `{value, unitid, fc, address, quantity, messageId}` and every other
+        # message property is discarded. `record what was written` reads `msg.req`
+        # -- the tag, the setpoint the operator asked for, the range it was checked
+        # against -- so with `false` that node got `undefined`, read
+        # `req.write_range.join('-')`, and threw
+        #
+        #     TypeError: Cannot read properties of undefined (reading 'join')
+        #
+        # on every write. The write itself had already succeeded: the setpoint was
+        # in the PLC, and the audit trail -- whose entire purpose is to record that
+        # -- crashed trying to say so. A crash in the audit node is not a safe
+        # failure, it is an unlogged control action.
+        "keepMsgProperties": True,
+        "delayOnStart": False,
+        "startDelayTime": "",
         "x": 400,
         "y": 100,
-        "wires": [[]],
+        "wires": [[], []],
     }
 
 
@@ -495,58 +784,141 @@ def wire(nodes: list[dict[str, Any]], *pairs: tuple[str, int, str]) -> None:
     appears in a flow file. Names rather than node dicts because a builder has the
     names and the ids are derived from them, so a rename cannot leave a wire
     pointing at nothing: an unknown name is a `KeyError` at generation time.
+
+    **Config nodes are not wireable and are excluded by type, not by name.** They
+    have no ports; a config node is attached to a node that uses it by an id field,
+    which is the whole of Node-RED's mechanism. So a config node appearing in
+    `by_name` could only be reached by a mistake, and the failure would be an
+    `AttributeError` on `source["z"]` or a wire to a node with no ports. Both are
+    worse than naming the problem.
     """
-    by_name = {n["name"]: n for n in nodes if n["type"] != "tab"}
+    by_name = {
+        n["name"]: n
+        for n in nodes
+        if n["type"] != "tab" and n["type"] not in CONFIG_NODE_TYPES
+    }
     for source_name, output, target_name in pairs:
-        source = by_name[source_name]
         for label in (source_name, target_name):
             if label not in by_name:
                 raise KeyError(
-                    f"wire references {label!r}, which is not a node in this flow. "
-                    f"Known: {sorted(by_name)}"
+                    f"wire references {label!r}, which is not a wireable node in "
+                    f"this flow. Wireable nodes: {sorted(by_name)}. A config node "
+                    f"({', '.join(sorted(CONFIG_NODE_TYPES))}) has no ports and is "
+                    f"attached by an id field instead."
                 )
+        source = by_name[source_name]
         source["wires"] = source.get("wires") or [
             [] for _ in range(_outputs(source))
         ]
         while len(source["wires"]) <= output:
             source["wires"].append([])
-        source["wires"][output].append(nid(target_name))
+        if output >= _outputs(source):
+            raise ValueError(
+                f"wire reads output {output} of {source_name!r}, a "
+                f"{source['type']} with {_outputs(source)} output(s). Node-RED "
+                f"accepts the wire and nothing arrives on that port."
+            )
+        # Scoped by the *source's* tab, which is the only tab both nodes are on --
+        # `wire` refuses a cross-tab pair, so this is unambiguous.
+        source["wires"][output].append(nid(source["z"], target_name))
+
+
+def postgres_config(name: str) -> dict[str, Any]:
+    """`node-red-contrib-postgresql`'s config node: the database connection.
+
+    **This node used not to exist**, and its absence was the loudest failure in the
+    project. Each query node was emitted with `"mydb": "wwtp-db"` — a credential id
+    hung directly off the query node, which is what version 0.8 of the contrib node
+    wanted. Version 0.16.2 replaced it with a separate `postgreSQLConfig` node and
+    removed `mydb` from the editor entirely, so the field survived in the flow file
+    as a key nothing reads.
+
+    The consequence is worth recording, because the error names neither the node
+    that is wrong nor the thing that is missing:
+
+        TypeError: node.config.pgPool.connect is not a function
+
+    That is `postgresql.js`'s fallback for "I could not find the config node you
+    referenced", substituting a `{pgPool: {totalCount: 0}}` stub so the editor shows
+    the right shape. At runtime it throws on every poll. It looks like a driver
+    version problem, and it is not.
+
+    Every `*FieldType` of `env` makes the node read `process.env[<value>]`, so the
+    host, port and database name are environment variables named here rather than
+    addresses written into git. The user and password are the exception: they are
+    `cred`, and `scada/nodered/entrypoint.sh` writes them into `flows_cred.json`
+    keyed by **this node's id** — which is what `credentials.get(id)` reads, and
+    why the id has to be stable and shared.
+    """
+    return {
+        "id": nid(CONFIG_SCOPE, name),
+        "type": "postgreSQLConfig",
+        "name": name,
+        # No `z`: a config node is not on a tab. See CONFIG_SCOPE.
+        "host": PG_HOST_ENV,
+        "hostFieldType": "env",
+        "port": PG_PORT_ENV,
+        "portFieldType": "env",
+        "database": PG_DATABASE_ENV,
+        "databaseFieldType": "env",
+        "ssl": False,
+        "sslFieldType": "bool",
+        "applicationName": "wwtp-scada",
+        "applicationNameType": "str",
+        "max": 10,
+        "maxFieldType": "num",
+        "idle": 1000,
+        "idleFieldType": "num",
+        "connectionTimeout": 10000,
+        "connectionTimeoutFieldType": "num",
+        # `cred` on both, so neither value is ever in a flow file.
+        "userFieldType": "cred",
+        "userEnv": "",
+        "passwordFieldType": "cred",
+        "passwordEnv": "",
+    }
 
 
 def postgres(
     name: str, tab_id: str, query: str,
-    *, params: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """A PostgreSQL query node.
 
-    The `params` list is what makes the acknowledgement flow safe: a value from
-    `msg` goes in as a bind parameter, never as text spliced into the statement.
-    The mock flow's tag list is interpolated because it is a fixed set of ids
-    known at generation time; the acknowledgement's message and rule are not, and
-    are bound.
+    **Bind parameters moved from the node to the message.** This used to carry a
+    `params` list of `{"type": "msg", "name": ...}` entries and the SQL used named
+    placeholders like `$msg`. Version 0.16.2 removed the node-level `params`
+    entirely: binds are now read from `msg.params` (positional) or
+    `msg.queryParameters` (named, rewritten by the `named` package). So the
+    `params` lists were dead configuration, and the `$msg` in the statement was
+    never bound by anything — it reached `pg` as a literal parameter named `msg`,
+    which is exactly the injection the placeholder existed to prevent.
+
+    The queries now use positional `$1`/`$2` and the function node upstream sets
+    `msg.params`. Positional rather than `msg.queryParameters` because a `:name`
+    placeholder cannot be followed by a `::type` cast unambiguously, and the
+    `jsonb_build_object` arguments need one.
     """
     return {
-        "id": nid(name),
+        "id": nid(tab_id, name),
         "type": "postgresql",
         "z": tab_id,
         "name": name,
         "query": query,
-        # The *credential id*, not a connection string and not a name.
-        #
-        # A credential id in a committed flow file is not a secret: it is a
-        # pointer, and the thing it points at lives in `flows_cred.json`, which is
-        # gitignored and generated from the environment by
-        # `scada/nodered/entrypoint.sh`. So the flow can name a database and
-        # cannot contain a password, which is the whole shape of the problem.
-        "mydb": PG_CREDENTIAL,
+        # The config-node **id**, not a credential id. See `postgres_config()`.
+        "postgreSQLConfig": nid(CONFIG_SCOPE, PG_CONFIG),
+        "split": False,
+        "rowsPerMsg": 1,
         "maxsize": "0",
-        "params": params or [],
         "x": 360,
         "y": 100,
-        # Two outputs: 0 is an error row, 1 is the result. Left unwired here and
-        # wired in the builder, because the mimic wants the error and the
-        # annunciator wants to ignore it.
-        "wires": [[], []],
+        # **One output.** It used to be two, wired from output 1, on the
+        # assumption -- carried over from the 0.x contrib node -- that output 0 was
+        # an error row. There is no error output. A query that fails calls
+        # `done(err)`, which raises a catch node or logs, and sends nothing at all;
+        # so the error path is already "nothing arrives downstream", and the output
+        # the results were wired from was one that does not exist. Every flow in
+        # this project ended on that output.
+        "wires": [[]],
     }
 
 
@@ -559,7 +931,15 @@ def postgres(
 #: annotation node produces rows with no units on them. So the loader is emitted
 #: per flow. It is twelve lines and it is a node, not a require, so it costs
 #: nothing at all.
-TAGS_PATH_IN_FLOW = "/data/tags.json"
+#:
+#: **The path is where compose mounts the flows, not where the runtime writes
+#: them.** compose.yaml mounts `./scada/flows:/flows:ro`, so `tags.json` is at
+#: `/flows/tags.json` and nothing ever put it at `/data/tags.json` -- the tag
+#: loader pointed at a file that did not exist in any container. Every consumer
+#: has a `?? []` default, so that produced a warning on a `debug` node and a mimic
+#: showing six signals with no units and no bands, every five seconds, and no
+#: error anywhere: a plant that looks alive and is showing nothing.
+TAGS_PATH_IN_FLOW = "/flows/tags.json"
 
 _LOAD_TAGS_BODY = """
 // The tag list, generated from contracts/tags.yaml. Committed and regenerable:
@@ -588,38 +968,32 @@ return msg;
 
 
 def _loader_nodes(tab_id: str) -> list[dict[str, Any]]:
-    """The three nodes that get a tag list into `global`.
+    """The four nodes that get a tag list into `global`.
 
-    A `trigger` fires once on deploy, which is the only way to do work at startup
-    in Node-RED: nothing runs until a message arrives, and an `inject` with
-    `once` is the way to make one arrive.
+    **`inject` with `once`, not a `trigger`.** The loader used to be driven by a
+    `trigger` node with `op1`/`op2`, which reads like the documented way to fire
+    once on startup. It is not: in Node-RED 4 the `trigger` node is purely
+    reactive. Its implementation registers `this.on("input", ...)` and a `close`
+    handler and has no startup path at all, so with `inputs: 1` and nothing wired
+    into it, the `op1` branch never executes. It did not fire on deploy, in any
+    version, ever.
+
+    `inject` with `once: true` does: `20-inject.js:88` sets a timeout of
+    `onceDelay` (default 0.1 s) on construction and sends. That is the whole
+    mechanism, and it is the only one.
+
+    The symptom was downstream of this, and pointed everywhere except here. No tag
+    list, so every consumer's `?? []` default produced rows with no units and no
+    bands; the `file in` node never ran, so nothing said the file was missing; and
+    the five-second injects ran fine and reported an empty plant every time. A flow
+    that imports cleanly, starts cleanly, polls cleanly and shows nothing.
     """
-    trigger = {
-        "id": nid("load tags: on deploy"),
-        "type": "trigger",
-        "z": tab_id,
-        "name": "load tags: on deploy",
-        "op1": "1",
-        "op2": "0",
-        "op1type": "str",
-        "op2type": "str",
-        "duration": "0.1",
-        "extend": False,
-        "overrideDelay": False,
-        "units": "ms",
-        "reset": "",
-        "bytopic": "all",
-        "topic": "topic",
-        "outputs": 1,
-        "x": 200,
-        "y": 40,
-        "wires": [[]],
-    }
+    starter = inject("load tags: on deploy", tab_id, once=True)
     reader = file_in("read tags.json", tab_id, TAGS_PATH_IN_FLOW)
     loader = function("put tags in global", tab_id, _LOAD_TAGS_BODY)
-    report = debug("tag list loaded", tab_id, active=True)
+    report = debug("tag list loaded", tab_id)
 
-    nodes = [trigger, reader, loader, report]
+    nodes = [starter, reader, loader, report]
     wire(nodes,
          ("load tags: on deploy", 0, "read tags.json"),
          ("read tags.json", 0, "put tags in global"),
@@ -638,11 +1012,23 @@ def build_mimic(c: Contract) -> list[dict[str, Any]]:
             f"mimic watches signals the contract does not declare: {missing}. "
             f"Fix MIMIC_TAGS; a flow cannot reference a tag that does not exist."
         )
-    tab_id = nid("tab:mimic")
+    tab_id = nid("tab", "mimic")
     units = {t: c.signals[t].unit for t in MIMIC_TAGS}
 
     nodes = [*_loader_nodes(tab_id),
         tab("mimic", "01 — Plant mimic (read-only)"),
+        # The one PostgreSQL config node, emitted here and **only** here.
+        #
+        # It is a runtime-global config node, so it must appear exactly once across
+        # the concatenated `flows.json` — emitting it per flow would give three
+        # nodes one id, which is the same duplicate-id failure `nid()` had. The
+        # other two flows reference it by the same derived id and do not define it.
+        #
+        # The cost is that importing `02-annunciator.json` or `03-control.json`
+        # *alone* into an editor gives a flow whose query nodes have nothing to
+        # point at. The deployment path is the entrypoint concatenating all three,
+        # and that is what the drift gate checks.
+        postgres_config(PG_CONFIG),
         comment(
             "c1", tab_id,
             "Generated by `python -m scada.build_flows`. Do not edit by hand: "
@@ -746,11 +1132,12 @@ for (const t of msg.payload.tags) {
 return msg;
 """,
         ),
-        debug("mimic status", tab_id, active=False),
+        debug("mimic status", tab_id),
     ]
     wire(nodes,
          ("every 5 s", 0, "read newest values"),
-         ("read newest values", 1, "shape the status object"),
+         # Output 0, not 1: the node has one output. See `postgres()`.
+         ("read newest values", 0, "shape the status object"),
          ("shape the status object", 0, "annotate against the normal band"),
          ("annotate against the normal band", 0, "mimic status"))
     return nodes
@@ -769,7 +1156,7 @@ def build_annunciator(c: Contract) -> list[dict[str, Any]]:
     cased the next time the third needs it.
     """
     del c
-    tab_id = nid("tab:annunciator")
+    tab_id = nid("tab", "annunciator")
     nodes = [*_loader_nodes(tab_id),
         tab("annunciator", "02 — Alarm annunciator"),
         comment(
@@ -785,6 +1172,12 @@ def build_annunciator(c: Contract) -> list[dict[str, Any]]:
             "plant's current state, which changes whether or not anyone says so.",
         ),
         inject("refresh the panel", tab_id, once=True),
+        # The operator's own input. See the note on `wire()` below for why this
+        # exists at all.
+        inject("operator acknowledges an alarm", tab_id, manual=True,
+               payload='{"rule": "…", "orig": {"message": "…", "signal_id": "…", '
+                       '"equipment_id": "…"}}',
+               payload_type="json"),
         postgres("read unacknowledged criticals", tab_id, annunciator_query()),
         function(
             "mark staleness", tab_id,
@@ -819,48 +1212,58 @@ return msg;
 // operator clicked, and a rule id is machine-generated today but a message is
 // not. An INSERT built by concatenation is a SQL injection one mistyped row away.
 //
+// **`msg.params`, not a list on the node.** The installed contrib node takes its
+// binds from the message; the `params` list these nodes used to carry is a 0.x
+// field it no longer reads, so the statement was running with nothing bound. The
+// order here is the `$1..$4` order in `acknowledge_query()`, and the `::text` cast
+// on the rule is because a parameter inside `jsonb_build_object` has no inferable
+// type.
+//
 // `detail->>'rule'` is the join key because the engine puts the rule there and
 // there is no column for it. See alarms/replay.py for why that is a cost being
 // paid knowingly.
 const rule = msg.payload.rule;
 const alarm = msg.payload.orig || msg.payload;
 
-msg.payload = {
-    msg: `acknowledged: ${alarm.message || rule}`,
-    rule: rule,
-    signal: alarm.signal_id || null,
-};
+msg.params = [
+    `acknowledged: ${alarm.message || rule}`,
+    alarm.signal_id || null,
+    alarm.equipment_id || null,
+    rule,
+];
 msg.topic = 'acknowledge';
 return msg;
 """,
         ),
-        postgres(
-            "record the acknowledgement", tab_id,
-            """
-INSERT INTO event (ts, kind, severity, message, signal_id, detail)
-VALUES (now(), 'alarm_acknowledged', 'critical', $msg, $signal,
-        jsonb_build_object('rule', $rule::text, 'acknowledged_at', now()))
-RETURNING id
-""",
-            params=[
-                {"type": "msg", "name": "msg"},
-                {"type": "msg", "name": "signal"},
-                {"type": "msg", "name": "rule"},
-            ],
-        ),
-        debug("annunciator panel", tab_id, active=True),
-        debug("acknowledged", tab_id, active=True),
+        postgres("record the acknowledgement", tab_id, acknowledge_query()),
+        debug("annunciator panel", tab_id),
+        debug("acknowledged", tab_id),
     ]
     wire(nodes,
          ("refresh the panel", 0, "read unacknowledged criticals"),
-         ("read unacknowledged criticals", 1, "mark staleness"),
+         # Output 0, not 1: the node has one output. See `postgres()`.
+         ("read unacknowledged criticals", 0, "mark staleness"),
          ("mark staleness", 0, "annunciator panel"),
          # The operator path. Separate from the refresh path, deliberately: a
          # refresh is a timer and must never be able to acknowledge anything.
-         ("annunciator panel", 0, "acknowledge what the operator pressed"),
+         #
+         # **It used to run off `annunciator panel` -- the `debug` node.** That
+         # is the shape you draw when you want a debug tap to double as the
+         # operator's button, and it is not a shape Node-RED has: `debug`
+         # registers `outputs: 0` (`21-debug.html:104`), so that wire pointed at
+         # a port that does not exist and the acknowledge path was dead for the
+         # same reason it was built.
+         #
+         # Which is the second time in this project a *debug node* has been asked
+         # to carry messages (`tosidebar` in `debug()` is the first). A tap that
+         # displays is not a control surface, and using it as one is invisible in
+         # the flow file: the wire is drawn, the id resolves, and the diagram
+         # looks complete.
+         ("operator acknowledges an alarm", 0,
+          "acknowledge what the operator pressed"),
          ("acknowledge what the operator pressed", 0,
           "record the acknowledgement"),
-         ("record the acknowledgement", 1, "acknowledged"))
+         ("record the acknowledgement", 0, "acknowledged"))
     return nodes
 
 
@@ -876,7 +1279,22 @@ def build_control(c: Contract) -> list[dict[str, Any]]:
     spec = c.writable[CONTROL_TAG]
     low, high = spec["range"]
     signal = c.signals[CONTROL_TAG]
-    tab_id = nid("tab:control")
+    tab_id = nid("tab", "control")
+
+    # The register's address, word order and unit id all come from the contract,
+    # never from a number typed here. The address and the word order are the two
+    # that matter: a wrong word order writes a perfectly plausible-looking float to
+    # a register the plant will read as something else entirely, and `contracts/
+    # tags.yaml` marks two registers as traps for exactly this reason.
+    address, word_order, unit_id = _modbus_register(c, CONTROL_TAG)
+    modbus_host, modbus_port = MODBUS_HOST, MODBUS_PORT
+    modbus_unit = unit_id
+
+    if word_order not in ("big", "little"):
+        raise KeyError(
+            f"register for {CONTROL_TAG} has word_order {word_order!r}; the flow "
+            f"encoder knows 'big' and 'little' and refuses to guess"
+        )
 
     check = f"""
 // The permit check, and the most important {{}} lines in this project.
@@ -925,8 +1343,15 @@ if (requested < lo || requested > hi) {{
     msg.payload = {{
         ok: false, tag: '{CONTROL_TAG}', requested, write_range: [lo, hi],
         unit: spec.unit,
-        error: `{{requested}} {{spec.unit}} is outside the writable range `
-             + `{{lo}}-{{hi}} {{spec.unit}}`,
+        // A **template literal** -- backticks *and* `$`. It used to be
+        // A template literal with no `$` in it. It was valid JavaScript that
+        // interpolated nothing, so the operator was shown the literal
+        // placeholder text -- "requested and spec.unit, outside the writable range
+        // lo-hi spec.unit". The refusal -- the one message in this project whose
+        // entire job is to tell an operator what they typed and what the range is
+        // -- said neither.
+        error: `${{requested}} ${{spec.unit}} is outside the writable range `
+             + `${{lo}}-${{hi}} ${{spec.unit}}`,
         // The reason is from the contract. It is the sentence an operator needs,
         // and it is stored rather than rendered so the refusal and the write
         // carry the same justification.
@@ -939,11 +1364,23 @@ msg.payload = {{
     ok: true, tag: '{CONTROL_TAG}', value: requested,
     write_range: [lo, hi], unit: spec.unit, reason: spec.write_reason,
 }};
-return [msg, null];
+// **Output 1, not output 0.** This was `return [msg, null]`, the same as all
+// three refusals above, so a setpoint that passed the check left on the
+// *refusal* port and output 1 -- the Modbus write -- got null.
+//
+// Which means the control flow had never once written to the plant. Every
+// refusal worked, the refusals were the only thing that ever happened, and every
+// refusal looks like correct behaviour. Found by injecting 3.5 into the running
+// flow and watching the `control: refused` tap receive `ok: true`.
+//
+// The three refusals are correct as written: refused goes to output 0, which is
+// what the `control: refused` tap is wired to.
+return [null, msg];
 """
 
     nodes = [*_loader_nodes(tab_id),
         tab("control", "03 — Operator control (setpoint)"),
+        modbus_client(MODBUS_CONFIG, modbus_host, modbus_port, modbus_unit),
         comment(
             "k1", tab_id,
             "Generated by `python -m scada.build_flows`.\n\n"
@@ -958,68 +1395,113 @@ return [msg, null];
             f"Contract range: {low} to {high} {signal.unit}. "
             f"Reason: {spec['reason']}",
         ),
-        inject("enter a setpoint", tab_id, once=True),
+        inject("enter a setpoint", tab_id, manual=True, payload="3.0",
+               payload_type="num"),
         function("check against the permit range", tab_id, check, outputs=2),
         function(
             "build the Modbus write", tab_id,
             """
-// `node-red-contrib-modbus`: one write register, function code 6 or 16.
-// The address is the contract's, resolved at generation time -- this flow never
-// contains a hand-typed register number, which is the whole reason the contract
-// links signals to Modbus registers.
-const req = msg.payload;
-msg.payload = {
-    unitid: global.get('wwtpModbusUnitId') || 1,
-    fc: 6,
-    address: REGISTER_ADDRESS,
-    data: [req.value],
-};
+// Encode one float32 into the two 16-bit holding registers the contract says it
+// lives in, in the word order the contract says.
+//
+// **This is the single most dangerous thing about writing to this plant.** A
+// float32 is four bytes; a Modbus register is two. Which half goes first is a
+// convention, both conventions are common, and getting it wrong does not error --
+// it writes a plausible float to the register and the plant reads a different
+// plausible float. `contracts/tags.yaml` marks two registers "⚠ TRAP: low word
+// first" for exactly this. So the word order here is read out of the contract at
+// generation time and written into this node, and there is nowhere in the flow to
+// type one by hand.
+//
+// Byte-for-byte the same as `softplc/servers/modbus.py::encode_float32`, which is
+// the other end of this wire: `>f` here is `struct.pack(">f")` there, and `>H` is
+// `struct.unpack(">HH")`. `Buffer` is one of the globals the function node's
+// sandbox provides, so this needs no external module.
+const value = msg.payload.value;
+const raw = Buffer.alloc(4);
+raw.writeFloatBE(value, 0);
+const hi = raw.readUInt16BE(0);
+const lo = raw.readUInt16BE(2);
+const words = WORD_ORDER === 'little' ? [lo, hi] : [hi, lo];
+
+// `modbus-write` reads `msg.payload.value` and falls back to `msg.payload` itself,
+// and takes the unit, function code, address and quantity from **its own fields**.
+// This node used to build a whole message -- `{unitid, fc, address, data}` -- which
+// is the shape `modbus-flex-write` wants, and the write node then read
+// `payload.value` as `undefined` and sent nothing. The message is just the words.
+//
+// **Stash the request before overwriting the payload.** This node replaces
+// `msg.payload` with the two 16-bit words, which are all the write node wants and
+// nothing else can use -- so the request the operator made (tag, value, unit, the
+// range it was checked against) has to be kept somewhere, and this is the only
+// node on the path that still has it.
+//
+// `record what was written` reads `msg.req`, and no node has ever set it. So it
+// got `undefined`, read `req.write_range.join('-')`, and threw
+//
+//     TypeError: Cannot read properties of undefined (reading 'join')
+//
+// on every single write -- *after* the write had already succeeded. The setpoint
+// was in the PLC and the audit trail, whose entire purpose is to record that, was
+// crashing instead of writing. An unlogged control action is not a safe failure;
+// it is a control action nobody can account for.
+//
+// `keepMsgProperties: True` on the write node is what carries `msg.req` the rest
+// of the way; see `modbus_write()`.
+msg.req = msg.payload;
+msg.payload = words;
 msg.topic = 'setpoint';
 return msg;
-""".replace("REGISTER_ADDRESS", str(_modbus_address(c, CONTROL_TAG))),
+""".replace("WORD_ORDER", f"'{word_order}'"),
         ),
-        debug("control: refused", tab_id, active=True),
+        debug("control: refused", tab_id),
         function(
             "record what was written", tab_id,
             """
 // A control action with no record is indistinguishable from a control action
 // that did not happen, and in an incident those are very different stories.
 // The event row is the audit trail; the historian is not.
-// Bind parameters, named for the PostgreSQL node's `params` list above. The
-// operator's number goes in as a *parameter*, never spliced into the statement --
-// the alternative is a SQL injection one mistyped number away.
+//
+// **Bound, via `msg.params`.** The operator's number goes in as a *parameter*,
+// never spliced into the statement -- the alternative is a SQL injection one
+// mistyped number away. The installed contrib node reads binds off the message;
+// the `params` list this node used to carry was a 0.x field it no longer reads, so
+// the statement was running unbound.
+//
+// The order is the `$1..$4` order of the statement in `postgres()` below, and the
+// `::jsonb` cast on the range is why the array is stringified here: `pg` would
+// otherwise send a JS array as a Postgres array literal, not as JSON.
 const req = msg.req || {};
-msg.payload = {
-    msg: `setpoint ${req.tag} set to ${req.value} ${req.unit} `
+msg.params = [
+    `setpoint ${req.tag} set to ${req.value} ${req.unit} `
        + `(range ${req.write_range.join('-')} ${req.unit})`,
-    tag: req.tag,
-    value: req.value,
-    range: req.write_range,
-};
-// Keep the human-readable form for the sidebar, and carry the bound fields
-// alongside so both consumers see the same fact.
+    req.tag,
+    req.value,
+    JSON.stringify(req.write_range),
+];
+// Keep the bound fields for anything downstream that wants to read them, and so
+// the sidebar can show what was actually sent rather than what was asked for.
+msg.payload = msg.params[0];
 msg.req = req;
 return msg;
 """,
         ),
-        modbus_write("write the setpoint", tab_id, MODBUS_SERVER),
+        modbus_write(
+            "write the setpoint", tab_id, modbus_config_id(),
+            address=address, quantity=2, data_type="HoldingRegister",
+            unit_id=unit_id,
+        ),
         postgres(
             "audit trail", tab_id,
             """
 INSERT INTO event (ts, kind, severity, message, signal_id, detail)
-VALUES (now(), 'setpoint_written', 'info', $msg, $tag,
-        jsonb_build_object('value', $value::float8,
-                           'write_range', $range::jsonb))
+VALUES (now(), 'setpoint_written', 'info', $1, $2,
+        jsonb_build_object('value', $3::float8,
+                           'write_range', $4::jsonb))
 RETURNING id
 """,
-            params=[
-                {"type": "msg", "name": "msg"},
-                {"type": "msg", "name": "tag"},
-                {"type": "msg", "name": "value"},
-                {"type": "msg", "name": "range"},
-            ],
         ),
-        debug("control: written", tab_id, active=True),
+        debug("control: written", tab_id),
     ]
     # Two outputs from the check, and they do opposite things: one writes to the
     # plant, one writes to the sidebar and goes no further. A refusal that
@@ -1032,7 +1514,8 @@ RETURNING id
          ("build the Modbus write", 0, "write the setpoint"),
          ("write the setpoint", 0, "record what was written"),
          ("record what was written", 0, "audit trail"),
-         ("audit trail", 1, "control: written"))
+         # Output 0, not 1: the node has one output. See `postgres()`.
+         ("audit trail", 0, "control: written"))
     return nodes
 
 
@@ -1045,18 +1528,26 @@ def _unit_list(signal_id: str, units: dict[str, str]) -> str:
     return f"{signal_id.rsplit(':', 1)[-1]}={units[signal_id]}"
 
 
-def _modbus_address(c: Contract, signal_id: str) -> int:
-    """The contract's register address for a signal.
+def _modbus_register(c: Contract, signal_id: str) -> tuple[int, str, int]:
+    """``(address, word_order, unit_id)`` for a signal's Modbus register.
 
-    Raises rather than defaulting, because a control flow with a wrong register
-    address writes to the wrong piece of plant, and a default of zero would be
-    worse than a refusal.
+    Raises rather than defaulting any of the three, because a control flow with a
+    wrong register address writes to the wrong piece of plant and a default of zero
+    would be worse than a refusal. Word order gets the same treatment for a
+    sharper reason: it does not fail, it silently writes the wrong number.
     """
     for reg in c.registers:
         # The attribute is `signal`, not `signal_id` -- the register *is* the
         # mapping, so the name is the thing it is.
         if getattr(reg, "signal", None) == signal_id:
-            return int(reg.address)
+            if getattr(reg, "type", None) != "float32":
+                raise KeyError(
+                    f"register for {signal_id!r} is "
+                    f"{getattr(reg, 'type', None)!r}, and the encoder in 'build "
+                    f"the Modbus write' only knows how to split a float32 across "
+                    f"two registers. Add that encoding rather than guessing one."
+                )
+            return int(reg.address), reg.word_order, int(reg.unit_id)
     raise KeyError(
         f"{signal_id} has no Modbus register in the contract, so a control flow "
         "has nowhere to write. The contract links signals to registers precisely "

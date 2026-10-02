@@ -580,8 +580,10 @@ nothing, and logs nothing is the single most common failure shape in this
 project's history — three separate incidents.
 
 The flows are read from the live database, so the mimic panels are showing real
-data. There is no editor (`NODE_RED_EDITOR=false`) and the flows are generated
-from the contract, which is what `make scada-check` verifies.
+data. The editor is reachable at `http://127.0.0.1:18880/scada/` but bound to
+loopback only — Node-RED has no setting to disable it, so the bind is the
+protection. The flows are generated from the contract, which is what
+`make scada-check` verifies.
 
 ---
 

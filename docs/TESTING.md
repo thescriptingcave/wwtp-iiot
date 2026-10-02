@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1091 | no |
+| Unit, no database | 1105 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -67,7 +67,7 @@ Per file, for the ones worth naming:
 | `test_alarm_detectors.py` | 63 | pure functions over hand-built windows |
 | `test_modbus.py` | 63 | word order, the register model, the client |
 | `test_process.py` | 40 | the chemistry and the control loops, dimensionally |
-| `test_scada_contract.py` | 37 | the generated flows — and it *executes their SQL* |
+| `test_scada_contract.py` | 49 | the generated flows — and it *executes their SQL* |
 | `test_scanloop.py` | 31 | pacing, metrics, fault propagation |
 | `test_faults.py` | 29 | the eleven faults and what each one does to the plant, and that a second flatline freezes at its own onset |
 | `test_control.py` | 26 | DO control, chlorine dose, SRT |
@@ -82,7 +82,7 @@ Per file, for the ones worth naming:
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 | `test_workshop_panel_paths.py` | 18 | that building the long window cannot overwrite the 3-week panel, and that its cost and growth claims stay measured rather than extrapolated |
 | `test_measure_long_window.py` | 17 | that the long-window measurement does not leak the future, and measures notebook 03's ratio rather than a different one |
-| `test_readme_teaches_no_destructive_command.py` | 173 | that no runnable fence in any markdown pairs `POSTGRES_DB=` with a database reset |
+| `test_readme_teaches_no_destructive_command.py` | 175 | that no runnable fence in any markdown pairs `POSTGRES_DB=` with a database reset |
 | `test_browse_is_not_values.py` | 5 | that no document promises values from `browse`, which reads none |
 | `test_py_wrapper.py` | 3 | that `tools/py.sh` refuses a missing interpreter by name, and that the targets needing Python depend on the install |
 | `test_pinned_seed_is_durable.py` | 4 | that the pinned week has no retention policy eating it, and that the plant's own database still has one |

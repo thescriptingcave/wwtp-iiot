@@ -394,8 +394,7 @@ services:
     volumes:
       - ./scada/flows:/flows:ro
     environment:
-      NODE_RED_EDITOR: "false"     # the flows are generated; see scada/README.md
-      ADMIN_ROOT: ${SCADA_ADMIN_ROOT:-/scada}
+      ADMIN_ROOT: ${SCADA_ADMIN_ROOT:-/scada}   # moved off `/`; see scada/nodered/settings.js
       TZ: UTC
       # The database credential is derived from these by the image's entrypoint,
       # so it never appears in a committed file.

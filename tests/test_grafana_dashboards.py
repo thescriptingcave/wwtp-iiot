@@ -104,10 +104,15 @@ def test_a_dashboard_is_not_ui_editable(dashboards: dict) -> None:
     """`editable: false` on the dashboard, because they are generated.
 
     An edit made in the Grafana UI on a generated dashboard is a change that
-    `python -m ui.grafana.generate_dashboards` silently reverts — the same failure
-    as an operator editing a generated Node-RED flow, which is why
-    `allowUiUpdates: false` is in the provisioning and `NODE_RED_EDITOR=false` is
-    the default there.
+    `python -m ui.grafana.generate_dashboards` silently reverts.
+
+    This docstring used to end by pointing at `NODE_RED_EDITOR=false` in compose as
+    the Node-RED equivalent. That variable was read by nothing — no Node-RED
+    setting consumes it and the `nodered/node-red` image does not define it — so
+    it was the same "generated artefact, edit is reverted" hazard described with a
+    control that does not exist, and a test asserting the variable was set to
+    "false" made it look enforced. Removed from compose; see the note in
+    `scada/nodered/settings.js` for what is actually true about the editor.
     """
     for name, dash in dashboards.items():
         assert dash["editable"] is False, name

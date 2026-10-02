@@ -455,7 +455,7 @@ the whole window. The panel is rebuildable from that; the database is scaffoldin
   [`docs/ALARMS.md`](docs/ALARMS.md) · [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md)
 - [x] **Phase 4b** — Node-RED operator flows: a mimic, an alarm annunciator, and
   a range-checked setpoint, all **generated from the contract** and all behind a
-  `scada` profile. 37 tests guard the generator rather than the output — and four
+  `scada` profile. 49 tests guard the generator rather than the output — and four
   of them execute every flow's SQL against a live database.
   [`scada/README.md`](scada/README.md)
 - [x] **Phase 5a** — Grafana: a provisioned datasource and **two dashboards

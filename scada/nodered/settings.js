@@ -56,18 +56,31 @@ module.exports = {
 
     httpAdminAuth: undefined,   // set by the editor on first run; see .gitignore
 
-    /* The editor is disabled by `NODE_RED_EDITOR=false` in compose.yaml, not
-     * here, because the image maps that variable and duplicating it in two places
-     * is two places to change.
+    /* **There is no switch that disables the Node-RED editor.**
      *
-     * The reason it is off: the flows in this repository are *generated* from
-     * `contracts/tags.yaml`. A hand-edited flow is a change that
-     * `python -m scada.build_flows` silently reverts, and a silent revert of an
-     * operator's flow is worse than no editor at all.
+     * There used to be a `NODE_RED_EDITOR` environment variable in compose.yaml
+     * for this, with comments here and in the Dockerfile explaining that the image
+     * maps it, and `tests/test_grafana_dashboards.py` asserting it was set to
+     * "false". Nothing read it -- no Node-RED setting consumes it, no contrib node
+     * reads it, and the `nodered/node-red` image has no such variable. So the
+     * editor was on, and a test was confirming that a variable meant to turn it
+     * off existed.
      *
-     * Set `NODE_RED_EDITOR=true` to open it when you want to explore. Anything
-     * you build there is a scratch pad until you move it into
-     * `scada/build_flows.py` and regenerate. */
+     * What is actually true, and worth knowing:
+     *
+     *   * the editor is reachable at `/scada/`, on `127.0.0.1` only, because
+     *     compose binds the published port to loopback. It is not on the network.
+     *   * deploying from it writes `$NR_DATA_DIR/flows.json`, which is the file the
+     *     entrypoint *assembled* at startup and the one the runtime has loaded. So
+     *     a deploy overwrites the concatenation with whatever the editor held, and
+     *     `python -m scada.build_flows --check` then fails against the committed
+     *     files for a reason nothing explains.
+     *   * `scada/README.md` covers that, and the drift gate is the detector.
+     *
+     * To read or explore without risking that, copy the flows out of a running
+     * container rather than deploying into it. There is no supported way to make
+     * the editor read-only, and inventing one here would be a private fork of
+     * Node-RED's own admin app for no gain over the loopback bind. */
 
     /** Function nodes are *not* allowed external modules. The flows use no
      *  `require()` at all — deliberately, since a generated flow that could

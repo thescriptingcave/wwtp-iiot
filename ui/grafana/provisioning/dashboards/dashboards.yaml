@@ -5,8 +5,10 @@
 # .generate_dashboards` from `contracts/tags.yaml`, exactly as the Node-RED
 # flows are. If Grafana were allowed to write them, an edit made in the UI would
 # be silently reverted by the next generation — the same failure as an
-# operator editing a generated flow in the Node-RED editor, and the reason
-# `NODE_RED_EDITOR=false` is the default there.
+# operator editing a generated flow in the Node-RED editor, and the reason that
+# editor's published port is bound to loopback rather than switched off —
+# Node-RED has no setting to disable its editor, so the bind is the whole of
+# the protection. See the port bind in compose.yaml.
 apiVersion: 1
 
 providers:

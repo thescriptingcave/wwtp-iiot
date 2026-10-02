@@ -108,13 +108,15 @@ if [ ! -f "$CRED_FILE" ]; then
     # failing here with a clear message beats starting a runtime whose every query
     # is going to fail for a reason it will not report.
     : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required to build the Node-RED database credential}"
+    : "${POSTGRES_USER:?POSTGRES_USER is required to build the Node-RED database credential}"
 
-    NODE_RED_DB_HOST="${POSTGRES_HOST:-db}"
-    NODE_RED_DB_PORT="${POSTGRES_PORT:-5432}"
-    NODE_RED_DB_NAME="${POSTGRES_DB:-wwtp}"
-    NODE_RED_DB_USER="${NODE_RED_DB_USER:-$POSTGRES_USER}"
-
-    echo "nodered: writing $CRED_FILE for $NODE_RED_DB_USER@$NODE_RED_DB_HOST:$NODE_RED_DB_PORT/$NODE_RED_DB_NAME"
+    # The host, port and database are *not* written here. They live in the
+    # `postgreSQLConfig` node in `flows.json`, which reads them from the
+    # environment by name (`hostFieldType: env` and friends), so there is one place
+    # that knows the address -- compose.yaml -- rather than two that have to agree.
+    # Only the user and password are credentials, and they are the only two things
+    # that cannot be in a flow file.
+    echo "nodered: writing $CRED_FILE for $POSTGRES_USER from $DATA_DIR/flows.json"
 
     # `credentialSecret` is what Node-RED encrypts `flows_cred.json` *with*. It
     # is generated once and kept, so a restart can still read what it wrote. It
@@ -152,28 +154,34 @@ if [ ! -f "$CRED_FILE" ]; then
     #
     # The password comes from the environment rather than an argument, so it does
     # not appear in `ps` for the lifetime of this process.
+    #
+    # **Inside, the credential is keyed by the config node's *id*, not by a
+    # credential name.** `credentials.get(id)` is called with the node id, so a
+    # credential filed under any other key is present in the file and unread at
+    # run time. The id is read out of the flow assembled just above rather than
+    # written here, because the id that has to agree is the one
+    # `scada/build_flows.py` invents, and two places inventing an id is how they
+    # drift apart.
     node -e '
       const crypto = require("crypto"), fs = require("fs");
-      const [ , out, secret, dbHost, dbPort, dbName, dbUser,
-              mbHost, mbPort, mbUnit ] = process.argv;
-      const creds = {
-        "wwtp-db": {
-          id: "wwtp-db", name: "wwtp-db", type: "postgresdb",
-          postgresqldb: {
-            host: dbHost, port: dbPort, database: dbName, user: dbUser,
-            password: process.env.POSTGRES_PASSWORD,
-            ssl: false, applicationName: "wwtp-scada",
-          },
-        },
-        "wwtp-softplc-modbus": {
-          id: "wwtp-softplc-modbus", name: "wwtp-softplc-modbus",
-          type: "modbus-client",
-          "modbus-client": {
-            host: mbHost, port: Number(mbPort), unit_id: Number(mbUnit),
-            serverType: "tcp", reconnectDelay: "1000", reconnectTries: "10",
-          },
-        },
+      const [ , out, secret, flows, configType ] = process.argv;
+
+      const flow = JSON.parse(fs.readFileSync(flows, "utf8"));
+      const targets = flow.filter((n) => n.type === configType);
+      if (targets.length !== 1) {
+        console.error(
+          `expected exactly one ${configType} node in ${flows}, found `
+          + `${targets.length}. The database credential is stored under that `
+          + `node id, so with none there is nothing to attach it to.`);
+        process.exit(1);
+      }
+
+      const creds = {};
+      creds[targets[0].id] = {
+        user: process.env.POSTGRES_USER,
+        password: process.env.POSTGRES_PASSWORD,
       };
+
       const key = crypto.createHash("sha256").update(secret).digest();
       const iv = crypto.randomBytes(16);
       const cipher = crypto.createCipheriv("aes-256-ctr", key, iv);
@@ -184,8 +192,7 @@ if [ ! -f "$CRED_FILE" ]; then
         JSON.stringify({ "$": iv.toString("hex") + body }) + "\n",
         { mode: 0o600 });
     ' "$CRED_FILE" "$CREDENTIAL_SECRET" \
-      "$NODE_RED_DB_HOST" "$NODE_RED_DB_PORT" "$NODE_RED_DB_NAME" "$NODE_RED_DB_USER" \
-      "${MODBUS_HOST:-softplc}" "${MODBUS_PORT:-5020}" "${MODBUS_UNIT_ID:-1}"
+      "$DATA_DIR/flows.json" "postgreSQLConfig"
 
     chmod 600 "$CRED_FILE"
 fi

@@ -125,13 +125,22 @@ read-only"* is a claim about the flows and not about the credential, and those
 are not the same claim. A read-only Postgres role for this service is the right
 next step and is not done.
 
-## The editor is off by default
+## The editor is on loopback only
 
-`NODE_RED_EDITOR=false`. The flows are generated, so a hand edit is a change that
-`python -m scada.build_flows` silently reverts, and a silent revert of an
-operator's flow is worse than no editor at all. Set it to `true` to explore;
-anything you build there is a scratch pad until it moves into
-`scada/build_flows.py` and is regenerated.
+The editor is **running** at `http://127.0.0.1:18880/scada/`. It is not switched
+off, because Node-RED has no switch for it — the setting does not exist, and a
+README that tells you to set it is telling you to set an environment variable
+that does nothing.
+
+What protects the flows is the **port bind**: `compose.yaml` publishes
+`127.0.0.1:${SCADA_PORT:-18880}:1880`, so the editor is not reachable from the
+network at all. See the comment above that bind and the note in
+`scada/nodered/settings.js`.
+
+The flows are generated, so a hand edit in the editor is a change
+`python -m scada.build_flows` silently reverts. That is why the bind matters and
+why it is checked: `tests/test_scada_contract.py` fails if the scada port stops
+being loopback-bound.
 
 ## What the deadband does to a mimic
 

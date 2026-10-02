@@ -856,8 +856,11 @@ logs:  ## follow the plant and the gateway
 
 scada:  ## Node-RED, the operator flows
 	@echo "── Node-RED on http://127.0.0.1:$${SCADA_PORT:-18880}/scada ──"
+	docker compose --profile scada build scada
 	docker compose --profile scada up -d scada
-	@echo "   the editor is off; the flows are generated from the contract"
+	@echo "   the editor is bound to loopback; the flows are generated from the contract"
+	@echo "   (this rebuilds the image: entrypoint.sh and settings.js are baked in, and"
+	@echo "    'up -d' alone reuses a stale one and looks like your change did nothing)"
 
 scada-flows:  ## regenerate the tag list and the flows from the contract
 	$(PY) -m scada.generate_tags
