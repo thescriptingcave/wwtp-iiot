@@ -400,15 +400,28 @@ def test_the_lesson_claims_the_range_checking_write_path_has_no_caller() -> None
     )
 
 
-def test_the_lesson_claims_the_write_surface_is_two_signals() -> None:
-    """`SECURITY.md` calls the write surface deliberately small; check it stays so."""
+def test_the_lesson_claims_the_write_surface_is_one_signal() -> None:
+    """`SECURITY.md` calls the write surface deliberately small; check it stays so.
+
+    **One, not two.** `SITE:WEATHER:STORM` was the second, marked
+    `writable: true` while nothing applied a write to it — and
+    `InfluentUnit.storm_active` is not a latch, so it clears itself when the
+    storm's duration elapses. A write that is acknowledged and then disappears on
+    the next scan is worse than one that is refused, so it is read-only now and
+    `ModbusTcpServer._accept_write` answers with a Modbus exception.
+
+    The equality is the point. A bound would let the surface grow silently, and
+    the lesson's argument is specifically that it is small enough to reason about
+    exhaustively.
+    """
     writable = [s for s in contract().signals.values() if s.writable]
-    assert len(writable) == 2, (
-        f"lesson 05 says 2 of 57 are writable; now {len(writable)}: "
-        f"{[s.id for s in writable]}"
+    assert len(writable) == 1, (
+        f"lesson 05 says 1 of 57 are writable; now {len(writable)}: "
+        f"{[s.id for s in writable]}. A second writable signal needs a setter in "
+        "SoftPlc._apply_pending_writes, not just a flag in the contract."
     )
     assert {s.id for s in writable} == {
-        "AERATION:AHU-1:SETPOINT_DO", "SITE:WEATHER:STORM"}
+        "AERATION:AHU-1:SETPOINT_DO"}
     sp = contract().signal("AERATION:AHU-1:SETPOINT_DO")
     assert (sp.range_min, sp.range_max) == (0.5, 6.0), (
         "the setpoint's range changed; lesson 05's '99.0 is 16x the maximum' "
@@ -416,24 +429,57 @@ def test_the_lesson_claims_the_write_surface_is_two_signals() -> None:
     )
 
 
-def test_the_lesson_claims_no_control_loop_reads_a_written_node() -> None:
-    """The DO controller reads its own dataclass field, so no write has effect.
+def test_the_lesson_claims_only_opcua_writes_never_reach_a_control_loop() -> None:
+    """Lesson 05's inertness claim, scoped to the protocol it was always about.
 
     `driving_force = c_star - self.setpoint_do_mg_l` at
-    `softplc/process/units.py:918` — the model's own state, not the address
-    space. That is why lesson 05 can say every client write is inert rather than
-    merely unchecked.
+    `softplc/process/units.py:931` — the model's own state, not the address
+    space. That is why lesson 05 can say every *OPC UA* client write is inert
+    rather than merely unchecked.
+
+    **The name of this test used to be `..._no_control_loop_reads_a_written_node`,
+    and that was no longer true once Modbus got a write-back path.** The lesson's
+    body and its teaching were fine — every claim in it is about OPC UA — but a
+    test whose name says no write reaches a control loop is a test that would
+    fail the day the plant gained a working setpoint, and the fix would have been
+    to weaken it. The asymmetry is the interesting claim, so it is what gets
+    asserted:
+
+    * the controller reads the plant's own field, so an address-space write is
+      overwritten before it can matter, and
+    * the Modbus write-back path assigns that field *and* the control block's
+      copy, because `AerationControl` takes its setpoint by value at
+      construction.
+
+    The second point is the trap. Assigning only `plant.aeration.setpoint_do_mg_l`
+    makes the register read back correctly while the PI loop keeps integrating
+    against the startup value — the plant looks like it obeyed and does not.
     """
     units = (ROOT / "softplc" / "process" / "units.py").read_text(encoding="utf-8")
     assert "driving_force = c_star - self.setpoint_do_mg_l" in units, (
         "the DO controller no longer reads its own setpoint field; if it now "
-        "reads the address space, lesson 05's inertness claim is wrong"
+        "reads the address space, lesson 05's OPC UA inertness claim is wrong"
     )
     assert "setpoint_do_mg_l: float = 2.0" in units
+
     main = (ROOT / "softplc" / "main.py").read_text(encoding="utf-8")
     assert "self._space = await self.opcua.start()" in main, (
         "main.py no longer aliases the OPC UA address space as _space, so the "
         "overwrite-on-next-scan argument in lesson 05 needs rechecking"
+    )
+
+    # …and the Modbus half, which is the asymmetry the lesson now turns on.
+    apply = main[main.index("def _apply_pending_writes"):]
+    apply = apply[:apply.index("\n    async def ")]
+    assert "self.plant.aeration.setpoint_do_mg_l = value" in apply, (
+        "the write-back path no longer sets the field the snapshot publishes, so "
+        "a written setpoint would not read back"
+    )
+    assert "self.aeration_control.setpoint_mg_l = value" in apply, (
+        "the write-back path no longer sets AerationControl's own copy. It takes "
+        "setpoint_mg_l by value at construction (main.py:104), so without this "
+        "the register reads the operator's number while the PI loop integrates "
+        "against the startup value — a plant that appears to obey and does not."
     )
 
 
@@ -561,16 +607,23 @@ def test_the_lesson_claims_the_server_configures_no_security() -> None:
 def test_the_lesson_claims_the_bind_address_is_in_no_project_doc() -> None:
     """`0.0.0.0` is now named in `docs/SECURITY.md`, and that is the point.
 
-    Scoped to exempt the two documents that exist to *discuss* the gap — the
-    course and the learning log — because a gap gets named by the documents
+    Scoped to exempt the documents that exist to *discuss* the gap — the course,
+    the learning log, and the QA plan — because a gap gets named by the documents
     complaining about it and a test forbidding the document making the complaint
     forbids the fix. This test failed twice on itself for exactly that reason.
+
+    The QA plan is in that list for the same reason as the other two: it contains
+    `HOST_BIND=0.0.0.0 docker compose config`, whose whole purpose is to check
+    that the port binds loopback by default and to record an `0.0.0.0` bind as
+    an EXPOSURE rather than a pass. A runbook that could not name the bad value
+    could not test for it. It was added to the exemption when the plan's
+    editor-off check was replaced with a loopback-bind check.
 
     What is now asserted is the positive claim: the bind address is documented
     where somebody deciding whether to expose the plant would look, and it was
     not before.
     """
-    discussing = ("courses", "LEARNING-LOG.md")
+    discussing = ("courses", "LEARNING-LOG.md", "QA-E2E-TEST-PLAN.md")
     offenders = [
         p.name for p in (ROOT).rglob("*.md")
         if ".venv" not in p.parts

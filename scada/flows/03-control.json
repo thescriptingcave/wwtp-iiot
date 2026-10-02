@@ -249,7 +249,7 @@
         "showErrors": true,
         "showWarnings": true,
         "unitid": 1,
-        "dataType": "HoldingRegister",
+        "dataType": "MHoldingRegisters",
         "adr": 102,
         "quantity": 2,
         "emptyMsgOnFail": false,

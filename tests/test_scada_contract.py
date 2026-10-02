@@ -192,20 +192,34 @@ def test_writable_tags_carry_their_permit_range(tags: dict, c: Contract) -> None
     do to the plant, and it would be the one that is not reviewed with the
     contract.
     """
-    # `Contract.writable` is a superset of the writable *signals*: it also holds
+    # `Contract.writable` was a *superset* of the writable signals: it also held
     # plant-level registers like `FAULT_CODE`, which are not signals and so have
-    # no tag. Asserted in both directions rather than with `==`, because the
-    # difference is a modelling fact rather than a bug -- and the first version of
-    # this test used `==` and failed for exactly that reason.
+    # no tag. The test asserted that asymmetry existed with `assert register_only`,
+    # on the reasoning that the difference was a modelling fact rather than a bug.
+    #
+    # **There is no longer a bare writable register.** `FAULT_CODE` and
+    # `STORM_FLAG` were `writable: true` while nothing applied a write to either,
+    # and both are read-only now. So `writable` and the writable signals are the
+    # same set, and asserting they must differ would be asserting the fault back
+    # into existence.
+    #
+    # The relationship is still checked in both directions -- a tag claiming
+    # writability the contract does not grant is the dangerous direction, and the
+    # one `generate_tags` could plausibly get wrong. But the *absence* of a
+    # difference is now the documented fact rather than a mismatch to be
+    # tolerated, so the assertion is inverted to say so out loud.
     writable = {t["id"] for t in tags["tags"] if t["writable"]}
     assert writable <= set(c.writable), (
         f"tags claim {sorted(writable - set(c.writable))} is writable, which the "
         "contract does not say"
     )
     register_only = sorted(set(c.writable) - set(c.signals))
-    assert register_only, (
-        "no writable entry is a bare register any more; if that is intended, this "
-        "assertion and the docstring both need updating"
+    assert register_only == [], (
+        f"{register_only} is a bare register with no signal and therefore no tag. "
+        "That is a legitimate shape for a writable value -- a plant-level injection "
+        "point has no measurement behind it -- so if one is intended, say so here "
+        "and give it a setter in SoftPlc._apply_pending_writes. What is never "
+        "acceptable is a writable entry that nothing applies a write to."
     )
     for tag in tags["tags"]:
         if tag["writable"]:
@@ -219,6 +233,107 @@ def test_writable_tags_carry_their_permit_range(tags: dict, c: Contract) -> None
         assert [low, high] == [spec[0], spec[1]], tag["id"]
         # And it is inside the engineering range, or the plant could be told to
         # do something its own instrument cannot measure.
+
+
+def test_a_multi_register_write_uses_the_multi_register_function_code(
+        flows: dict[str, list[dict]]) -> None:
+    """`quantity > 1` and FC6 cannot both be true, and only one of them errors.
+
+    `node-red-contrib-modbus` derives the function code from `dataType` and
+    nothing else:
+
+        Coil               -> 5    write single coil
+        HoldingRegister    -> 6    write single register
+        MCoils             -> 15   write multiple coils
+        MHoldingRegisters  -> 16   write multiple registers
+
+    So `dataType: "HoldingRegister"` is FC6, and **FC6 writes exactly one register
+    and ignores `quantity` completely** -- there is no exception, no warning, and
+    the node reports success. A flow configured that way sends the first of a
+    float32's two words and drops the second, leaving a fresh high word on a
+    stale low word in the PLC.
+
+    That is the failure this test exists to prevent, and it is worth being precise
+    about why it survived so long. Nothing is *broken*: the node reports success,
+    the audit-trail node downstream writes its `event` row, the historian records
+    a new setpoint, the mimic display shows the operator's number, and the
+    operator is told it worked. What does not happen is the only thing that
+    mattered -- the plant's control loop integrates against the value it was
+    handed at startup. Every layer agreed and the setpoint did not move.
+
+    It was found when the soft PLC started refusing short writes with
+    `ILLEGAL_DATA_VALUE` (see `ModbusTcpServer._accept_write`), which turned a
+    silent corruption into a legible refusal. That is the only reason it was
+    found at all, which is the argument for the server checking width rather
+    than accepting whatever arrives.
+
+    The failure is also invisible to review, because `HoldingRegister` and
+    `MHoldingRegisters` differ by one letter and the wrong one is the more
+    natural thing to type: the contract calls the thing a "holding register", so
+    `dataType: "HoldingRegister"` reads as correct and `MHoldingRegisters` reads
+    like a typo. The docstring in `build_flows.py` had it wrong too, describing
+    the FC16 behaviour the flow was not getting.
+    """
+    single_register = {
+        "HoldingRegister": 6,
+        "Coil": 5,
+    }
+    multiple_register = {
+        "MHoldingRegisters": 16,
+        "MCoils": 15,
+    }
+
+    seen: list[str] = []
+    for flow_name, nodes in flows.items():
+        for node in nodes:
+            if node.get("type") != "modbus-write":
+                continue
+            seen.append(f"{flow_name}/{node.get('name')}")
+            data_type = node.get("dataType")
+            quantity = node.get("quantity", 0)
+            if quantity > 1:
+                assert data_type in multiple_register, (
+                    f"{flow_name}/{node.get('name')} writes {quantity} registers as "
+                    f"dataType={data_type!r}, which is function code "
+                    f"{single_register.get(data_type, '?')} -- a single-register "
+                    f"write. FC6 ignores quantity, so only the first word of the "
+                    f"value reaches the PLC and the rest is dropped without an "
+                    f"error. Use {sorted(multiple_register)} for a multi-register "
+                    f"write."
+                )
+            else:
+                assert data_type not in multiple_register, (
+                    f"{flow_name}/{node.get('name')} writes {quantity} register(s) "
+                    f"with dataType={data_type!r}, a multi-register function code. "
+                    f"FC16 with quantity=1 is accepted by the soft PLC but is not "
+                    f"what a single-register write should say."
+                )
+            assert data_type in single_register or data_type in multiple_register, (
+                f"{flow_name}/{node.get('name')} has dataType={data_type!r}, which "
+                f"is not a function code node-red-contrib-modbus knows"
+            )
+
+    assert seen, (
+        "no modbus-write nodes were found; if the flows moved, point this test at "
+        "the new location rather than deleting it -- this is the only check that "
+        "the project's one control write is shaped correctly"
+    )
+
+
+def test_a_write_range_is_inside_the_engineering_range(
+        tags: dict, c: Contract) -> None:
+    """The permit range must be reachable by the plant's own instrument.
+
+    The write range is a subset of the engineering range, checked here as well as
+    in `test_writable_tags_carry_their_permit_range`. Split out because the
+    assertion's failure message names the tag and its two ranges, and burying it
+    in the loop over a dozen tags meant it was only ever read when something
+    *other* in that test had already failed.
+    """
+    for tag in tags["tags"]:
+        if not tag["writable"]:
+            continue
+        low, high = tag["write_range"]
         assert low >= tag["min"] and high <= tag["max"], (
             f"{tag['id']}: write range {low}-{high} is outside the engineering "
             f"range {tag['min']}-{tag['max']}"
@@ -873,10 +988,35 @@ def test_the_control_flow_targets_a_writable_signal_with_a_register(
         assert node["unitid"] == unit_id, (
             f"the write node uses unit {node['unitid']}, the contract says {unit_id}"
         )
-        assert node["dataType"] == "HoldingRegister", (
-            f"a float32 occupies two holding registers, so dataType must be "
-            f"HoldingRegister; {node['dataType']!r} is not a value the node accepts "
-            "at all"
+        # **This assertion was `== "HoldingRegister"`, and it was wrong in the exact
+        # way that mattered.** It passed for as long as the flow was broken,
+        # because it agreed with the bug.
+        #
+        # `node-red-contrib-modbus` maps `dataType` to a function code and nothing
+        # else: `HoldingRegister` is **FC6**, write *single* register, which
+        # ignores `quantity` completely. So the node was configured to write one
+        # register, `quantity: 2` was decorative, and only the high word of the
+        # float32 ever reached the PLC -- with no error, no warning, and a
+        # success reported all the way back to the operator. The one control
+        # write in the project had never once worked.
+        #
+        # What made this survive so long is that the assertion's own message
+        # stated the false belief as fact: *"a float32 occupies two holding
+        # registers, so dataType must be HoldingRegister"*. Both the test and the
+        # generator's docstring said it, so it read as settled. Nobody was
+        # checking the function code, because everyone agreed on the wrong one.
+        #
+        # `MHoldingRegisters` is FC16 and sends both words in one request.
+        assert node["dataType"] == "MHoldingRegisters", (
+            f"a float32 occupies two holding registers, so the write must use "
+            f"dataType=MHoldingRegisters (function code 16, write multiple "
+            f"registers). {node['dataType']!r} is "
+            + (
+                "function code 6, write SINGLE register, which ignores quantity "
+                "and sends only the first word of the float"
+                if node["dataType"] == "HoldingRegister" else
+                "not a multi-register write"
+            )
         )
         assert node["quantity"] == 2, (
             f"a float32 is four bytes and a Modbus register is two, so quantity "

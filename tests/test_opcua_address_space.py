@@ -140,17 +140,24 @@ def test_the_all_double_finding_is_visible_in_the_file() -> None:
     )
 
 
-def test_the_two_writable_signals_are_the_two_writable_signals() -> None:
+def test_the_one_writable_signal_is_the_one_writable_signal() -> None:
     """Lesson 05's write surface, recorded.
 
-    Two of 57. If that changes, lesson 05's "2 of 57 signals are writable" and
-    the `SECURITY.md` gap both need revisiting — and now this file says so on
-    every change, because the set is a set of rows.
+    **One of 57, and it was two.** `SITE:WEATHER:STORM` was `writable: true`
+    while nothing applied a write to it, and `InfluentUnit.storm_active` is not a
+    latch — it clears itself when the storm's duration elapses. So it is read-only
+    now, and `ModbusTcpServer._accept_write` refuses it with a Modbus exception
+    instead of swallowing the write.
+
+    This file exists so the lesson's claims are rows that change loudly. The
+    narrowing shows up here as a changed list, which is the point: lesson 05,
+    `SECURITY.md` gap 2, `courses/opcua/README.md` and the contract all had to be
+    updated, and each of those edits was prompted by this assertion.
     """
     doc = json.loads(OUT.read_text(encoding="utf-8"))
     writable = sorted(s["signal_id"] for s in doc["signals"] if s["writable"])
-    assert writable == ["AERATION:AHU-1:SETPOINT_DO", "SITE:WEATHER:STORM"], (
-        f"the write surface is now {writable}; lesson 05 says it is two signals"
+    assert writable == ["AERATION:AHU-1:SETPOINT_DO"], (
+        f"the write surface is now {writable}; lesson 05 says one signal"
     )
 
 

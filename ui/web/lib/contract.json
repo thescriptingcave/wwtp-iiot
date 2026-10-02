@@ -1001,7 +1001,7 @@
           "label": "storm_flag",
           "eu": "{Boolean}",
           "precision": 3,
-          "writable": true,
+          "writable": false,
           "equipment": null,
           "sample_ms": 1000,
           "band": null,

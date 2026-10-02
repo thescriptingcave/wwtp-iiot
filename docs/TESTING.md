@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1105 | no |
+| Unit, no database | 1122 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -24,7 +24,7 @@ not**.
 | Workshop notebooks | 6 notebooks, 3 checks each | no — they read a CSV |
 | Clean-machine plan | 31 checks that its commands exist and its numbers are current | no |
 | `mypy` | clean across 73 source files | no |
-| `ruff` | clean on the gated packages; 156 tracked findings elsewhere | no |
+| `ruff` | clean on the gated packages; 155 tracked findings elsewhere | no |
 
 `mypy` runs over `softplc gateway storage alarms scada tools ui` and the count
 is what it reports, so it moves whenever a module is added. The notebook row
@@ -65,9 +65,10 @@ Per file, for the ones worth naming:
 |---|---|---|
 | `test_contract.py` | 63 | the loader's rules: units, ranges, bands, register links, write paths |
 | `test_alarm_detectors.py` | 63 | pure functions over hand-built windows |
-| `test_modbus.py` | 63 | word order, the register model, the client |
+| `test_modbus.py` | 65 | word order, the register model, the client |
+| `test_modbus_writeback.py` | 7 | that a write reaches the **plant**, not just the server's queue |
 | `test_process.py` | 40 | the chemistry and the control loops, dimensionally |
-| `test_scada_contract.py` | 49 | the generated flows — and it *executes their SQL* |
+| `test_scada_contract.py` | 51 | the generated flows — and it *executes their SQL* |
 | `test_scanloop.py` | 31 | pacing, metrics, fault propagation |
 | `test_faults.py` | 29 | the eleven faults and what each one does to the plant, and that a second flatline freezes at its own onset |
 | `test_control.py` | 26 | DO control, chlorine dose, SRT |

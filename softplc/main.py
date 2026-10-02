@@ -48,6 +48,13 @@ from softplc.servers.opcua import OpcUaServer
 
 log = logging.getLogger("softplc")
 
+#: The one signal an operator can change, by contract. Spelled out rather than
+#: looked up so that `_apply_pending_writes` reads as the rule it is — one
+#: writable signal, and here is where it lands — instead of a loop over
+#: `contract.writable` that would silently no-op for every entry the code does
+#: not yet know how to apply.
+SETPOINT_SIGNAL = "AERATION:AHU-1:SETPOINT_DO"
+
 T = TypeVar("T")
 
 
@@ -194,7 +201,17 @@ class SoftPlc:
                 await asyncio.sleep(remaining)
 
     async def _step(self, dt: float) -> None:
-        """One scan: physics, then control, then publish, then corrupt."""
+        """One scan: apply writes, then physics, then control, then publish.
+
+        **Writes go first, and that ordering is the whole design.** An operator's
+        setpoint has to be in the plant before the physics runs, because the
+        physics reads it — `AerationControl.update()` takes `self.setpoint_mg_l`,
+        and `plant.snapshot()` publishes `ae.setpoint_do_mg_l` as the
+        `AERATION:AHU-1:SETPOINT_DO` signal. Applying after `faults.step` would
+        take one extra scan to reach the controller, and applying after
+        `publish` would be undone by `_flush` in the same scan.
+        """
+        self._apply_pending_writes()
         snapshot = self.faults.step(dt)
         self.cycles += 1
 
@@ -226,6 +243,49 @@ class SoftPlc:
 
         if self.config.verbose:
             self._log_scan(snapshot)
+
+    def _apply_pending_writes(self) -> None:
+        """Apply every register write the protocol server accepted since last scan.
+
+        **This is the seam that made the write surface real, and the trap is that
+        it needs two assignments, not one.**
+
+        `self.plant.aeration.setpoint_do_mg_l` is the value the *snapshot*
+        publishes (`plant.py:422`), so setting it is what makes the register read
+        back. It is **not** what the controller uses: `AerationControl` was
+        constructed with `setpoint_mg_l=self.plant.aeration.setpoint_do_mg_l`
+        (`main.py:104`) — a float copied by value at startup. So assigning only
+        the plant attribute leaves the PI loop integrating against 2.0 forever,
+        with the register showing a setpoint the loop is ignoring.
+
+        That failure is invisible in the most expensive way: the mimic shows the
+        operator's number, the audit trail records the write as accepted, the
+        plant looks healthy, and the dissolved oxygen does not move. Both
+        assignments are made here, next to each other, with the reason written
+        down, so that adding a second writable signal does not repeat it.
+
+        Unknown signal ids are logged and dropped rather than raising: the
+        protocol server has already validated them against the contract, so an
+        unknown id here means the contract changed between a client's write and
+        this scan, and the right response is to refuse *that write* — not to take
+        the whole scan loop down with it.
+        """
+        for signal_id, value in self.modbus.take_writes().items():
+            if signal_id != SETPOINT_SIGNAL:
+                log.warning(
+                    "no write target for %s; write discarded (the contract "
+                    "advertises it as writable but no code path applies it)",
+                    signal_id,
+                )
+                continue
+
+            # The value the snapshot publishes, so the register reads back.
+            self.plant.aeration.setpoint_do_mg_l = value
+            # The value the PI loop actually integrates against.
+            self.aeration_control.setpoint_mg_l = value
+            log.info(
+                "setpoint applied: %s = %g mg/L", signal_id, value
+            )
 
     async def _publish(self, snapshot: PlantSnapshot) -> None:
         values = snapshot.values
@@ -277,6 +337,11 @@ class SoftPlc:
             opcua=self.opcua.running,
             faults=list(self.faults.active_ids()),
             sim_time_s=round(self.faults.now_s, 1),
+            # A plant that has never been written to and a plant whose writes are
+            # all being refused look identical from the outside — both show the
+            # old setpoint. These two counters separate them, so "why isn't my
+            # setpoint taking" is answerable without attaching a client.
+            writes=self.modbus.write_stats(),
         )
         return h
 

@@ -13,7 +13,7 @@
   "counts": {
     "tags": 57,
     "areas": 8,
-    "writable": 2
+    "writable": 1
   },
   "areas": {
     "AERATION": [
@@ -846,12 +846,7 @@
       "sample_ms": 1000,
       "equipment": null,
       "holder": "WEATHER",
-      "writable": true,
-      "write_range": [
-        0,
-        1
-      ],
-      "write_reason": "Fault injection / storm flag"
+      "writable": false
     },
     {
       "id": "SLUDGE:DIG-1:ALKALINITY",

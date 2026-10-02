@@ -235,7 +235,18 @@ measurements:
       - { id: "SITE:WEATHER:AIR_TEMP", field: air_temp_c, eu: "Cel",  range: [-30, 55], normal: [5, 30],   deadband: 0.1,  sample_ms: 60000 }
       - { id: "SITE:WEATHER:RAIN",     field: rain_mm_h,  eu: "mm/h", range: [0, 200],  normal: [0, 1],   deadband: 0.1,  sample_ms: 60000 }
       - { id: "SITE:WEATHER:BARO",     field: baro_hpa,   eu: "hPa",  range: [900, 1100], normal: [990, 1035], deadband: 0.1, sample_ms: 60000 }
-      - { id: "SITE:WEATHER:STORM",    field: storm_flag, eu: "{Boolean}", range: [0, 1], normal: [0, 0], deadband: 0.5, sample_ms: 1000, writable: true }
+      # **Not writable, and it said `writable: true` until the write-back path
+      # was built.** `InfluentUnit.storm_active` is not a latch: `storm_age_s` is
+      # measured from `storm_started_s`, and `_diurnal()` clears the flag itself
+      # once `storm_age_s > storm_duration_s` (`units.py:285`). So a register write
+      # setting it would clear itself on the next scan — a write that reports
+      # success and does nothing, which is worse than one that is refused.
+      #
+      # Arming a storm is `start_storm(duration_s=...)`, which sets three fields
+      # together, and it models weather rather than accepting a command. Marking
+      # it read-only is the honest description of what it is; `softplc/main.py`
+      # has `inject_storm` for the demo path.
+      - { id: "SITE:WEATHER:STORM",    field: storm_flag, eu: "{Boolean}", range: [0, 1], normal: [0, 0], deadband: 0.5, sample_ms: 1000, writable: false }
 
 # ─── Equipment state ─────────────────────────────────────────────────────────
 # SEPARATE from process measurements by design. This is what makes state bands
@@ -289,8 +300,16 @@ modbus:
     # ⚠ TRAP: low word first.
     - { address: 40304, name: AERATION_WASTE_RATE,    type: float32, word_order: little, unit_id: 1, writable: false, signal: "AERATION:AHU-1:WASTE_RATE" }
     # No signal: a plant-wide fault code, not a measurement.
-    - { address: 40350, name: FAULT_CODE,             type: int16,  unit_id: 1, writable: true }
-    - { address: 40351, name: STORM_FLAG,             type: int16,  unit_id: 1, writable: true,  signal: "SITE:WEATHER:STORM" }
+    #
+    # **Not writable, and it said `writable: true`.** `RegisterModel.fault_code`
+    # is assigned by nothing in the tree (`servers/modbus.py:141` declares it and
+    # `:201` publishes it, and no code path ever writes it), so the register
+    # reads 0 forever and a write to it would be discarded on the next scan. The
+    # "plant-level fault injection" this entry promised is `FaultEngine.arm()`,
+    # which takes a fault id and is not reachable from a register.
+    - { address: 40350, name: FAULT_CODE,             type: int16,  unit_id: 1, writable: false }
+    # Not writable for the reason given on the signal, above.
+    - { address: 40351, name: STORM_FLAG,             type: int16,  unit_id: 1, writable: false, signal: "SITE:WEATHER:STORM" }
     # No signal: a bitfield of every state-bearing asset, not a measurement.
     - { address: 40400, name: EQUIP_STATE_WORD,       type: int16,  unit_id: 1, writable: false }
     # No signal: high and low halves of one 32-bit value, reassembled by the
@@ -319,7 +338,17 @@ opcua:
 # OPC UA server must mark it accordingly. Audit every write to the `events`
 # bucket — this is the mechanism a regulated plant would need.
 # ─────────────────────────────────────────────────────────────────────────────
+# The operator's write surface: **one value.**
+#
+# This listed three. Two of them could not work and did not — the soft PLC had no
+# write-back path at all, so every write was accepted on the wire, never applied,
+# and overwritten on the next 20 ms scan. A register that accepts a write and
+# discards it is worse than one that refuses it, because the client believes it
+# acted.
+#
+# Narrowed to the setpoint once `softplc/servers/modbus_server.py` had a real
+# write-back path. The other two are refused at the protocol boundary now, with a
+# Modbus exception, rather than silently swallowed. Both are documented on the
+# signal and register entries.
 writable:
   - { id: "AERATION:AHU-1:SETPOINT_DO", range: [0.5, 6.0], reason: "Operator DO setpoint change" }
-  - { id: "SITE:WEATHER:STORM",        range: [0, 1],    reason: "Fault injection / storm flag" }
-  - { id: "FAULT_CODE",                range: [0, 32767], reason: "Plant-level fault injection" }

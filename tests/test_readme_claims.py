@@ -264,7 +264,7 @@ def _count_tests(path: str) -> int:
 @pytest.mark.parametrize(
     ("path", "claimed"),
     [
-        ("tests/test_scada_contract.py", 49),
+        ("tests/test_scada_contract.py", 51),
         ("tests/test_grafana_dashboards.py", 15),
         ("tests/test_web_page.py", 22),
         ("tests/test_opcua_course.py", 34),
@@ -845,9 +845,9 @@ def test_the_lint_debt_baseline_matches_the_files() -> None:
 DOCUMENTED_SUITE_COUNTS = {
     "tests/test_contract.py": 63,
     "tests/test_alarm_detectors.py": 63,
-    "tests/test_modbus.py": 63,
+    "tests/test_modbus.py": 65,
     "tests/test_process.py": 40,
-    "tests/test_scada_contract.py": 49,
+    "tests/test_scada_contract.py": 51,
     "tests/test_scanloop.py": 31,
     "tests/test_faults.py": 29,
     "tests/test_control.py": 26,

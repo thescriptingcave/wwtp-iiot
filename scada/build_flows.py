@@ -702,11 +702,43 @@ def modbus_write(
     `datatype: "float"` was not a value the node has ever accepted either. Its
     valid values are `Coil`, `HoldingRegister`, `MCoils` and `MHoldingRegisters`,
     and it sends numbers as they are -- it has no float encoding at all. A float32
-    occupies two registers, so the node writes `quantity: 2` holding registers and
-    the two 16-bit words are built by the function node upstream, in the word order
-    the contract states. `docs/ALARMS.md` and the contract both call the
-    swapped-order registers a trap; the encoding is generated from
-    `word_order`, so the trap cannot be entered by hand here.
+    occupies two registers, so the two 16-bit words are built by the function node
+    upstream, in the word order the contract states. `docs/ALARMS.md` and the
+    contract both call the swapped-order registers a trap; the encoding is
+    generated from `word_order`, so the trap cannot be entered by hand here.
+
+    **`data_type` must be `MHoldingRegisters`, and `HoldingRegister` is a trap
+    that looks identical to the right answer.** The node derives its function code
+    from `dataType` alone, via its own table:
+
+        Coil               -> 5    write single coil
+        HoldingRegister    -> 6    write single register
+        MCoils             -> 15   write multiple coils
+        MHoldingRegisters  -> 16   write multiple registers
+
+    `HoldingRegister` is FC6, and **FC6 writes one register and ignores
+    `quantity` entirely**. So a node configured `dataType: "HoldingRegister",
+    quantity: 2` sends the first of the two words and discards the second, with
+    no error anywhere: the node reports success, the flow writes its audit row,
+    and the register ends up holding a fresh high word on a stale low word. That
+    is a *plausible but wrong* float32, which is the worst possible outcome --
+    not an exception, not a rejection, a believable number.
+
+    This was exactly what happened. `dataType: "HoldingRegister"` with
+    `quantity: 2` had been in this flow from the start, and the docstring above
+    confidently described the FC16 behaviour it was not getting. The parameter is
+    called `data_type` and its two plausible values differ by one letter, and the
+    wrong one is the more natural thing to type -- "a holding register" is what
+    the contract calls the thing, and `MHoldingRegisters` reads like a typo.
+
+    The soft PLC now refuses a short write with `ILLEGAL_DATA_VALUE` and a
+    message naming the width it wanted, which is how this was found: the flow's
+    one control path stopped working and the reason was legible.
+
+    **Do not "simplify" `MHoldingRegisters` back to `HoldingRegister`.**
+    `test_scada_contract.py` asserts that every `modbus-write` node's `dataType`
+    is the multiple-registers variant whenever `quantity > 1`, so the mistake is
+    now a test failure rather than a silent corruption.
 
     Two outputs: 0 is the completed write, 1 the error response.
 
@@ -1488,7 +1520,10 @@ return msg;
         ),
         modbus_write(
             "write the setpoint", tab_id, modbus_config_id(),
-            address=address, quantity=2, data_type="HoldingRegister",
+            address=address, quantity=2,
+            # FC16, not FC6. `HoldingRegister` here means "write ONE register" and
+            # silently drops the second half of the float32. See `modbus_write()`.
+            data_type="MHoldingRegisters",
             unit_id=unit_id,
         ),
         postgres(

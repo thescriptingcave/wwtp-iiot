@@ -1723,35 +1723,133 @@ make scada            # docker compose --profile scada up -d scada
      and an `audit trail` INSERT into `event`. The PostgreSQL config node is named
      `wwtp-db`; **`wwtp-softplc-modbus` is the `modbus-client` config node**, not the
      database.
-     **Do not assert the PLC's held value changed.** The soft PLC's scan republishes its
-     whole holding block from its runtime model every cycle, and nothing writes that
-     register back into `AerationControl.setpoint_mg_l`, so the write is visible for under
-     one scan and then reverts to the model's own 2.0. Prove the bytes *arrive* instead,
-     by reading PDU 102 within a second of the write:
+     **Now assert the held value changed, and that it stays changed.** The write
+     takes: `ModbusTcpServer._accept_write` queues it, and `SoftPlc._apply_pending_writes`
+     applies it to both `plant.aeration.setpoint_do_mg_l` and
+     `aeration_control.setpoint_mg_l` before the physics runs. Read PDU 102 at leisure:
      ```bash
-     # Start this FIRST, then inject: PLC_SCAN_MS=20, so the value is gone within
-     # one scan. A sleep of even 20 ms between polls loses the race half the time.
      uv run python -c "
-     import struct, time
+     import struct
      from pymodbus.client import ModbusTcpClient
      c = ModbusTcpClient('127.0.0.1', port=5020); c.connect()
-     end = time.time() + 25
-     while time.time() < end:
-         w = c.read_holding_registers(102, count=2, slave=1).registers
-         print(struct.unpack('>f', struct.pack('>HH', *w))[0], flush=True)
+     w = c.read_holding_registers(102, count=2, slave=1).registers
+     print(struct.unpack('>f', struct.pack('>HH', *w))[0])
      c.close()"
      ```
-     Expect the injected value. `adr` is the **PDU** offset (40102 − 40000 = 102), not the
-     4xxxx address: `adr: 40102` returns Modbus exception 2 and writes nothing.
+     Expect `2.5`, and expect it again 30 seconds later. **This section previously
+     said the opposite** — that the value reverted to the model's own 2.0 within one
+     scan and could only be caught by polling inside the same 20 ms window. That was
+     accurate when written; it described the missing write-back path, which has since
+     been built. A revert now is a regression, so re-run this read after a delay
+     rather than racing the scan. `adr` is the **PDU** offset (40102 − 40000 = 102), not
+     the 4xxxx address: `adr: 40102` returns Modbus exception 2 and writes nothing.
+   - **Confirm the control loop actually responded.** The setpoint is applied twice on
+     purpose, because `AerationControl` receives its setpoint by value at construction.
+     Reading PDU 102 back is *not* sufficient evidence: the register publishes the
+     plant's field, so it would read correctly even if the PI loop were still
+     integrating against the startup value. Inject a setpoint far from the current DO
+     (`5.5`) and check that `AERATION:AHU-1:DO` and the blower duty register
+     (`40108`, PDU 108) climb:
+     ```sql
+     SELECT value, ts FROM reading
+     WHERE signal_id IN ('AERATION:AHU-1:DO','AERATION:AHU-1:BLOWER_VALVE')
+     ORDER BY ts DESC LIMIT 8;
+     ```
+     Duty rising while the setpoint sits high is the finding that matters.
+   - **The inject payload is a bare number, not JSON.** The permit check does
+     `Number(msg.payload)`, so `{"setpoint": 3.4}` is `NaN` and the flow refuses it
+     as "not a number". That refusal is correct behaviour and looks exactly like a
+     range refusal, so it is easy to misread. Inject `3.4`:
+     ```bash
+     curl -s -X POST http://127.0.0.1:18880/scada/inject/a6f5e510057a9 \
+       -H 'Content-Type: application/json' \
+       -d '{"__user_inject_props__":[{"p":"payload","v":"3.4","vt":"num"}]}'
+     ```
+     The node id is `enter a setpoint` in tab `03 — Operator control (setpoint)`;
+     the path is `/scada/inject/<id>`, not `/inject/<id>` — the admin root is
+     `/scada`, and a request to the bare path returns `Cannot POST`.
+   - **Expect no `ERROR` lines from the write node.** An empty `control: written`
+     with a red `modbus-write` means the PLC refused the write. Read the PLC's own
+     reason, which names the register and why:
+     ```bash
+     docker compose logs softplc --since 2m | grep -E 'write accepted|write refused'
+     ```
+     Two messages it can print, and what each means:
+     ```
+     modbus write accepted: AERATION_SETPOINT_DO = 3.4 -> AERATION:AHU-1:SETPOINT_DO
+     modbus write refused: AERATION_SETPOINT_DO is 2 register(s) of float32; got 1
+     ```
+     **The second one is a flow defect, not a plant refusal, and it is the single
+     most important line in this section.** It means the flow sent FC6 (write single
+     register) instead of FC16, so only the high word of the float32 arrived. The
+     flow's `dataType` was `HoldingRegister`, which
+     `node-red-contrib-modbus` maps to **function code 6** — and FC6 writes one
+     register and ignores `quantity` entirely. The correct value is
+     `MHoldingRegisters` (function code 16). It is now correct and asserted by
+     `tests/test_scada_contract.py::test_a_multi_register_write_uses_the_multi_register_function_code`,
+     but the failure was invisible for as long as it existed: the node reported
+     success, the audit row was written, the historian recorded the setpoint, the
+     mimic showed it, and the only thing that never happened was the plant
+     changing. If this message appears, the flow has been edited by hand or
+     regenerated from a stale generator — regenerate with
+     `uv run python -m scada.build_flows` and `docker compose restart scada`.
+   - **Verify the audit trail reflects what actually happened.** The `event` row is
+     written *downstream* of the write node, so a refused write must leave no row:
+     ```sql
+     SELECT count(*) FROM event WHERE kind='setpoint_written';
+     ```
+     Count before and after an out-of-range inject; the two numbers must be equal.
+     A row for a write the plant refused is an audit trail that lies.
    - With an **out-of-range** setpoint (`0.1` and `9.0`):
      Expect `control: refused` debug output and **no** change to the DB value and **no**
      `event` row. The flow **refuses**; it does not clamp. That distinction is the whole point
      of the two-output function.
+     The PLC refuses these independently: `_accept_write` range-checks on the wire and
+     answers with Modbus exception 3. Node-RED's permit check is the *client's* courtesy,
+     so a tester bypassing the flow should still be refused — worth confirming once with
+     the `python` one-liner above, using `9.0`, and confirming the register still holds
+     the last accepted value afterwards.
+   - **Bypass the flow entirely once.** A Modbus tool with no notion of a permit
+     range is the real test of whether the *server* enforces anything, because
+     Node-RED's check is only a courtesy:
+     ```bash
+     uv run python -c "
+     import struct
+     from pymodbus.client import ModbusTcpClient
+     c = ModbusTcpClient('127.0.0.1', port=5020); c.connect()
+     for v in (9.0, 0.1, 99.0):
+         b = struct.pack('>f', v); hi, lo = struct.unpack('>HH', b)
+         r = c.write_registers(102, [hi, lo], slave=1)
+         print(v, '->', 'REFUSED' if r.isError() else 'ACCEPTED')
+     c.close()"
+     ```
+     All three must print `REFUSED`. Also try a **read-only** register —
+     `AERATION_DO` at PDU 100, and the two that *used* to be writable,
+     `FAULT_CODE` (40350) and `STORM_FLAG` — each must be refused too. Those two
+     are the interesting case: they were `writable: true` in the contract while
+     nothing applied a write to either, so a client was told it succeeded and the
+     value was discarded on the next scan. They are read-only now.
+   - **A half-width write must be refused too**, which is the FC6/FC16 check above
+     seen from the other side:
+     ```bash
+     uv run python -c "
+     from pymodbus.client import ModbusTcpClient
+     c = ModbusTcpClient('127.0.0.1', port=5020); c.connect()
+     r = c.write_register(102, 1, slave=1)
+     print('FC6 ->', 'REFUSED' if r.isError() else 'ACCEPTED')
+     c.close()"
+     ```
+     Must print `REFUSED`. Accepting it would store a torn float — a fresh high
+     word on a stale low word — which is a plausible but wrong setpoint, and that
+     is worse than an error.
    - Verify the audit trail exists for accepted writes:
      ```sql
      SELECT ts, kind, severity, message, detail FROM event
      WHERE kind <> 'alarm_raised' ORDER BY ts DESC LIMIT 10;
      ```
+     The expected message is the operator's own number and the range it was
+     checked against, e.g.
+     `setpoint AERATION:AHU-1:SETPOINT_DO set to 3.4 mg/L (range 0.5-6 mg/L)`.
 9. **Node count and structure sanity:**
    ```bash
    python3 -c "
@@ -4594,14 +4692,14 @@ scanloop alone-vs-full run.
    uv run ruff check . --output-format concise 2>/dev/null | grep -cE ':[0-9]+:[0-9]+:'
    cat lint-debt-baseline.txt   # expect 156
    ```
-   **Current values:** 1091 unit / 48 integration / 5 slow / 156 lint findings / 73 mypy files
+   **Current values:** 1122 unit / 48 integration / 5 slow / 155 lint findings / 73 mypy files
    / 78 SQL queries in 26 files / 87 snippets in 18 lessons.
    ```bash
-   grep -nE '1091|48|156|73|78|87|4303' docs/TESTING.md | head
+   grep -nE '1122|48|155|73|78|87|4303' docs/TESTING.md | head
    ```
 3. **Find the stale block in `docs/VERIFYING.md`.** Its Part 10 expected-output block says
    **606 unit tests, 159 lint findings, 55 mypy files, 46 integration**. Current values are
-   1091 / 156 / 73 / 48. **FINDING — stale.**
+   1122 / 155 / 73 / 48. **FINDING — stale.**
    ```bash
    grep -nE '606|159|55 mypy|46 ' docs/VERIFYING.md
    ```
@@ -4712,7 +4810,7 @@ scanloop alone-vs-full run.
     ```
 15. **Verify the clean-machine plan's own numbers are current.** It is the master script:
     ```bash
-    grep -nE '1091|48|156|73|4\.2|28728|42284|28,728' docs/CLEAN-MACHINE-TEST-PLAN.md | head -20
+    grep -nE '1122|48|155|73|4\.2|28728|42284|28,728' docs/CLEAN-MACHINE-TEST-PLAN.md | head -20
     ```
 
 **Expected result** — `test_readme_claims.py` (83) and `test_getting_started_agrees.py` (13) pass; current counts confirmed; the four stale blocks located; dead directories confirmed dead; every documented service name real.

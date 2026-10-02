@@ -23,7 +23,7 @@ import socket
 import pytest
 from pymodbus.client import ModbusTcpClient
 from softplc.contract import contract
-from softplc.servers.modbus import decode_float32
+from softplc.servers.modbus import decode_float32, encode_float32
 from softplc.servers.modbus_server import ModbusTcpServer
 
 #: These exercise the *wire*: a real client reading a real socket. The
@@ -186,6 +186,17 @@ def test_input_registers_carry_a_bulk_table(client) -> None:
 # ─── writing ─────────────────────────────────────────────────────────────────
 
 
+def _setpoint_words(value: float) -> list[int]:
+    """The two registers a client would send for a setpoint of `value`."""
+    reg = C.register("AERATION_SETPOINT_DO")
+    return list(encode_float32(value, reg.word_order))
+
+
+def _write_setpoint(client: ModbusTcpClient, value: float):
+    off = ModbusTcpServer.wire_offset(C.register("AERATION_SETPOINT_DO").address)
+    return client.write_registers(off, _setpoint_words(value), device_id=1)
+
+
 def test_a_client_may_write_the_setpoint(client, server) -> None:
     srv, _port = server
     reg = C.register("AERATION_SETPOINT_DO")
@@ -197,6 +208,130 @@ def test_a_client_may_write_the_setpoint(client, server) -> None:
     srv.model.write_holding_float("AERATION_SETPOINT_DO", 2.75)
     srv._flush()
     assert _read_float(client, "AERATION_SETPOINT_DO") == pytest.approx(2.75, abs=1e-6)
+
+
+def test_a_client_write_reaches_the_scan_loop(client, server) -> None:
+    """A Modbus write is queued for the plant, not just stored in the block.
+
+    **The write-back path did not exist, and every test above passed anyway.**
+
+    The pre-existing write test went through `srv.model.write_holding_float()` —
+    the model's own API, called in-process. So it proved the *model* can hold a
+    written value, which was always true, and said nothing about whether a write
+    arriving over the wire from a client reached the plant. It did not: writes
+    landed in the pymodbus block and were overwritten by the next `_flush`, one
+    scan later. An operator's setpoint read back as the old value forever.
+
+    This goes through a real client and a real function code, so it exercises the
+    chokepoint (`ModbusSlaveContext.setValues`) that every FC6/FC16 write passes
+    through, and asserts the thing that was missing: the value is *queued* for
+    the scan loop rather than left in the block.
+    """
+    srv, _port = server
+    srv.take_writes()  # drain anything a previous test left
+
+    assert not _write_setpoint(client, 3.25).isError()
+
+    pending = srv.pending_writes
+    assert pending == {"AERATION:AHU-1:SETPOINT_DO": pytest.approx(3.25, abs=1e-6)}, (
+        f"the write did not reach the scan loop's queue; pending={pending}. It "
+        "went into the block, which the next publish overwrites — which is what "
+        "made every write appear to succeed and then not take."
+    )
+    srv.take_writes()
+
+
+def test_take_writes_hands_over_each_value_once(client, server) -> None:
+    """A write must be applied once, not re-driven every scan.
+
+    Leaving it queued would re-apply the setpoint on every scan, and a controller
+    whose input is re-written 50 times a second is not holding a setpoint. The
+    clearing is as load-bearing as the hand-over.
+    """
+    srv, _port = server
+    srv.take_writes()
+    _write_setpoint(client, 2.25)
+
+    assert srv.take_writes() != {}, "the write should be available once"
+    assert srv.take_writes() == {}, "and only once"
+
+
+def test_a_refused_write_leaves_the_block_alone(client, server) -> None:
+    """A refused write must not reach the datastore.
+
+    The worst available outcome is a write that lands in the block while the
+    client is told it failed: the operator sees an error, believes the plant is
+    unchanged, and it is not. So the block is checked, not just the exception.
+    """
+    srv, _port = server
+    srv.take_writes()
+    srv.publish({**VALUES, "AERATION:AHU-1:SETPOINT_DO": 2.0}, STATES, 42)
+
+    # FC6 to a read-only register: one register, so it fits any width.
+    off = ModbusTcpServer.wire_offset(C.register("AERATION_DO").address)
+    err = client.write_register(off, 0x4248, device_id=1)
+
+    assert err.isError(), "writing a read-only register must be refused"
+    assert _read_float(client, "AERATION_DO") != pytest.approx(4.8, abs=1e-3), (
+        "the refused value reached the block anyway"
+    )
+
+
+def test_an_out_of_range_write_is_refused(client, server) -> None:
+    """The engineering range is enforced on the wire, not only in Node-RED.
+
+    Node-RED's permit check is the *client's* courtesy. The Modbus specification
+    carries no engineering range at all, so if the server does not check it then
+    any other client — a laptop with a Modbus tool, a script — can write 99 mg/L
+    to a basin rated for 6. `OpcUaServer.write_value` checks this for OPC UA;
+    without the same check here the two protocols would differ on a safety
+    property.
+    """
+    srv, _port = server
+    srv.take_writes()
+    srv.publish({**VALUES, "AERATION:AHU-1:SETPOINT_DO": 2.0}, STATES, 42)
+
+    assert _write_setpoint(client, 99.0).isError(), (
+        "99 mg/L is outside [0.5, 6] and must not be accepted"
+    )
+    assert srv.pending_writes == {}, "a refused write must not be queued"
+    assert _read_float(client, "AERATION_SETPOINT_DO") == pytest.approx(
+        2.0, abs=1e-6
+    ), "and must not reach the block"
+
+
+def test_half_a_float32_is_refused(client, server) -> None:
+    """Writing one register of a two-register float is refused, not merged.
+
+    The failure this prevents is the quiet one: FC6 to the low half would leave
+    the high half holding its old value, and the pair decodes to a finite, in-range
+    float that is neither the value sent nor the value before it. Nothing raises.
+    """
+    srv, _port = server
+    srv.take_writes()
+    off = ModbusTcpServer.wire_offset(C.register("AERATION_SETPOINT_DO").address)
+
+    assert client.write_register(off, 0x4060, device_id=1).isError()
+
+
+def test_writes_are_counted(client, server) -> None:
+    """Accepted and refused writes are visible, not inferred.
+
+    An operator's evidence that a setpoint took is "the register changed", which
+    cannot distinguish the plant obeying from the plant overwriting. The counters
+    can, and they are the cheapest answer to "has anything ever written here".
+    """
+    srv, _port = server
+    srv.take_writes()
+    before = srv.write_stats()
+
+    _write_setpoint(client, 2.4)
+    _write_setpoint(client, 400.0)  # refused: out of range
+    srv.take_writes()
+
+    after = srv.write_stats()
+    assert after["accepted"] == before["accepted"] + 1
+    assert any("outside" in reason for reason in after["refused"])
 
 
 # ─── robustness ──────────────────────────────────────────────────────────────

@@ -32,12 +32,15 @@ for s in writable:
 ```
 
 ```
-2 of 57 signals are writable
+1 of 57 signals are writable
   AERATION:AHU-1:SETPOINT_DO     setpoint_do_mg_l     range [0.5, 6.0] mg/L
-  SITE:WEATHER:STORM             storm_flag           range [0.0, 1.0] {Boolean}
 ```
 
-Two. A dissolved-oxygen setpoint and a weather flag. The design is right and the
+One. A dissolved-oxygen setpoint. (It was two, and the second was a weather
+flag: `SITE:WEATHER:STORM` was `writable: true` while nothing applied a write to
+it, and `InfluentUnit.storm_active` is not a latch — it clears itself once the
+storm's duration elapses. A write that reports success and vanishes on the next
+scan is worse than one that is refused, so it is read-only now.) The design is right and the
 comment at `opcua.py:477` says why: *"the contract's write surface is
 deliberately small."* In a real plant you would also want to be able to tell a
 pump from a setpoint without reading the source, and `UserAccessLevel` in the
@@ -215,16 +218,39 @@ plant, by every component.
 | claim | verdict |
 |---|---|
 | A client cannot write a measurement | **yes** — `BadUserAccessDenied`, enforced by the protocol |
-| A client can write a setpoint | **yes** — 2 of 57 signals |
+| A client can write a setpoint | **yes** — 1 of 57 signals |
 | The engineering range is enforced on write | **no** — 99.0 accepted against a 0.5–6.0 range |
 | The range is checked somewhere in the server | **in a function with no caller** |
-| A write changes the plant | **no** — overwritten next scan, never read by a control loop |
-| Writes are audited | **no** — no event, no `event` row, no log line |
+| A write changes the plant | **no over OPC UA** — overwritten next scan, never read by a control loop |
+| **The same write changes the plant over Modbus** | **yes** — `ModbusTcpServer` has a write-back path and range-checks on the wire |
+| Writes are audited | **over OPC UA, no** — no event, no `event` row, no log line |
 
-The honest shape of this is that OPC UA's write model is **correct and unused**,
-while the project's actual write path is Modbus. That is a defensible
-architecture — a narrow write surface is good practice — arrived at partly by
-accident and described in a docstring that claims a range check which no code
+Every verdict above is about OPC UA, and every one of them is still true. The
+last-but-one row is the new information, and it is the reason this lesson is
+worth re-reading: when the audit ran, Modbus writes were inert *for exactly the
+same reason*. `pending_writes` existed in `modbus_server.py` with a docstring
+describing a write path that was never implemented, and `_flush()` overwrote
+the whole holding block every 20 ms, so an operator's setpoint arrived over the
+wire, was acknowledged, and reverted. Both protocols were decorative, which made
+"OPC UA's write model is correct and unused" a criticism of OPC UA's *position*
+when it was really a criticism of the project's write paths in general.
+
+Modbus has since been given a real write-back path (`_accept_write` →
+`take_writes` → `SoftPlc._apply_pending_writes`). The contrast the audit asserted
+but could not demonstrate is now demonstrable: **one contract, one writable
+signal, reachable over Modbus and unreachable over OPC UA.** A client gets a
+Modbus exception for a read-only register and an out-of-range setpoint, and
+`BadUserAccessDenied` for the same measurement over OPC UA. The protocol that
+is supposed to be safer about permissions is the one that cannot be used to
+change the plant at all.
+
+That inversion is worth sitting with. The lesson's original advice stands —
+narrow write surfaces are good practice — but the reason OPC UA earns no credit
+here is not that it is a worse protocol. It is that its write model was never
+connected to anything, while the cruder protocol was connected to a loop.
+
+The honest shape of the remaining gap is that OPC UA's write model is **correct
+and unused**, described in a docstring that claims a range check which no code
 path reaches.
 
 Two of the three fixes are small and belong on the thread list:
@@ -236,10 +262,11 @@ Two of the three fixes are small and belong on the thread list:
 - **Reconcile the two comments.** The docstring says the range check is "a
   courtesy for in-process callers" when there are none, and `SECURITY.md`
   describes a gap that is narrower than the truth — the real gap is not that the
-  range is unchecked but that **no write reaches anything at all.**
+  range is unchecked but that **no OPC UA write reaches anything at all.**
 
 That second one matters most. A security document that understates a gap is
 worse than one that has no gap, because it is the document somebody trusts when
-deciding what to fix first.
+deciding what to fix first. It also understates a gap that used to be twice as
+wide: it described only the OPC UA path, and not the Modbus one.
 
 **Next:** [06 — Why OPC UA is asyncio and Modbus is not](06-async.md)

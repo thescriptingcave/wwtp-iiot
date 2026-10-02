@@ -207,15 +207,19 @@ lesson rather than a footnote:
    write is handled by `asyncua` setting the node directly, so the range check
    never runs. The docstring calls it "a courtesy for in-process callers" when
    there are none. → **lesson 05**
-8. **Every client write is inert anyway.** The process model is the only source
+8. **Every OPC UA client write is inert.** The process model is the only source
    of truth and republishes every cycle, and `softplc/main.py:131` aliases the
    OPC UA address space as `self._space`, so any write is silently overwritten
    within one scan. The DO controller reads its own dataclass field
-   (`units.py:918`), so no write ever reached a control loop in the first place.
-   The write surface is 2 of 57 signals, is decorative, and the project's only
-   real write path is the Node-RED flow's **Modbus** write. It fails in the safe
-   direction — an absurd setpoint is ignored rather than applied — but
-   accidentally, and nothing says so. → **lesson 05**
+   (`units.py:931`), so no OPC UA write ever reached a control loop in the first
+   place. The OPC UA write surface is 1 of 57 signals and is decorative. The
+   project's real write path is the Node-RED flow's **Modbus** write — and this
+   is where the finding changed. Modbus writes used to be inert for the same
+   reason, discarded by `_flush()` on the next 20 ms scan, which made both
+   protocols equally decorative and left the audit's contrast unreal. Modbus now
+   has a write-back path, so the contrast is real: **the same setpoint is
+   reachable over Modbus and unreachable over OPC UA**, on identical contracts.
+   That inversion is the lesson. → **lesson 05**
 9. **`RunState` is zero until the process model drives it.** A bare
    `OpcUaServer` — a unit test, or the snippet gate — publishes 22 pieces of
    equipment all reading `0`, which is indistinguishable from 22 stopped motors.

@@ -141,7 +141,7 @@ make lint-debt
 make types
 ```
 
-Expect: **156 findings, baseline 156** and **Success: no issues found in 73 source
+Expect: **155 findings, baseline 155** and **Success: no issues found in 73 source
 files**. A count other than 156 means the baseline drifted — the ratchet is a real
 check, not decoration.
 
@@ -151,7 +151,7 @@ check, not decoration.
 make test
 ```
 
-Expect: **1091 passed**, no failures. The documented count is checked by a test, so
+Expect: **1122 passed**, no failures. The documented count is checked by a test, so
 a different number means either a missing file or a genuine change in count.
 
 **Step 11** — integration tests.

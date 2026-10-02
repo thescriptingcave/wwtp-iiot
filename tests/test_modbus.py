@@ -13,6 +13,7 @@ import struct
 
 import pytest
 from softplc.contract import contract
+from softplc.main import SETPOINT_SIGNAL
 from softplc.servers.modbus import (
     HOLDING_BASE,
     HOLDING_SIZE,
@@ -311,16 +312,73 @@ def test_write_surface_is_enforced_by_the_contract_not_by_the_wire() -> None:
     """Modbus has no concept of a read-only register.
 
     Every register in the 4xxxx block is writable at the protocol level. The
-    protection is the *declared* write surface in the contract, and the gateway's
+    protection is the *declared* write surface in the contract, and the server's
     obligation to honour it. This test pins the contract side; claiming the wire
     enforces it would be false, and OPC UA is the protocol that actually does.
+
+    **This set was three registers and is now one.** `FAULT_CODE` and
+    `STORM_FLAG` were marked `writable: true` while no code path applied a write
+    to either, so both accepted an operator's value and discarded it on the next
+    scan. They are read-only now, and the write-back path in
+    `ModbusTcpServer._accept_write` refuses them with a Modbus exception rather
+    than swallowing them. See the reasoning on the register entries in
+    `contracts/tags.yaml`.
+
+    The pin is an equality rather than a bound because the whole point of this
+    test is that the surface is *declared* — a bound would let a new writable
+    register appear and pass. `test_writable_set_is_small` above covers the
+    general "do not let this grow" rule; this one says what it is.
     """
     writable = {r.name for r in C.registers if r.writable}
-    assert writable == {"AERATION_SETPOINT_DO", "FAULT_CODE", "STORM_FLAG"}, (
-        f"unexpected writable set: {sorted(writable)}"
+    assert writable == {"AERATION_SETPOINT_DO"}, (
+        f"unexpected writable set: {sorted(writable)}. Adding a register here "
+        "means adding a setter in SoftPlc._apply_pending_writes too — the "
+        "contract promises a write surface the plant can keep."
     )
     for reg in C.registers:
         if reg.name in ("AERATION_DO", "AERATION_MLSS", "INFLUENT_FLOW"):
             assert not reg.writable, f"{reg.name} must be read-only"
+
+
+def test_every_writable_register_has_a_signal_the_plant_can_apply() -> None:
+    """A writable register must be one the scan loop knows how to apply.
+
+    This is the test that would have caught the original fault. The contract
+    declared three writable registers; the scan loop applied none of them. The
+    two halves were only ever checked in isolation — `contract.py` validates that
+    the `writable` list and the signal flags agree, and nothing checked that
+    agreeing on paper produced a value in the plant.
+
+    The list is the plant's, so it lives next to the plant rather than being
+    derived: deriving it would mean asking "what can this code apply?", which is
+    the question this test exists to ask.
+    """
+    applied = {SETPOINT_SIGNAL}
+    for reg in C.registers:
+        if not reg.writable:
+            continue
+        assert reg.signal in applied, (
+            f"{reg.name} is writable but no code path applies a write to "
+            f"{reg.signal!r}. Either add a setter in "
+            "SoftPlc._apply_pending_writes, or mark it read-only — a write that "
+            "is accepted and then discarded is worse than a refused one."
+        )
+
+
+def test_the_contract_declares_no_writable_values_without_a_register() -> None:
+    """Every entry in the `writable` list must be reachable on the wire.
+
+    `FAULT_CODE` sat in that list with no writable register and no signal. It
+    was unreachable from any client, which made it a promise to nobody.
+    """
+    registered = {r.signal for r in C.registers if r.signal and r.writable}
+    for wid in C.writable:
+        assert wid in registered, (
+            f"{wid} is declared writable but no writable register carries it"
+        )
+    assert set(C.writable) == registered, (
+        "the writable list and the writable registers disagree; a write surface "
+        "described in two places is one that can drift"
+    )
 
 

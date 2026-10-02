@@ -5335,7 +5335,7 @@
       "data_type": "Double",
       "unit_symbol": "{Boolean}",
       "engineering_unit_id": 12755,
-      "writable": true,
+      "writable": false,
       "constructed_from": {
         "field": "normal_low",
         "value": 0.0

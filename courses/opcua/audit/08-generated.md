@@ -184,7 +184,7 @@ like plumbing:
 | 10 | nine fixed-named properties on every signal | fine in intent, wrong in execution |
 | 11 | `EngineeringUnits` is a bare `Int32` from a 43-entry table | **wrong** — lesson 02 |
 | 12 | `_variant_type` returns `Double` whatever the unit | **wrong** — lesson 02 |
-| 13 | `set_writable()` only where the contract says so — 2 of 57 | correct, and deliberate |
+| 13 | `set_writable()` only where the contract says so — 1 of 57 | correct, and deliberate |
 | 14 | `by_browse_path` is keyed `area.holder.field` | fine |
 
 **Three of the fourteen are unambiguously wrong, and a fourth is wrong whenever

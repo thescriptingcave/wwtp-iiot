@@ -43,7 +43,7 @@ operator actions. None are simulated and none are claimed.
 | OPC UA encryption | **Not enforced** | Anonymous, `None` security policy |
 | OPC UA authentication | **Not enforced** | Anyone who can reach the port can read everything |
 | Modbus authentication | **Impossible** | The protocol has none |
-| Modbus write protection | **By contract only** | See gap 2 |
+| Modbus write protection | **By the server, not the wire** | The server refuses; the protocol cannot. See gap 2 |
 | Network segmentation | **Partial** | One flat bridge network |
 | TLS termination | **None** | Local development only |
 | Database credentials scoped per service | **Partial** | Two of the five long-running services have their own role. Three do not need one and still have it — Gap 3. |
@@ -105,25 +105,65 @@ industrial systems, "the value is out of range" and "the value is wrong" are
 different failures, and only one of them is loud. Range checking that only
 *displays* is a comment, not a control.
 
-## Gap 2 — Modbus is read-only by contract, not by the wire
+## Gap 2 — Modbus is read-only by the server, not by the wire
 
-`contracts/tags.yaml` marks most registers read-only, and the register model
-(`softplc/servers/modbus.py`) is tested against that. The server does not
-prevent a client writing to a register the contract calls read-only.
+`contracts/tags.yaml` declares one writable register — `AERATION_SETPOINT_DO`,
+the aeration DO setpoint — and `ModbusTcpServer._accept_write` refuses every
+other write, including writes to addresses that are not registers at all. A
+client writing a measurement gets Modbus exception 3 (illegal data value); a
+client writing outside the setpoint's 0.5–6.0 mg/L range gets the same. The
+refusal reaches the block, not just the log: the value never enters the
+datastore, so it cannot be read back as though it had taken.
 
-This is not a bug that could be fixed cheaply; it is a property of Modbus. The
-protocol has no concept of a read-only register. Function code 6 (write single
-register) is answered by any conforming server for any address in range. There
-is no authentication, no authorisation, and no integrity protection anywhere in
-the protocol. Modbus TCP over a network is a convenience wrapper around serial
-Modbus; the security model is "the cable".
+**What changed, and why this section used to be worse than the table said.** It
+previously read "The server does not prevent a client writing to a register the
+contract calls read-only", and that was true. The contract marked *three*
+registers writable — the setpoint, `STORM_FLAG` and `FAULT_CODE` — and the
+server applied none of them. A write arrived, was accepted with no error, and
+was overwritten by the next 20 ms publish. So the old "by contract only" was
+generous: the contract was the only thing marking anything writable, and no code
+acted on it.
 
-**What this project does about it.**
+**The protocol still offers nothing.** This is the part that has not changed and
+cannot. Modbus has no concept of a read-only register. Function code 6 (write
+single register) is answered by any conforming server for any address in range.
+There is no authentication, no authorisation, and no integrity protection
+anywhere in the protocol. Modbus TCP over a network is a convenience wrapper
+around serial Modbus; the security model is "the cable".
+
+So the honest statement of the control is: *this server* refuses, in software,
+writes the contract forbids. That is strictly better than documenting a
+permission and not checking it — a laptop with a Modbus tool gets an exception
+rather than a silent overwrite — but it is enforcement by the same process that
+would be compromised by the attacker. It is not a boundary.
+
+**Two writable surfaces were removed rather than implemented.**
+
+- `SITE:WEATHER:STORM` — `InfluentUnit.storm_active` is not a latch. It is
+  measured from `storm_started_s` and clears itself once the storm's duration
+  elapses, so a write setting it would vanish on the next scan. Arming a storm
+  is `start_storm(duration_s=...)`, which sets three fields together and models
+  weather rather than accepting a command.
+- `FAULT_CODE` — `RegisterModel.fault_code` is assigned by nothing, so the
+  register read 0 forever and a write to it went nowhere. Plant-level fault
+  injection is `FaultEngine.arm()`, which takes a fault id and is not reachable
+  from a register write.
+
+A write that is accepted and then discarded is worse than one that is refused,
+because the client believes it acted. Both are refused now, with an exception
+and a counted reason, and `SoftPlc.health()` reports `writes.accepted` and
+`writes.refused` so "my setpoint is not taking" is answerable without attaching
+a client.
+
+**What this project does about the rest.**
 
 - Binds to a container-internal port, published to the host only for
   convenience.
 - Publishes only what the contract says is publishable.
-- Documents the registers that are writable, and why.
+- Enforces the engineering range on the wire. The Modbus base specification
+  carries no engineering range at all, so this check is entirely the server's;
+  Node-RED's permit check is a second line of defence at the client, not the
+  one that does the work.
 
 **What a real deployment would do.** Put the Modbus server behind a protocol
 gateway that enforces the register map, on a dedicated network segment, with

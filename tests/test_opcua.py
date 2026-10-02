@@ -235,12 +235,22 @@ async def test_a_client_may_not_write_a_measurement(client) -> None:
 
 
 async def test_no_measurement_variable_is_writable(space_only) -> None:
-    """Checked against the contract, so the server cannot drift from it."""
+    """Checked against the contract, so the server cannot drift from it.
+
+    **One writable variable, and it was two.** `SITE:WEATHER:STORM` is read-only
+    now: `InfluentUnit.storm_active` is not a latch, so a write clearing itself
+    on the next scan is not a control surface.
+
+    Worth noting what this test demonstrates about the design: the OPC UA write
+    surface shrank as a *consequence* of narrowing the contract, with no change
+    to `opcua.py` at all. That is the address space being derived from the
+    contract rather than declared beside it, and it is the reason the two
+    protocols cannot disagree about what may be written.
+    """
     space = space_only
     writable = {sid for sid, n in space.variables.items() if n.writable}
     assert writable == {
         "AERATION:AHU-1:SETPOINT_DO",
-        "SITE:WEATHER:STORM",
     }, f"unexpected write surface: {sorted(writable)}"
 
 
