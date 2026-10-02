@@ -225,6 +225,85 @@ def _timeseries_panel(
     }
 
 
+def _stat_panel(
+    c: Contract,
+    panel_id: int,
+    title: str,
+    signal_id: str,
+    *,
+    grid: tuple[int, int, int, int],
+    description: str = "",
+    unit: str | None = None,
+) -> dict[str, Any]:
+    """One big number, reduced to the most recent reading.
+
+    **This is the at-a-glance layer the overview did not have.** Zero of the
+    original nine panels were of this type, which means opening the dashboard
+    cost a reader the same eye travel as opening a trend panel: read the legend,
+    find the series, find the right edge, estimate the number. For *"is the plant
+    all right?"* that is four times too much work, and the answer is usually
+    yes.
+
+    `reduceOptions.calcs = ["lastNotNull"]` rather than `"mean"`, and the choice
+    matters: dissolved oxygen samples every five seconds and the dashboard's
+    default range is six hours, so a mean over the range is a six-hour average
+    presented as if it were the current state. `lastNotNull` is the reading, and
+    `lastNotNull` rather than `last` because a signal whose most recent sample is
+    `NULL` — a failed transmitter, which this plant models — would otherwise show
+    nothing at all instead of the absence of a number.
+
+    The band is drawn as thresholds, not as a second query, for the same reason
+    `_timeseries_panel` does it that way: two queries for a value and its band is
+    two aggregations, and they can disagree at a point where they were not
+    computed from the same rows.
+
+    Note this reuses `_raw_query`, so a stat panel carries a time range and the
+    panel ignores all but its last row. That is deliberate — one query builder,
+    one place where the raw-tier aggregation is defined — and it means the stat
+    and the trend panel for the same signal cannot disagree about what the
+    reading is, which they would if each had its own simpler query.
+    """
+    s = _tag(c, signal_id)
+    return {
+        "id": panel_id,
+        "type": "stat",
+        "title": title,
+        "description": description,
+        "datasource": {"type": "postgres", "uid": DS},
+        "gridPos": {"h": grid[2], "w": grid[3], "x": grid[0], "y": grid[1]},
+        "targets": [_target("A", _raw_query(c, signal_id), s.field)],
+        "fieldConfig": {
+            "defaults": {
+                "unit": unit or UNIT_NONE,
+                "decimals": 2,
+                "mappings": [],
+                "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                        {"color": "text", "value": "thresholds"},
+                        {"color": "red", "value": s.normal_low, "op": "lt"},
+                        {"color": "text", "value": s.normal_low},
+                        {"color": "green", "value": s.normal_high, "op": "gt"},
+                    ],
+                },
+            },
+            "overrides": [],
+        },
+        "options": {
+            "reduceOptions": {
+                "calcs": ["lastNotNull"],
+                "fields": "",
+                "values": False,
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto",
+            "justifyMode": "auto",
+            "orientation": "auto",
+        },
+    }
+
+
 def _table_panel(
     panel_id: int,
     title: str,
@@ -277,6 +356,22 @@ def _permit_query(permit: dict[str, Any]) -> str:
       which is the third time this query has failed loudly and the first time any
       of these would have failed quietly.
 
+    **`pct_of_permit` is the column that makes this table worth reading.** It
+    carried `measured` and `compliant` and nothing between them, so a reader saw
+    `1.06, true` and could not tell whether that was a comfortable pass or one bad
+    afternoon from a breach. A boolean has no magnitude, and compliance is the
+    one thing on this dashboard where *how close* is the question being asked.
+
+    The percentage is deliberately the same arithmetic for all three directions,
+    which means **the good side is not the same side on every row.** For a `max`
+    row, under 100 % is compliant. For the pH *minimum*, over 100 % is
+    compliant — the floor is a floor, and standing above it is the point. A
+    single "amber at 80 %" colouring would therefore be wrong on one row out of
+    five, so this is a number and the `direction` column beside it says which
+    side is good. The alternative, a `margin` signed positive-toward-compliance,
+    was rejected: it is unreadable when the sign convention has to be remembered,
+    and a number you have to look up is worse than the boolean it replaced.
+
     Every query in `ui/grafana/dashboards/` is executed against a live database
     by `tests/test_grafana_dashboards.py`. A dashboard JSON file that is never
     run is a screenshot of somebody's guess.
@@ -292,31 +387,37 @@ SELECT 'ammonia, 30-day mean' AS parameter,
        {nh4!r}::float AS permit_value,
        'max'  AS direction,
        round(avg(h.mean)::numeric, 3) AS measured,
+       round((100 * avg(h.mean) / {nh4})::numeric, 1) AS pct_of_permit,
        avg(h.mean) <= {nh4} AS compliant
 FROM reading_1h h, span w
 WHERE h.signal_id = 'EFFLUENT:FLOW:NH4' AND h.bucket >= w.since
 HAVING count(*) > 0
 UNION ALL
 SELECT 'suspended solids, 30-day mean', 'mg/L', {tss!r}::float, 'max',
-       round(avg(h.mean)::numeric, 3), avg(h.mean) <= {tss}
+       round(avg(h.mean)::numeric, 3),
+       round((100 * avg(h.mean) / {tss})::numeric, 1), avg(h.mean) <= {tss}
 FROM reading_1h h, span w
 WHERE h.signal_id = 'EFFLUENT:FLOW:TSS' AND h.bucket >= w.since
 HAVING count(*) > 0
 UNION ALL
 SELECT 'pH, minimum', 'pH', {ph_lo!r}::float, 'min',
-       round(min(h.mean)::numeric, 3), min(h.mean) >= {ph_lo}
+       round(min(h.mean)::numeric, 3),
+       round((100 * min(h.mean) / {ph_lo})::numeric, 1), min(h.mean) >= {ph_lo}
 FROM reading_1h h, span w
 WHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since
 HAVING count(*) > 0
 UNION ALL
 SELECT 'pH, maximum', 'pH', {ph_hi!r}::float, 'max',
-       round(max(h.mean)::numeric, 3), max(h.mean) <= {ph_hi}
+       round(max(h.mean)::numeric, 3),
+       round((100 * max(h.mean) / {ph_hi})::numeric, 1), max(h.mean) <= {ph_hi}
 FROM reading_1h h, span w
 WHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since
 HAVING count(*) > 0
 UNION ALL
 SELECT 'coliforms, geometric mean', '{{MPN}}/100mL', {bacti!r}::float, 'max',
-       round(exp(avg(ln(h.mean)))::numeric, 1), exp(avg(ln(h.mean))) <= {bacti}
+       round(exp(avg(ln(h.mean)))::numeric, 1),
+       round((100 * exp(avg(ln(h.mean))) / {bacti})::numeric, 1),
+       exp(avg(ln(h.mean))) <= {bacti}
 FROM reading_1h h, span w
 WHERE h.signal_id = 'EFFLUENT:DIS-CL-2:BACTI' AND h.bucket >= w.since
   AND h.mean > 0
@@ -357,15 +458,46 @@ def build_overview(c: Contract) -> dict[str, Any]:
     return _dashboard(
         "wwtp-overview",
         "WWTP — overview",
-        "The plant at a glance. Generated from contracts/tags.yaml; the band on "
-        "each panel is the contract's `normal_low`/`normal_high`, which is a "
-        "*specification* and not an alarm threshold — see docs/ALARM-TUNING.md.",
+        "The plant at a glance: four numbers first, then the trends. Generated "
+        "from contracts/tags.yaml; the band on each panel is the contract's "
+        "`normal_low`/`normal_high`, which is a *specification* and not an alarm "
+        "threshold — see docs/ALARM-TUNING.md.",
         [
+            _stat_panel(
+                c, 1, "Influent flow", "INFLUENT:FLOW:FLOW",
+                grid=(0, 0, 4, 6), unit="m3/h",
+                description="How much is arriving, right now. The first question "
+                            "on a shift: more than design and the hydraulics are "
+                            "in trouble, less and something upstream has stopped.",
+            ),
+            _stat_panel(
+                c, 2, "Effluent flow", "EFFLUENT:FLOW:FLOW",
+                grid=(6, 0, 4, 6), unit="m3/h",
+                description="Compare it with influent. **Effluent above influent "
+                            "means water is being added** — a dilution step, "
+                            "storm runoff, or a leak in the wrong direction.",
+            ),
+            _stat_panel(
+                c, 3, "Aeration DO", "AERATION:AHU-1:DO",
+                grid=(12, 0, 4, 6), unit="mg/L",
+                description="Dissolved oxygen in the aeration basin. **In range "
+                            "is not the same as true** — see the drift panel "
+                            "below, which is the one that catches a lying "
+                            "instrument.",
+            ),
+            _stat_panel(
+                c, 4, "Effluent ammonia", "EFFLUENT:FLOW:NH4",
+                grid=(18, 0, 4, 6), unit="mg/L",
+                description="The number the permit is written against, as a "
+                            "current reading. The *compliance* figure is a "
+                            "30-day mean and lives on the permit dashboard; this "
+                            "is today, not the average.",
+            ),
             _timeseries_panel(
                 c,
-                1, "Influent and effluent flow",
+                5, "Influent and effluent flow",
                 ["INFLUENT:FLOW:FLOW", "EFFLUENT:FLOW:FLOW"],
-                grid=(0, 0, 8, 8), unit="m3/h", show_band=False,
+                grid=(0, 4, 8, 8), unit="m3/h", show_band=False,
                 description="Two different quantities on one axis is wrong, and "
                             "they are here anyway because the *shape* comparison "
                             "is the point: effluent above influent means water "
@@ -373,17 +505,17 @@ def build_overview(c: Contract) -> dict[str, Any]:
             ),
             _timeseries_panel(
                 c,
-                2, "Dissolved oxygen",
+                6, "Dissolved oxygen",
                 ["AERATION:AHU-1:DO"],
-                grid=(8, 0, 8, 8), unit="mg/L",
+                grid=(8, 4, 8, 8), unit="mg/L",
                 description="Aeration basin DO. The band is the contract's "
                             "1.5-3.0 mg/L.",
             ),
             _timeseries_panel(
                 c,
-                3, "Blower speed and air flow",
+                7, "Blower speed and air flow",
                 ["AERATION:AHU-1:BLOWER_RPM", "AERATION:AHU-1:AIR_FLOW"],
-                grid=(16, 0, 8, 8), show_band=False,
+                grid=(16, 4, 8, 8), show_band=False,
                 description="Two quantities, two units, **no band**. A "
                             "threshold in rev/min drawn on a panel whose other "
                             "series is m3/h is a number with no meaning, and a "
@@ -394,18 +526,39 @@ def build_overview(c: Contract) -> dict[str, Any]:
             ),
             _timeseries_panel(
                 c,
-                4, "Effluent quality",
+                8, "DO against air flow — is the probe telling the truth?",
+                ["AERATION:AHU-1:DO", "AERATION:AHU-1:AIR_FLOW"],
+                grid=(0, 12, 8, 12), unit="none", show_band=False,
+                description="**The instrument-versus-process panel.** Normally "
+                            "these two move together: more air, more oxygen, "
+                            "higher DO. When the blower is working hard and DO "
+                            "sits low, the plant is being under-aerated. When the "
+                            "blower is working hard and DO sits comfortably high, "
+                            "*the probe is reading high and the process is not "
+                            "being aerated* — a drifting sensor, which no "
+                            "threshold on the DO reading can ever catch, because "
+                            "the reading never leaves its range.\n\n"
+                            "This is the `do_sensor_drift` fault, and it is why "
+                            "this panel exists rather than a threshold. Two units "
+                            "on one axis and **no band**, for the same reason the "
+                            "blower panel has none: a mg/L threshold drawn here "
+                            "would be silently read as a limit on m3/h. Read the "
+                            "*divergence between the shapes*, not either axis.",
+            ),
+            _timeseries_panel(
+                c,
+                9, "Effluent quality",
                 ["EFFLUENT:FLOW:NH4", "EFFLUENT:FLOW:TSS"],
-                grid=(0, 8, 12, 8), show_band=False,
+                grid=(12, 12, 8, 12), show_band=False,
                 description="Ammonia and suspended solids, hourly tier, so a week "
                             "on screen is 168 points rather than 12 000.",
                 rollup=True,
             ),
             _timeseries_panel(
                 c,
-                5, "Sludge and digester",
+                10, "Sludge and digester",
                 ["SECONDARY:SEC-CL-1:BLANKET", "SLUDGE:DIG-1:PH"],
-                grid=(12, 8, 12, 8), show_band=False,
+                grid=(0, 20, 8, 24), show_band=False,
                 description="Secondary clarifier blanket depth and digester pH. "
                             "No band: metres and pH are not comparable, and a "
                             "blanket depth band drawn on this panel would "
@@ -414,7 +567,7 @@ def build_overview(c: Contract) -> dict[str, Any]:
                             "this generator makes by refusing to draw one here.",
             ),
             _table_panel(
-                6, "What has stopped reporting",
+                11, "What has stopped reporting",
                 """
 SELECT s.id AS signal,
        s.area,
@@ -429,7 +582,7 @@ HAVING max(r.ts) IS NULL
 ORDER BY silence DESC NULLS FIRST
 LIMIT 30
 """.strip(),
-                grid=(0, 16, 24, 10),
+                grid=(0, 28, 10, 24),
                 description="**The deadband's honest limit, shown rather than "
                             "hidden.** A row exists when the value *moved*, so a "
                             "signal whose value never moves produces one row and "
@@ -438,7 +591,18 @@ LIMIT 30
                             "looks like an outage and is not one. This table is "
                             "why a panel that simply stops drawing is not "
                             "evidence that a signal has failed — see "
-                            "sql/02-intermediate/02-04_gaps.md.",
+                            "sql/02-intermediate/02-04_gaps.md.\n\n"
+                            "**Equipment state is not here and cannot be.** The "
+                            "`equipment` table carries no state column by "
+                            "design — a row that changes every scan is write "
+                            "amplification wearing a metadata costume — and no "
+                            "run-state signal exists in the contract, so \"which "
+                            "pump is running\" has no data to be a panel about. "
+                            "Run state is on the Modbus coils and the OPC UA "
+                            "address space. Building this panel means deciding "
+                            "how to get 21 equipment states into the historian "
+                            "at 50 Hz, which is an architecture decision rather "
+                            "than a panel.",
             ),
         ],
     )
@@ -457,7 +621,7 @@ def build_permit(c: Contract) -> dict[str, Any]:
                 1, f"Ammonia — permit {permit['eff_nh4_mg_l_30d_mean']:g} mg/L "
                    "30-day mean",
                 ["EFFLUENT:FLOW:NH4"],
-                grid=(0, 0, 12, 9), unit="mg/L",
+                grid=(0, 0, 9, 12), unit="mg/L",
                 description="The permit is a **30-day mean**, and this panel is "
                             "not one. It is here to show the signal, and the "
                             "report against the permit is computed below — "
@@ -472,7 +636,7 @@ def build_permit(c: Contract) -> dict[str, Any]:
                 c,
                 2, f"Suspended solids — permit {permit['eff_tss_mg_l']:g} mg/L",
                 ["EFFLUENT:FLOW:TSS"],
-                grid=(12, 0, 12, 9), unit="mg/L", rollup=True,
+                grid=(12, 0, 9, 12), unit="mg/L", rollup=True,
                 description="Suspended solids against a "
                             f"{permit['eff_tss_mg_l']:g} mg/L permit, hourly "
                             "tier. The band is the contract's normal band and is "
@@ -485,7 +649,7 @@ def build_permit(c: Contract) -> dict[str, Any]:
                 3, "Permit compliance, from the contract",
                 _permit_query(permit),
 
-                grid=(0, 9, 24, 8),
+                grid=(0, 9, 8, 24),
                 description="The **only** place in this project that computes a "
                             "compliance number, and it is the `reading_1h` tier "
                             "on purpose: a 30-day mean over 4.3 million raw rows "

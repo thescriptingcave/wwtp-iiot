@@ -1,7 +1,7 @@
 {
   "uid": "wwtp-overview",
   "title": "WWTP \u2014 overview",
-  "description": "The plant at a glance. Generated from contracts/tags.yaml; the band on each panel is the contract's `normal_low`/`normal_high`, which is a *specification* and not an alarm threshold \u2014 see docs/ALARM-TUNING.md.",
+  "description": "The plant at a glance: four numbers first, then the trends. Generated from contracts/tags.yaml; the band on each panel is the contract's `normal_low`/`normal_high`, which is a *specification* and not an alarm threshold \u2014 see docs/ALARM-TUNING.md.",
   "tags": [
     "wwtp",
     "generated"
@@ -25,6 +25,306 @@
   "panels": [
     {
       "id": 1,
+      "type": "stat",
+      "title": "Influent flow",
+      "description": "How much is arriving, right now. The first question on a shift: more than design and the hydraulics are in trouble, less and something upstream has stopped.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'INFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "interval": "5s",
+          "legendFormat": "flow_m3h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m3/h",
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 200.0,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 200.0
+              },
+              {
+                "color": "green",
+                "value": 2200.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Effluent flow",
+      "description": "Compare it with influent. **Effluent above influent means water is being added** \u2014 a dilution step, storm runoff, or a leak in the wrong direction.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'EFFLUENT:FLOW:FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- flow_m3h, raw tier",
+          "interval": "5s",
+          "legendFormat": "flow_m3h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m3/h",
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 200.0,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 200.0
+              },
+              {
+                "color": "green",
+                "value": 2300.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Aeration DO",
+      "description": "Dissolved oxygen in the aeration basin. **In range is not the same as true** \u2014 see the drift panel below, which is the one that catches a lying instrument.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- do_mg_l, raw tier",
+          "interval": "5s",
+          "legendFormat": "do_mg_l"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mg/L",
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 1.5,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 1.5
+              },
+              {
+                "color": "green",
+                "value": 3.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Effluent ammonia",
+      "description": "The number the permit is written against, as a current reading. The *compliance* figure is a 30-day mean and lives on the permit dashboard; this is today, not the average.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'EFFLUENT:FLOW:NH4'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- nh4_mg_l, raw tier",
+          "interval": "5s",
+          "legendFormat": "nh4_mg_l"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mg/L",
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              },
+              {
+                "color": "red",
+                "value": 0.5,
+                "op": "lt"
+              },
+              {
+                "color": "text",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 8.0,
+                "op": "gt"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 5,
       "type": "timeseries",
       "title": "Influent and effluent flow",
       "description": "Two different quantities on one axis is wrong, and they are here anyway because the *shape* comparison is the point: effluent above influent means water is being added. The unit is the shared one.",
@@ -36,7 +336,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 0
+        "y": 4
       },
       "targets": [
         {
@@ -99,7 +399,7 @@
       }
     },
     {
-      "id": 2,
+      "id": 6,
       "type": "timeseries",
       "title": "Dissolved oxygen",
       "description": "Aeration basin DO. The band is the contract's 1.5-3.0 mg/L.",
@@ -111,7 +411,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 0
+        "y": 4
       },
       "targets": [
         {
@@ -176,7 +476,7 @@
       }
     },
     {
-      "id": 3,
+      "id": 7,
       "type": "timeseries",
       "title": "Blower speed and air flow",
       "description": "Two quantities, two units, **no band**. A threshold in rev/min drawn on a panel whose other series is m3/h is a number with no meaning, and a reader cannot tell which series it belongs to. When two units have to share a panel, the band is the thing that has to go, and the panel says so rather than implying the units agree.",
@@ -188,7 +488,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 0
+        "y": 4
       },
       "targets": [
         {
@@ -251,7 +551,82 @@
       }
     },
     {
-      "id": 4,
+      "id": 8,
+      "type": "timeseries",
+      "title": "DO against air flow \u2014 is the probe telling the truth?",
+      "description": "**The instrument-versus-process panel.** Normally these two move together: more air, more oxygen, higher DO. When the blower is working hard and DO sits low, the plant is being under-aerated. When the blower is working hard and DO sits comfortably high, *the probe is reading high and the process is not being aerated* \u2014 a drifting sensor, which no threshold on the DO reading can ever catch, because the reading never leaves its range.\n\nThis is the `do_sensor_drift` fault, and it is why this panel exists rather than a threshold. Two units on one axis and **no band**, for the same reason the blower panel has none: a mg/L threshold drawn here would be silently read as a limit on m3/h. Read the *divergence between the shapes*, not either axis.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "wwtp-postgres"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:DO'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- do_mg_l, raw tier",
+          "interval": "5s",
+          "legendFormat": "do_mg_l"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "wwtp-postgres"
+          },
+          "refId": "B",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket(INTERVAL '5 seconds', ts) AS time,        (array_agg(value ORDER BY ts DESC))[1] AS value,        max(quality) AS quality,        count(*) AS samples FROM reading WHERE signal_id = 'AERATION:AHU-1:AIR_FLOW'   AND ts >= $__timeFrom() AND ts <= $__timeTo() GROUP BY time ORDER BY time -- air_flow_m3h, raw tier",
+          "interval": "5s",
+          "legendFormat": "air_flow_m3h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": "thresholds"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 9,
       "type": "timeseries",
       "title": "Effluent quality",
       "description": "Ammonia and suspended solids, hourly tier, so a week on screen is 168 points rather than 12 000.",
@@ -260,10 +635,10 @@
         "uid": "wwtp-postgres"
       },
       "gridPos": {
-        "h": 12,
-        "w": 8,
-        "x": 0,
-        "y": 8
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
       },
       "targets": [
         {
@@ -326,7 +701,7 @@
       }
     },
     {
-      "id": 5,
+      "id": 10,
       "type": "timeseries",
       "title": "Sludge and digester",
       "description": "Secondary clarifier blanket depth and digester pH. No band: metres and pH are not comparable, and a blanket depth band drawn on this panel would silently be read as a pH limit. Each needs its own panel to have a band, which is a layout decision this generator makes by refusing to draw one here.",
@@ -335,10 +710,10 @@
         "uid": "wwtp-postgres"
       },
       "gridPos": {
-        "h": 12,
-        "w": 8,
-        "x": 12,
-        "y": 8
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 20
       },
       "targets": [
         {
@@ -401,19 +776,19 @@
       }
     },
     {
-      "id": 6,
+      "id": 11,
       "type": "table",
       "title": "What has stopped reporting",
-      "description": "**The deadband's honest limit, shown rather than hidden.** A row exists when the value *moved*, so a signal whose value never moves produces one row and then nothing. Thirteen of the 57 signals do exactly that in a seeded week, and on a trend panel that looks like an outage and is not one. This table is why a panel that simply stops drawing is not evidence that a signal has failed \u2014 see sql/02-intermediate/02-04_gaps.md.",
+      "description": "**The deadband's honest limit, shown rather than hidden.** A row exists when the value *moved*, so a signal whose value never moves produces one row and then nothing. Thirteen of the 57 signals do exactly that in a seeded week, and on a trend panel that looks like an outage and is not one. This table is why a panel that simply stops drawing is not evidence that a signal has failed \u2014 see sql/02-intermediate/02-04_gaps.md.\n\n**Equipment state is not here and cannot be.** The `equipment` table carries no state column by design \u2014 a row that changes every scan is write amplification wearing a metadata costume \u2014 and no run-state signal exists in the contract, so \"which pump is running\" has no data to be a panel about. Run state is on the Modbus coils and the OPC UA address space. Building this panel means deciding how to get 21 equipment states into the historian at 50 Hz, which is an architecture decision rather than a panel.",
       "datasource": {
         "type": "postgres",
         "uid": "wwtp-postgres"
       },
       "gridPos": {
-        "h": 24,
-        "w": 10,
+        "h": 10,
+        "w": 24,
         "x": 0,
-        "y": 16
+        "y": 28
       },
       "targets": [
         {

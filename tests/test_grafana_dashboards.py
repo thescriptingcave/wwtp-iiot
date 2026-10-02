@@ -27,6 +27,7 @@ catch a bug in the generator rather than a bug in a query.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from pathlib import Path
@@ -138,6 +139,82 @@ def test_every_panel_has_a_unique_id_and_a_grid_position(dashboards: dict) -> No
                 "like a rendering bug"
             )
             occupied.add(cell)
+
+
+def test_a_panel_fits_the_grid_and_does_not_overlap_its_neighbour(
+    dashboards: dict,
+) -> None:
+    """24 columns wide, and no two panels in a row band may overlap.
+
+    **This test exists because `gridPos` height and width were transposed and
+    every other gate passed.** Four panels were written `grid=(0, 12, 12, 8)`
+    where the tuple is `(x, y, h, w)` — so a panel meant to be 12 across and 8
+    tall was 8 across and 12 tall, which renders as a column of narrow tall
+    panels instead of the row they were laid out as.
+
+    The existing check above only compares `(x, y)`, because that is the failure
+    Grafana reports *silently*: two panels at the same origin stack on top of
+    each other and look like a rendering bug. A transposed `h`/`w` does not
+    stack, does not error, and does not violate anything a reader of the JSON
+    would notice without a picture — so the check that would have caught it did
+    not exist.
+
+    Three assertions, because each catches a different mistake:
+
+    * **fits** — `x + w <= 24`. A panel wider than the grid is silently clipped,
+      and the missing pixels look like a rendering fault.
+    * **no overlap** — two panels occupying the same columns of the same row
+      band. Grafana draws both and the second covers the first, so content
+      vanishes rather than erroring.
+    * **every row band tiles all 24 columns** — which is what actually catches
+      a transposition, because `h` and `w` swapped inside a sane aspect ratio
+      changes nothing about the shape and everything about the row.
+    """
+    for name, dash in dashboards.items():
+        bands: dict[int, list[tuple[int, int, int]]] = {}
+        for panel in dash["panels"]:
+            g = panel["gridPos"]
+            x, y, h, w = g["x"], g["y"], g["h"], g["w"]
+            assert x >= 0 and y >= 0, f"{name}: panel {panel['id']} negative position"
+            assert w >= 1 and h >= 1, f"{name}: panel {panel['id']} has zero size"
+            assert x + w <= 24, (
+                f"{name}: panel {panel['id']} spans x={x} w={w}, past the 24 "
+                f"columns Grafana lays out. The overflow is clipped silently "
+                f"and reads as a rendering fault."
+            )
+            bands.setdefault(y, []).append((x, x + w, panel["id"]))
+
+        for y, spans in bands.items():
+            spans.sort()
+            for left, right in itertools.pairwise(spans):
+                assert right[0] >= left[1], (
+                    f"{name}: panels {left[2]} and {right[2]} overlap on row {y} "
+                    f"({left[0]}-{left[1]} and {right[0]}-{right[1]}). Grafana "
+                    f"draws both and one covers the other."
+                )
+            # **Every row band tiles the full width, with no gap and no ragged
+            # edge.** This is the assertion that catches a transposed `h`/`w`,
+            # and it replaces a ratio check that could not. The bug turned a
+            # 12-wide, 8-tall panel into an 8-wide, 12-tall one, and those are
+            # both 1.5:1 — so "is this shape sensible" is the wrong question.
+            # What actually changed is the *row*: the band stopped adding up.
+            #
+            # Full-width tiling is a real property of these dashboards rather
+            # than a style preference. The panels are grouped in threes, in
+            # fours, and as full-width singles on purpose, and a ragged edge is
+            # a panel an operator has to hunt for.
+            cursor = 0
+            for start, end, pid in spans:
+                assert start == cursor, (
+                    f"{name}: row {y} has a gap at column {cursor} — panel {pid} "
+                    f"starts at {start} instead. The panels in this dashboard "
+                    f"tile their row band exactly, and a hole here is usually a "
+                    f"transposed gridPos: the tuple is (x, y, h, w)."
+                )
+                cursor = end
+            assert cursor == 24, (
+                f"{name}: row {y} ends at column {cursor}, not 24"
+            )
 
 
 def test_every_target_names_the_provisioned_datasource(
@@ -416,11 +493,33 @@ def test_the_permit_table_returns_one_row_per_condition(
     assert len(rows) == len(get_contract().permit), (
         f"{len(rows)} rows for {len(get_contract().permit)} permit conditions"
     )
-    for parameter, unit, _limit, direction, measured, compliant in rows:
+    for parameter, unit, limit, direction, measured, pct, compliant in rows:
         assert unit, f"{parameter}: no unit"
         assert direction in ("min", "max"), f"{parameter}: {direction!r}"
         assert measured is not None, f"{parameter}: no measured value"
         assert compliant is not None, (
             f"{parameter}: compliant is NULL, which reads as neither pass nor "
             "fail on a panel"
+        )
+        # **The seventh column.** `pct_of_permit` is what turns a boolean into
+        # something an operator can act on — `1.06, true` does not say whether
+        # that is a comfortable pass or one afternoon from a breach.
+        assert pct is not None, f"{parameter}: pct_of_permit is NULL"
+        # `measured` comes back as Decimal and `limit` as float; the mixed
+        # arithmetic is the point, since that is what the query does too.
+        expected = round(100 * float(measured) / float(limit), 1)
+        assert abs(float(pct) - expected) < 0.15, (
+            f"{parameter}: pct_of_permit is {pct} but measured {measured} "
+            f"against a limit of {limit} is {expected}"
+        )
+        # And it has to agree with the verdict beside it, accounting for
+        # direction. A percentage that disagrees with the boolean next to it is
+        # worse than either alone: the reader has to decide which to believe,
+        # and "which side is good" depends on whether the limit is a floor.
+        over = float(pct) > 100
+        breaches = over if direction == "max" else not over
+        assert breaches == (not compliant), (
+            f"{parameter}: pct_of_permit {pct} against a {direction!r} limit "
+            f"says it {'breaches' if breaches else 'passes'}, but compliant "
+            f"is {compliant}"
         )

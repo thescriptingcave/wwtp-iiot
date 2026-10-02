@@ -33,8 +33,8 @@
         "uid": "wwtp-postgres"
       },
       "gridPos": {
-        "h": 12,
-        "w": 9,
+        "h": 9,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -110,8 +110,8 @@
         "uid": "wwtp-postgres"
       },
       "gridPos": {
-        "h": 12,
-        "w": 9,
+        "h": 9,
+        "w": 12,
         "x": 12,
         "y": 0
       },
@@ -187,8 +187,8 @@
         "uid": "wwtp-postgres"
       },
       "gridPos": {
-        "h": 24,
-        "w": 8,
+        "h": 8,
+        "w": 24,
         "x": 0,
         "y": 9
       },
@@ -201,7 +201,7 @@
           "refId": "A",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH span AS (SELECT now() - interval '30 days' AS since)\nSELECT 'ammonia, 30-day mean' AS parameter,\n       'mg/L'  AS unit,\n       10.0::float AS permit_value,\n       'max'  AS direction,\n       round(avg(h.mean)::numeric, 3) AS measured,\n       avg(h.mean) <= 10.0 AS compliant\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:NH4' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'suspended solids, 30-day mean', 'mg/L', 30.0::float, 'max',\n       round(avg(h.mean)::numeric, 3), avg(h.mean) <= 30.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:TSS' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'pH, minimum', 'pH', 6.0::float, 'min',\n       round(min(h.mean)::numeric, 3), min(h.mean) >= 6.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'pH, maximum', 'pH', 9.0::float, 'max',\n       round(max(h.mean)::numeric, 3), max(h.mean) <= 9.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'coliforms, geometric mean', '{MPN}/100mL', 200::float, 'max',\n       round(exp(avg(ln(h.mean)))::numeric, 1), exp(avg(ln(h.mean))) <= 200\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:DIS-CL-2:BACTI' AND h.bucket >= w.since\n  AND h.mean > 0\nHAVING count(*) > 0\nORDER BY parameter"
+          "rawSql": "WITH span AS (SELECT now() - interval '30 days' AS since)\nSELECT 'ammonia, 30-day mean' AS parameter,\n       'mg/L'  AS unit,\n       10.0::float AS permit_value,\n       'max'  AS direction,\n       round(avg(h.mean)::numeric, 3) AS measured,\n       round((100 * avg(h.mean) / 10.0)::numeric, 1) AS pct_of_permit,\n       avg(h.mean) <= 10.0 AS compliant\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:NH4' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'suspended solids, 30-day mean', 'mg/L', 30.0::float, 'max',\n       round(avg(h.mean)::numeric, 3),\n       round((100 * avg(h.mean) / 30.0)::numeric, 1), avg(h.mean) <= 30.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:TSS' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'pH, minimum', 'pH', 6.0::float, 'min',\n       round(min(h.mean)::numeric, 3),\n       round((100 * min(h.mean) / 6.0)::numeric, 1), min(h.mean) >= 6.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'pH, maximum', 'pH', 9.0::float, 'max',\n       round(max(h.mean)::numeric, 3),\n       round((100 * max(h.mean) / 9.0)::numeric, 1), max(h.mean) <= 9.0\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:FLOW:PH' AND h.bucket >= w.since\nHAVING count(*) > 0\nUNION ALL\nSELECT 'coliforms, geometric mean', '{MPN}/100mL', 200::float, 'max',\n       round(exp(avg(ln(h.mean)))::numeric, 1),\n       round((100 * exp(avg(ln(h.mean))) / 200)::numeric, 1),\n       exp(avg(ln(h.mean))) <= 200\nFROM reading_1h h, span w\nWHERE h.signal_id = 'EFFLUENT:DIS-CL-2:BACTI' AND h.bucket >= w.since\n  AND h.mean > 0\nHAVING count(*) > 0\nORDER BY parameter"
         }
       ],
       "fieldConfig": {
