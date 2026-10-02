@@ -141,6 +141,10 @@ CONFIG_SCOPE = "config"
 #: config node someone adds next year.
 CONFIG_NODE_TYPES: frozenset[str] = frozenset({"postgreSQLConfig", "modbus-client"})
 
+#: Canvas geometry, read off the wiring rather than invented per node.
+_X_STEP, _Y_STEP = 190, 90
+_CONFIG_ROW_Y, _COMMENT_ROW_Y = 400, 580
+
 
 # ─── the watched set ──────────────────────────────────────────────────────────
 
@@ -1610,8 +1614,106 @@ def build_all_names() -> list[str]:
     return list(BUILDERS)
 
 
+def _graph_depth(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    """How many steps from a flow's source each node is.
+
+    Computed by fixpoint rather than recursion, so a flow that wires a node back
+    to an ancestor terminates instead of blowing the stack. None of these flows
+    has a cycle; the guard is because a generator that hangs is worse than one
+    that looks untidy.
+    """
+    sources: dict[str, set[str]] = {n["id"]: set() for n in nodes}
+    for node in nodes:
+        for output in node.get("wires", []):
+            for target in output:
+                if target in sources:
+                    sources[target].add(node["id"])
+
+    depth: dict[str, int] = {}
+    for _ in range(len(nodes) + 1):
+        progressed = False
+        for node in nodes:
+            node_id = node["id"]
+            if node_id in depth:
+                continue
+            incoming = [s for s in sources[node_id] if s in depth]
+            if len(incoming) == len(sources[node_id]):
+                depth[node_id] = max((depth[s] for s in incoming), default=-1) + 1
+                progressed = True
+        if not progressed:
+            break
+    return depth
+
+
+def _layout(nodes: list[dict[str, Any]]) -> None:
+    """Place every node by its position in the graph. Mutates in place.
+
+    **Every node factory in this file used to hardcode `"x": 400, "y": 100`,**
+    because a position is not a behaviour and nobody reading the generator
+    thought about it. The consequence was that the Node-RED editor opened on a
+    pile: **nineteen nodes at the identical coordinate**, and nine more with no
+    position at all for Node-RED to guess at. The flows are a deliverable meant
+    to be *read* in that editor, and they were unreadable.
+
+    Zoom does not help, because zooming cannot separate nodes that share a
+    coordinate. It is not a viewer setting.
+
+    The layout is read off the wiring, which is the only thing that knows the
+    shape of a flow: **x is graph depth, so data flows left to right**, and y
+    orders siblings within a column so a branch does not sit on top of its
+    neighbour.
+
+    Four kinds of node are handled differently, each for a reason:
+
+    * **Tabs** carry no position at all — Node-RED draws them as the canvas
+      background, and giving one a coordinate puts a stray dot on the editor.
+    * **Config nodes** (`postgreSQLConfig`, `modbus-client`) have no `wires`
+      key; they are referenced by id from the nodes that use them. They get
+      their own row beneath the flow, so a reader can see the two connections
+      without them pretending to be stages.
+    * **Comments** are annotations, not stages. They get a row at the bottom.
+    * **Cycles** terminate rather than recursing — see `_graph_depth`.
+    """
+    depth = _graph_depth(nodes)
+    pending = [n for n in nodes if n["type"] != "tab"]
+    # Anything still unplaced is in a cycle. Depth 0 draws it rather than
+    # dropping it, and the message says so rather than failing silently — a
+    # fallback nobody is told about is the same class of fault as the pile this
+    # function exists to remove.
+    for node in pending:
+        depth.setdefault(node["id"], 0)
+
+    columns: dict[int, list[dict[str, Any]]] = {}
+    for node in pending:
+        if node["type"] in CONFIG_NODE_TYPES or node["type"] == "comment":
+            continue
+        columns.setdefault(depth[node["id"]], []).append(node)
+
+    for column, members in columns.items():
+        for row, node in enumerate(members):
+            node["x"] = 170 + column * _X_STEP
+            node["y"] = 90 + row * _Y_STEP
+
+    # Config nodes and comments, on rows of their own beneath the flow.
+    for kind, base_y in ((CONFIG_NODE_TYPES, _CONFIG_ROW_Y),
+                         ({"comment"}, _COMMENT_ROW_Y)):
+        for row, node in enumerate(n for n in pending if n["type"] in kind):
+            node["x"] = 170 + row * _X_STEP * 2
+            node["y"] = base_y + (row // 3) * _Y_STEP
+
+    for node in nodes:
+        if node["type"] == "tab":
+            node.pop("x", None)
+            node.pop("y", None)
+
+
 def build_all(c: Contract) -> dict[str, list[dict[str, Any]]]:
-    return {name: builder(c) for name, builder in BUILDERS.items()}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for name, builder in BUILDERS.items():
+        flow = builder(c)
+        _layout(flow)
+        out[name] = flow
+    return out
 
 
 def render(flow: list[dict[str, Any]]) -> str:
@@ -1619,15 +1721,27 @@ def render(flow: list[dict[str, Any]]) -> str:
 
 
 def check(c: Contract | None = None, directory: Path = FLOWS_DIR) -> list[str]:
-    """Drift between the contract and the committed flows."""
+    """Drift between the contract and the committed flows.
+
+    **Built through `build_all`, not through `BUILDERS` directly, and that is
+    load-bearing.** `_layout` runs in `build_all`, so calling the builders here
+    instead would compare a *layout-less* flow against a committed layouted one
+    and report drift on every file, forever. It failed exactly that way the first
+    time: adding the layout made the drift gate permanently red, and the cause
+    was two code paths building the same thing rather than one.
+
+    So there is exactly one function that produces a flow file, and the gate and
+    the writer both go through it. Two paths that build the same artefact is the
+    same second-source-of-truth trap the rest of this repository keeps recording.
+    """
     c = c or get_contract()
     problems: list[str] = []
-    for name, builder in BUILDERS.items():
+    for name, flow in build_all(c).items():
         path = directory / name
         if not path.exists():
             problems.append(f"{path} does not exist")
             continue
-        expected = render(builder(c))
+        expected = render(flow)
         actual = path.read_text(encoding="utf-8")
         if actual != expected:
             problems.append(

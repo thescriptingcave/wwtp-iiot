@@ -927,6 +927,64 @@ def test_the_mimic_watches_signals_that_exist(c: Contract) -> None:
         )
 
 
+def test_every_node_has_its_own_place_on_the_canvas(flows: dict) -> None:
+    """No two nodes share a position, and wires flow left to right.
+
+    **Every node factory in `build_flows.py` hardcoded `"x": 400, "y": 100`**
+    because a coordinate is not a behaviour and nobody reading the generator
+    thought about it. The Node-RED editor therefore opened on a pile: **nineteen
+    nodes at the identical coordinate** and nine more with no position at all.
+    The flows are a deliverable meant to be *read* in that editor, and they were
+    unreadable — and zoom cannot help, because zooming cannot separate nodes
+    that occupy the same point.
+
+    Three assertions, each catching a different way the layout can be wrong:
+
+    * **no collisions** — two nodes at one coordinate stack, which looks like a
+      rendering fault and is the failure that actually happened;
+    * **a position exists** — Node-RED auto-places a node that has none, and
+      where it chooses is not the generator's to rely on;
+    * **x increases along a wire** — the layout is read off the graph, so this
+      holds unless depth is computed wrong. A flow that steps *backwards*
+      renders as a right-to-left tangle and is much harder to follow than a
+      pile.
+    """
+    staged = {"tab", "comment", "postgreSQLConfig", "modbus-client"}
+    for flow_name, nodes in flows.items():
+        body = [n for n in nodes if n.get("type") not in staged]
+        assert body, f"{flow_name}: no nodes to lay out"
+
+        occupied: dict[tuple[int, int], str] = {}
+        for node in body:
+            assert isinstance(node.get("x"), int) and isinstance(node.get("y"), int), (
+                f"{flow_name}: {node.get('name', node['id'])!r} has no position "
+                f"({node.get('x')!r}, {node.get('y')!r}). Node-RED invents one "
+                f"and the generator stops being the thing that decides layout."
+            )
+            here = (node["x"], node["y"])
+            assert here not in occupied, (
+                f"{flow_name}: {node.get('name', node['id'])!r} and "
+                f"{occupied[here]!r} are both at {here}, so they stack on the "
+                f"canvas and the flow is unreadable."
+            )
+            occupied[here] = node.get("name", node["id"])
+
+        by_id = {n["id"]: n for n in body}
+        for node in body:
+            for output in node.get("wires", []):
+                for target_id in output:
+                    target = by_id.get(target_id)
+                    if target is None:
+                        continue
+                    assert target["x"] > node["x"], (
+                        f"{flow_name}: {node.get('name', node['id'])!r} at "
+                        f"x={node['x']} wires to "
+                        f"{target.get('name', target['id'])!r} at "
+                        f"x={target['x']}. The layout is graph depth, so data "
+                        f"flows left to right; this renders as a tangle."
+                    )
+
+
 def test_the_control_flow_targets_a_writable_signal_with_a_register(
     c: Contract, flows: dict,
 ) -> None:
