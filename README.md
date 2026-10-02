@@ -166,13 +166,15 @@ somebody ends up on a clean machine running a command that was never tested on o
 
 ### Three courses, once the plant is up
 
-Each is optional and none of them changes the plant.
+Each is optional and none of them changes the plant. The workshop is the only one
+that needs **no database** — it reads a CSV, so it runs on a laptop with nothing
+else set up.
 
 | | Start at | Run it with |
 |---|---|---|
 | SQL — 64 graded queries | [`sql/README.md`](sql/README.md) | `make sql` |
 | Analyst notebooks — 11 | [`notebooks/README.md`](notebooks/README.md) | `make` |
-| ML workshop — 1 of 6 written | [`workshops/ml/TRAINER.md`](workshops/ml/TRAINER.md) | `make workshop-notebooks` |
+| ML workshop — 6 notebooks | [`workshops/ml/TRAINER.md`](workshops/ml/TRAINER.md) | `make workshop` then `make workshop-notebooks` |
 
 `make` on its own is the **notebooks**: it seeds `wwtp_notebooks` on the first run
 (about two and a half minutes) and opens JupyterLab on
@@ -333,21 +335,105 @@ expected output described a dataset that no longer existed.
 
 ## The machine-learning workshop
 
-[`workshops/ml/`](workshops/ml/README.md) is a fourth track, under construction.
+[`workshops/ml/`](workshops/ml/README.md) is a fourth track and it is **finished**.
 The SQL course teaches tools, the notebooks teach what the plant is telling you,
 and this one teaches **the moment a score stops being evidence** — using this
 plant's data to do it.
 
-Only the dataset builder is written. It is there because the prototype found that
-the obvious approach does not work: **the stored hourly table has no row at all
-inside the window of two of the three instrument faults**, so a classifier fitted
-on it has no positive examples for two thirds of the classes. The builder crosses
-every signal with every hour instead, which makes an absent hour a row with `n = 0`
-— 239,400 rows at a base rate of **0.081%**, with every injected fault present.
+```bash
+# seeds three weeks at 1 s and writes workshops/ml/dataset.csv
+make workshop
+# JupyterLab on http://127.0.0.1:8898, rooted at workshops/ml/
+make workshop-open
+# the gate: 6 notebooks, 18 assertions, one CSV and no database
+make workshop-notebooks
+```
 
-The lesson the data hands over for free: **41% of ordinary hours are in exactly
-the state a broken instrument is in**, so absence alone finds nothing, and the
-feature that works is a per-signal comparison against its own recent history.
+**No database and no Docker.** Participants read a CSV, which is the point — the
+track has to run on the machine in front of them.
+
+### The finding the dataset is built around
+
+**The stored hourly table has no row at all inside the window of two of the three
+instrument faults**, so a classifier fitted on a query of it has no positive examples
+for two thirds of the classes. Drop the hours with nothing in them, exactly as a
+query would, and **12 of 22 fault hours vanish**.
+
+So `build_dataset.py` crosses every signal with every hour and left-joins, which
+makes an absent hour a row with `n = 0` — 28,728 rows at a base rate of **0.077%**,
+with every injected fault present.
+
+The lesson the data hands over for free: **41% of ordinary hours are in exactly the
+state a broken instrument is in**, so absence alone finds nothing, and the feature
+that carries it is a per-signal comparison against its own recent history — a fault
+hour's signal logged **596** rows in the previous day against a quiet hour's 20.
+
+### What the six notebooks claim
+
+| | Notebook | The number |
+|---|---|---|
+| 1 | `01-the-metric-turn` | accuracy **0.9993** for a model that learned nothing; the real forest gets 0.9995 |
+| 2 | `02-the-dense-panel` | a query keeps **10 of 22** fault hours — two of three classes gone |
+| 3 | `03-the-baseline-and-the-noise-floor` | the split-to-split spread is **42x** the difference between two feature sets |
+| 4 | `04-the-forward-window` | F1 **0.444 → 0.833**, and the 0.833 needs tomorrow |
+| 5 | `05-unsupervised` | **0 of 22** fault hours; 285 of 288 flags are one tag |
+| 6 | `06-predictive` | a random split makes the model **5.3x** better, and it is worth nothing |
+
+Accuracy moves from 0.9993 to 0.833 across all six and is never once the point.
+
+Three of these were **not** what the plan predicted, and the corrections are the
+useful part: a seasonal-naive baseline does *not* beat every model (a tree on
+hour-of-day wins, 0.330 against 0.437), unsupervised detection finds neither the
+faults nor the storm but one oddly-busy tag, and the per-signal baseline cannot be
+shown to help at all — see below.
+
+### The result worth knowing before you teach it
+
+Notebook 03 concludes that the right feature cannot be shown to work on this panel.
+Built at 8 weeks, that is measured rather than asserted:
+
+| | 3 weeks | 8 weeks |
+|---|---|---|
+| positives | 22 | 62 |
+| in a 20% test fold | 4 | 12 |
+| split noise / effect | **42x** | **13x** |
+
+**Still not enough.** Noise divided by effect falls as roughly 1/positives, so
+reaching a ratio of 2 needs ~416 positives — about 54 weeks at the default
+recurrence, or ~18 GB at a 12 h one. The honest line for a room is that *more data
+moves the needle and does not move the conclusion*.
+
+### Disk, and getting it back
+
+`make workshop-long` builds a longer window for that experiment:
+
+```bash
+make workshop-long WORKSHOP_LONG_WEEKS=18 WORKSHOP_HOURS=12
+```
+
+Two dials, both inherited by the target: `WORKSHOP_LONG_WEEKS` (default 8) and
+`WORKSHOP_HOURS` (default 36, floor 2). `WORKSHOP_SAMPLE_INTERVAL` (default 1) is
+there too, but **60 s is not a free saving** — it preserves the fault count and
+destroys the per-signal baseline the whole track is built on, because a quiet signal
+writes zero rows in 24 h.
+
+To reclaim the space:
+
+```bash
+docker compose exec -T db psql -U wwtp -d postgres -c "DROP DATABASE IF EXISTS wwtp_ml25"
+rm workshops/ml/dataset-*.csv
+docker builder prune -af
+```
+
+**The prune matters as much as the drop.** Postgres lives in the Docker volume
+`wwtp-iiot_db-data`, and on macOS that sits inside a sparse `Docker.raw` image that
+does not shrink when files are deleted. If the host disk does not come back,
+Docker Desktop → Resources → **Reclaim disk space**.
+
+And **keep the CSV, not the database**: `reading` carries `drop_after: '7 days'`
+against `now()`, so the raw table trims itself within a day of the build, while
+`reading_1h` — which the builder reads, and which has no retention policy — keeps
+the whole window. The panel is rebuildable from that; the database is scaffolding.
 
 ## Phase status
 

@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1042 | no |
+| Unit, no database | 1046 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -86,7 +86,7 @@ Per file, for the ones worth naming:
 | `test_py_wrapper.py` | 3 | that `tools/py.sh` refuses a missing interpreter by name, and that the targets needing Python depend on the install |
 | `test_pinned_seed_is_durable.py` | 4 | that the pinned week has no retention policy eating it, and that the plant's own database still has one |
 | `test_db_ready.py` | 5 | that the readiness check distinguishes an unreachable database from an empty one, and says why |
-| `test_getting_started_agrees.py` | 9 | that the README and the getting-started guide give the same commands, since they had drifted and broken a clean-machine setup |
+| `test_getting_started_agrees.py` | 13 | that the README and the getting-started guide give the same commands, since they had drifted and broken a clean-machine setup |
 | `test_seed_target_database.py` | 19 | that the seeder seeds the database it is told to, and that `--reset` without `--database` is refused |
 | `test_workshop_dataset.py` | 15 | that the modelling panel is dense, that the per-signal baseline cannot see the hour it judges, and that the two row states stay distinguishable |
 | `test_seed_schedule.py` | 15 | that the seeder and the ground truth derive the fault schedule from one function |

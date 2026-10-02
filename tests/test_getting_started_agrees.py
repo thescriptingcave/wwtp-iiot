@@ -40,7 +40,7 @@ GUIDE = Path("docs/GETTING-STARTED.md")
 #: at them by name.
 SHARED_COMMANDS = [
     "make up",
-    "make query SQL=\"SELECT count(*) FROM reading\"",
+    'make query SQL="SELECT count(*) FROM reading"',
     "uv run python tools/opcua_browser.py browse",
     "uv run python tools/opcua_browser.py read AERATION:AHU-1:DO",
     "uv run python tools/opcua_browser.py watch AERATION:AHU-1:DO",
@@ -53,6 +53,27 @@ def _bash_blocks(text: str) -> list[str]:
         "\n".join(line.rstrip() for line in block.strip("\n").splitlines())
         for block in re.findall(r"```bash\n(.*?)```", text, re.S)
     ]
+
+
+def _commands(text: str) -> set[str]:
+    """Every **command** in every ```bash block, with trailing comments stripped.
+
+    A comment is not the command, and this repository forbids trailing `#` on a
+    command line in documentation anyway -- `test_readme_claims.py` fails it,
+    because in some contexts the `#` reaches the shell as an argument. So the docs
+    put explanations on their own lines above the command, and those lines must not
+    be compared as though they were things to run.
+
+    Internal whitespace is collapsed so that indentation and column alignment
+    cannot make one command look different from itself.
+    """
+    found: set[str] = set()
+    for block in _bash_blocks(text):
+        for line in block.splitlines():
+            command = line.split("#", 1)[0].strip()
+            if command:
+                found.add(" ".join(command.split()))
+    return found
 
 
 #: A backticked `make` that is not `make up` or `make sql` -- i.e. the default goal.
@@ -70,7 +91,8 @@ def _make_lines(text: str) -> list[str]:
     failure can act on, which is the worst kind of test failure.
     """
     return [
-        line.strip() for line in text.splitlines()
+        line.strip()
+        for line in text.splitlines()
         if re.search(r"(?<![-\\w])`make`(?![-\\w])", line)
     ]
 
@@ -84,9 +106,9 @@ def _section(text: str, heading: str, level: str = "##") -> str:
     """
     start = re.search(rf"^{re.escape(level)} {re.escape(heading)}\s*$", text, re.M)
     assert start, f"no '{level} {heading}' in the document"
-    rest = text[start.end():]
+    rest = text[start.end() :]
     end = re.search(rf"^{re.escape(level)} \S", rest, re.M)
-    return rest[:end.start()] if end else rest
+    return rest[: end.start()] if end else rest
 
 
 def test_the_guide_has_a_short_version() -> None:
@@ -118,8 +140,10 @@ def test_the_readme_and_the_guide_agree_on_it(command: str) -> None:
     quick = _section(readme, "Quick start")
     short = _section(guide, "The short version")
 
-    for name, text, where in (("README", quick, "Quick start"),
-                              ("the guide", short, "The short version")):
+    for name, text, where in (
+        ("README", quick, "Quick start"),
+        ("the guide", short, "The short version"),
+    ):
         assert command in text, (
             f"`{command}` is not in the {name}'s {where}. These two documents are "
             f"the only instructions a new reader gets, and a command that is in one "
@@ -168,7 +192,8 @@ def test_the_quick_start_says_what_bare_make_actually_does() -> None:
     # `make`" still passed — because the table row further up happens to say
     # "notebooks". One qualified mention does not qualify the others.
     unqualified = [
-        phrase for phrase in bare
+        phrase
+        for phrase in bare
         if not re.search(
             r"on its own|notebooks|does|opens|seeds|runs|default goal", phrase, re.I
         )
@@ -191,3 +216,64 @@ def test_the_setup_is_reachable_without_reading_the_whole_guide() -> None:
         "`make up` appears, but not in the opening. The first thing a reader meets "
         "should be the command that works."
     )
+
+
+#: The workshop's own setup, which both documents now carry.
+#:
+#: Added after the fourth track was documented in the README and left out of the
+#: guide entirely -- the same failure the module exists to prevent, one level down.
+#: The workshop has a property that makes it worse than the plant: **it needs no
+#: database**, so a reader who follows the guide and finds no `make workshop` has no
+#: reason to suspect the track exists at all. It reads a CSV, so nothing about the
+#: plant's state tells you whether you are meant to be running it.
+WORKSHOP_COMMANDS = [
+    "make workshop",
+    "make workshop-open",
+    "make workshop-notebooks",
+]
+
+
+@pytest.mark.parametrize("command", WORKSHOP_COMMANDS)
+def test_the_readme_and_the_guide_agree_on_the_workshop(command: str) -> None:
+    """Every workshop setup command must be in both documents.
+
+    Checked as a bash block rather than a mention, because a backticked
+    `make workshop` in prose and a runnable line are different artefacts and only
+    one of them can be copied.
+    """
+    for name, text in (
+        ("README", README.read_text()),
+        ("GETTING-STARTED", GUIDE.read_text()),
+    ):
+        assert command in _commands(text), (
+            f"{name} does not contain `{command}` in a bash block. The workshop is "
+            "documented in the other document and not this one, so a reader "
+            "following this one never learns the track exists -- and since it needs "
+            "no database, nothing in the plant's state hints that it should."
+        )
+
+
+def test_both_documents_agree_on_the_long_window_and_the_purge() -> None:
+    """The two cost dials and the three purge commands, in both, verbatim.
+
+    These are the commands a reader runs when they are **out of disk**, which is
+    the worst moment to be handed a command that has drifted. The dial spellings
+    and the `DROP DATABASE`/`prune` pairing are compared as whole lines.
+    """
+    for name, text in (
+        ("README", README.read_text()),
+        ("GETTING-STARTED", GUIDE.read_text()),
+    ):
+        for line in (
+            "make workshop-long WORKSHOP_LONG_WEEKS=18 WORKSHOP_HOURS=12",
+            "docker compose exec -T db psql -U wwtp -d postgres "
+            '-c "DROP DATABASE IF EXISTS wwtp_ml25"',
+            "rm workshops/ml/dataset-*.csv",
+            "docker builder prune -af",
+        ):
+            assert line in text, (
+                f"{name} is missing the recovery line {line!r}. The long-window build "
+                "needs 10-20 GB and readers will need to reclaim it; if the two "
+                "documents spell the purge differently, the one they followed may "
+                "not free anything."
+            )

@@ -863,7 +863,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_seed_schedule.py": 15,
     "tests/test_workshop_dataset.py": 15,
     "tests/test_seed_target_database.py": 19,
-    "tests/test_getting_started_agrees.py": 9,
+    "tests/test_getting_started_agrees.py": 13,
     "tests/test_db_ready.py": 5,
     "tests/test_pinned_seed_is_durable.py": 4,
     "tests/test_py_wrapper.py": 3,

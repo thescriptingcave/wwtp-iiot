@@ -402,6 +402,81 @@ password for wwtp_ui      taken from WEB_DB_PASSWORD
 
 ---
 
+## 8. Optional: the courses
+
+Three, all independent, none of which changes the plant.
+
+| | What it is | Run it with |
+|---|---|---|
+| [`sql/`](../sql/README.md) | 64 graded queries, 78 in the gate | `make sql` |
+| [`notebooks/`](../notebooks/README.md) | 11 analyst notebooks | `make` |
+| [`workshops/ml/`](../workshops/ml/README.md) | 6 notebooks on the ML workshop | `make workshop` |
+
+### The machine-learning workshop
+
+```bash
+# seeds three weeks at 1 s and writes workshops/ml/dataset.csv
+make workshop
+# JupyterLab on http://127.0.0.1:8898, rooted at workshops/ml/
+make workshop-open
+# the gate: 6 notebooks, 18 assertions, one CSV and no database
+make workshop-notebooks
+```
+
+**This one needs no database and no Docker.** It reads a CSV, so it runs on the
+machine in front of you. The other two need the plant; this one only needs Python.
+
+Port **8898**, not the notebooks' 8899, deliberately: two tracks, two audiences,
+two datasets, and a shared server makes it easy to run the wrong one.
+
+The finding it is built around: **the stored hourly table has no row at all inside
+the window of two of the three instrument faults.** Drop the empty hours, as a query
+would, and 12 of 22 fault hours disappear — two of the three classes gone. So the
+panel crosses every signal with every hour instead, and an absent hour becomes a
+row with `n = 0`.
+
+### Building a longer window, and reclaiming the disk
+
+Only needed to reproduce notebook 03's experiment at a larger sample size.
+
+```bash
+make workshop-long WORKSHOP_LONG_WEEKS=18 WORKSHOP_HOURS=12
+```
+
+Two dials, both inherited by the target:
+
+- `WORKSHOP_LONG_WEEKS` — default **8**. Length of the window.
+- `WORKSHOP_HOURS` — default **36**, floor **2**. Fault recurrence, and so the
+  positive count. The floor is a correctness guard: two overlapping
+  `do_sensor_drift` instances bias one reading twice.
+- `WORKSHOP_SAMPLE_INTERVAL` — default **1**. **60 s is not a free saving.** It
+  keeps the fault count and destroys the per-signal baseline the track is built on,
+  because at 60 s a genuinely quiet signal writes zero rows in 24 h, so `base_24` is
+  0 for healthy and broken signals alike.
+
+To get the space back:
+
+```bash
+docker compose exec -T db psql -U wwtp -d postgres -c "DROP DATABASE IF EXISTS wwtp_ml25"
+rm workshops/ml/dataset-*.csv
+docker builder prune -af
+```
+
+**The prune matters as much as the drop.** Postgres lives in the Docker volume
+`wwtp-iiot_db-data`, which on macOS sits inside a sparse `Docker.raw` image that
+does not shrink when files inside it are deleted. If the host disk does not come
+back, Docker Desktop → Settings → Resources → **Reclaim disk space**.
+
+Two things worth knowing before you delete anything:
+
+- **Keep the CSV, not the database.** `reading` carries `drop_after: '7 days'`
+  against `now()`, so the raw 1-second table trims itself within a day of the build.
+  `reading_1h` — which the builder reads, and which has no retention policy — keeps
+  the whole window, so the panel stays rebuildable from it.
+- **Do not size a disk from an interrupted build.** An abandoned seed leaves 23 GB
+  behind because raw rows pile up faster than a once-daily retention job removes
+  them; a completed build of the same window leaves about 1 GB.
+
 ## Running the tests
 
 ```bash
