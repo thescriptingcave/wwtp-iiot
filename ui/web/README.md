@@ -6,7 +6,7 @@ Three pages and a health endpoint. No charting library, no CSS framework, no ORM
 ```bash
 make page          # regenerate lib/contract.json from contracts/tags.yaml
 make web           # npm ci, build, and serve against the stack's database
-make web-check     # the drift gate: is the read model in step with the contract?
+make page-check    # the drift gate: is the read model in step with the contract?
 ```
 
 ## What is here

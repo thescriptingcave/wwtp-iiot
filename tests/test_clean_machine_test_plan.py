@@ -119,7 +119,7 @@ class TestTheExpectedCountsAreTheRealOnes:
     #: What the plan claims, and the pattern in TESTING.md that must agree.
     COUNTS: ClassVar[dict[str, tuple[str, str]]] = {
         "lint findings": (r"156 findings, baseline 156", r"156 tracked findings"),
-        "unit tests": (r"\*\*1083 passed\*\*", r"Unit, no database \| 1083 \|"),
+        "unit tests": (r"\*\*1091 passed\*\*", r"Unit, no database \| 1091 \|"),
         "integration tests": (r"\*\*48 passed\*\*", r"Integration \| 48 \|"),
         "sql queries": (
             r"78 queries in 26 files: 78 ok",

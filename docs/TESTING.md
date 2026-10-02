@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1083 | no |
+| Unit, no database | 1091 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -265,7 +265,7 @@ age out is a test that gets deleted rather than fixed. **This is a real gap**: t
 shown outputs in `sql/` were generated from real runs and are correct as of this
 commit, and nothing will tell you when they stop being.
 
-**The alarm engine has five of its fifteen rules firing on a healthy plant, and
+**The alarm engine has five of its sixteen rules firing on a healthy plant, and
 the remaining five cannot be tuned away.** It was six before the thresholds were
 measured; `docs/ALARM-TUNING.md` has the measurement behind every one, and the
 count is a ratchet in `test_a_healthy_plant_raises_almost_nothing`, so a

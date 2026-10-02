@@ -1,6 +1,6 @@
 # Alarms
 
-Phase 4: the alarm engine. Fifteen rules over nine signals, and a tool that
+Phase 4: the alarm engine. Sixteen rules over eleven signals, and a tool that
 audits them against the fault library.
 
 ```bash
