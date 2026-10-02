@@ -449,6 +449,8 @@ That last one is the whole of hop 4, and it is the thing to carry away.
 
 ## Where to go next
 
+**Operate it** — the operator's day, seven use cases, and what a real plant does differently: [`docs/USE-CASES.md`](USE-CASES.md)
+
 **By task** — every task to the command that does it: [`docs/TASKS.md`](TASKS.md)
 
 **Why the architecture is shaped this way, and what was rejected**: [`DESIGN.md`](DESIGN.md)

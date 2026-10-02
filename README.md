@@ -184,15 +184,24 @@ the prose no longer matches.
 Full walkthrough, configuration reference and troubleshooting, in
 [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
-## I want to… — [`docs/TASKS.md`](docs/TASKS.md)
+## I am a… 
 
-**Start here if you do not know this repository.** Every task below is answered
-by one command, and the commands are executed by `tests/test_task_index.py`, so
-one that stops working fails a test instead of misleading you.
+Three audiences, three entry points. Pick by who you are rather than by which
+document you think you need — that is the whole reason this table exists.
+
+| If you are a | Start here | You get |
+|---|---|---|
+| **plant manager** | **[`docs/USE-CASES.md`](docs/USE-CASES.md)** | Seven use cases for the operator's day, each with how it differs from a real plant — and a list of what this simulator cannot tell you |
+| **data analyst** | **[`docs/TASKS.md`](docs/TASKS.md#query-the-plant)** | 78 queries in 26 files, 11 analyst notebooks, 6 workshop notebooks, TablePlus extraction |
+| **software developer** | **[`docs/GUIDE.md`](docs/GUIDE.md)** | One value end to end — from an operator's keystroke to the historian row, and what breaks at each hop |
+
+**Not sure which?** You are probably a developer, or you want
+[`docs/TASKS.md`](docs/TASKS.md) — every task below is answered by one command,
+and the commands are executed by `tests/test_task_index.py`, so one that stops
+working fails a test instead of misleading you.
 
 | I want to | Go to |
 |---|---|
-| **understand how any of it works** | **[`docs/GUIDE.md`](docs/GUIDE.md)** — one value, end to end |
 | start the plant and look at it | [`make up`](docs/TASKS.md#start-the-plant-and-look-at-it) |
 | change a threshold or an alarm rule | [`docs/TASKS.md`](docs/TASKS.md#change-a-threshold-or-an-alarm-rule) |
 | add a signal, a register or an asset | [`docs/TASKS.md`](docs/TASKS.md#add-a-signal-a-register-or-an-asset) |
@@ -212,6 +221,7 @@ the list; if you do not, start at [`docs/TASKS.md`](docs/TASKS.md) above.
 
 | Document | What it is for |
 |---|---|
+| [`docs/USE-CASES.md`](docs/USE-CASES.md) | **For the plant manager** — seven use cases for the operator's day, and what a real plant does differently |
 | [`docs/TASKS.md`](docs/TASKS.md) | **Task-indexed entry point** — every task to the command that does it |
 | [`docs/GUIDE.md`](docs/GUIDE.md) | **The tour** — one value end to end, and what breaks at each hop |
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | From nothing to a running plant, step by step |

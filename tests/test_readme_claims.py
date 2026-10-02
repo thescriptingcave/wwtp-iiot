@@ -265,7 +265,7 @@ def _count_tests(path: str) -> int:
     ("path", "claimed"),
     [
         ("tests/test_scada_contract.py", 51),
-        ("tests/test_grafana_dashboards.py", 15),
+        ("tests/test_grafana_dashboards.py", 16),
         ("tests/test_web_page.py", 22),
         ("tests/test_opcua_course.py", 34),
         ("tests/test_opcua_minimal_client.py", 7),
@@ -871,7 +871,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_workshop_panel_paths.py": 18,
     "tests/test_measure_long_window.py": 17,
     # 171 = three rules x every markdown file in the repository.
-    "tests/test_readme_teaches_no_destructive_command.py": 179,
+    "tests/test_readme_teaches_no_destructive_command.py": 181,
     "tests/test_makefile_env.py": 7,
     "tests/test_lessons_gate_ports.py": 4,
     "tests/test_notebook_kernels.py": 7,

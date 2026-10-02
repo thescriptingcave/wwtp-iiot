@@ -14,6 +14,14 @@ If a command below is wrong, fix it here and in the same commit that broke it.
 
 ---
 
+| If you are a | Start here |
+|---|---|
+| a **plant manager** | [`USE-CASES.md`](USE-CASES.md) — the operator's day, seven use cases |
+| a **data analyst** | [Query the plant](#query-the-plant) below — 78 queries, 11 notebooks |
+| a **software developer** | [`GUIDE.md`](GUIDE.md) — one value end to end |
+
+---
+
 ## Contents
 
 - [Start the plant and look at it](#start-the-plant-and-look-at-it)
@@ -330,6 +338,7 @@ The two that most often surprise people:
 
 | I want to understand | Read |
 |---|---|
+| **Operate the plant as a manager would** | [`USE-CASES.md`](USE-CASES.md) — use cases, not commands |
 | **How any of it works, end to end** | [`GUIDE.md`](GUIDE.md) — one value, seven hops, what breaks at each |
 | Why it is shaped this way, and what was rejected | [`DESIGN.md`](DESIGN.md) |
 | Components, boundaries, the thread model | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
