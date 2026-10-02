@@ -195,6 +195,7 @@ Full walkthrough, configuration reference and troubleshooting, in
 | [`docs/GLOSSARY.md`](docs/GLOSSARY.md) | Standards and specifications, each with a source to study |
 | [`docs/TESTING.md`](docs/TESTING.md) | What is verified, how, and what is deliberately not |
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | From nothing to a running plant |
+| [`docs/CLEAN-MACHINE-TEST-PLAN.md`](docs/CLEAN-MACHINE-TEST-PLAN.md) | 27 numbered steps to verify the whole repository on a machine that has never seen it |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | The threat model, and the gaps stated plainly |
 | [`docs/ALARMS.md`](docs/ALARMS.md) | The alarm engine, and the fault × rule coverage matrix |
 | [`docs/ALARM-TUNING.md`](docs/ALARM-TUNING.md) | Every threshold, the measurement it came from, and the four that still do not work |

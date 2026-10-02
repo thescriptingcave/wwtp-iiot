@@ -81,32 +81,34 @@ make workshop-long                          # 8 weeks -> wwtp_ml25, dataset-8wk.
 make workshop-long WORKSHOP_LONG_WEEKS=25   # 25 weeks -> dataset-25wk.csv
 ```
 
-**Eight weeks is the default, not 25, and the reason is arithmetic.** Notebook 03
-needs about **10 positives in the test fold** before a recall figure means anything.
-The 3-week panel's 22 positives put 4 there. The fault schedule is in hours, so
-positives scale with duration at 7.3 a week:
+**Eight weeks is the default, and it is not enough** — which is what the section
+below is about. Notebook 03 needs about **10 positives in the test fold** before a
+recall figure means anything:
 
-| weeks | positives | in a 20% test fold | power? | readings generated |
-|------:|----------:|-------------------:|:-------|------------------:|
-| 3 | 22 | 4 | no | 12,694,439 |
-| **8** | **62** | **12** | **no — 13x** | **33,843,069** |
-| 25 | 183 | 37 | no — untested | 97,566,270 at 92.5% |
+| build | panel rows | positives | in a 20% fold | split noise / effect | power? |
+|---|---:|---:|---:|---:|:---|
+| 3 wk / 36 h | 28,728 | 22 | 4 | 42x | no |
+| 8 wk / 36 h *(default)* | 76,608 | 62 | 12 | 13x | no |
+| **18 wk / 12 h** | **172,368** | **419** | **84** | **1x** | **yes** |
 
-Eight weeks puts 12 positives in the test fold and **still is not enough** — the
-split-noise ratio only falls from 42x to 13x. See below; it is the interesting
-result rather than the disappointing one.
+Eight weeks clears the *threshold* and still cannot answer the question. The panel
+that answers it is 18 weeks at a 12 h recurrence — and the way to get there is
+recurrence, not duration. See below.
 
 ### What the long window costs, and three things I got wrong about it
 
 Measured on 2026-10-01, by building it:
 
-| | 3-week | 8-week (default) | 25-week |
+| | 3-week | 8-week *(default)* | 18-week / 12 h |
 |---|---|---|---|
-| readings generated | 12,694,439 | **33,843,069** | 97,566,270 at 92.5% |
-| rows per day | 142,654 | **604,341** | 557,522 at 92.5% |
-| fault hours on the panel | 22 | **62** | ~183 |
-| split noise / effect | 42x | **13x** | not built |
-| database after the build | 854 MB | **1,040 MB** | 23 GB (interrupted) |
+| readings generated | 12,694,439 | **33,843,069** | **76,170,570** |
+| rows per day | 142,654 | **604,341** | **604,529** |
+| fault hours on the panel | 22 | **62** | **419** |
+| split noise / effect | 42x | **13x** | **1x** |
+| panel CSV | 3.3 MB | 8.7 MB | 19.6 MB |
+| build time | <2 min | ~15 min | **46 min** |
+| peak disk | ~1 GB | ~8 GB | **~19 GB** |
+| database after the build | 854 MB | 1,040 MB | ~19 GB |
 
 **The 23 GB I warned you about was an interrupted build.** `reading` carries
 `drop_after: '7 days'`, which TimescaleDB evaluates against `now()` — so it trims
