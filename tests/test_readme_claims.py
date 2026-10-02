@@ -868,7 +868,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_pinned_seed_is_durable.py": 4,
     "tests/test_py_wrapper.py": 3,
     "tests/test_browse_is_not_values.py": 5,
-    "tests/test_workshop_panel_paths.py": 13,
+    "tests/test_workshop_panel_paths.py": 17,
     "tests/test_measure_long_window.py": 14,
     # 171 = three rules x every markdown file in the repository.
     "tests/test_readme_teaches_no_destructive_command.py": 171,

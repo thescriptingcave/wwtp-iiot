@@ -333,6 +333,17 @@ WORKSHOP_DB    ?= wwtp_ml
 WORKSHOP_WEEKS ?= 3
 WORKSHOP_HOURS ?= 36
 WORKSHOP_END   ?= 2026-09-29T00:00:00Z
+#: **The disk knob.** Was hardcoded to `1`, which made the cost of the long window a
+#: fixed ~240 bytes per generated reading with no way to trade resolution for space.
+#: At 60 s the same 54 weeks is ~1.2 GB instead of ~55 GB.
+#:
+#: The caution is specific and worth stating: the per-signal baseline in notebook 03
+#: is measured in `n`, and at 60 s a genuinely quiet signal writes *zero* rows in 24 h,
+#: so `base_24` collapses to 0 for both healthy and broken signals and the 29x
+#: separation disappears. Coarser sampling buys the fault count and costs the
+#: mechanism. 1 s is the workshop default for that reason and this exists so the
+#: trade is available rather than accidental.
+WORKSHOP_SAMPLE_INTERVAL ?= 1
 # **Parameterised, not hardcoded.** `--out workshops/ml/dataset.csv` meant that
 # building any window other than the default overwrote the panel the six notebooks
 # read, so "build the 25-week one" silently replaced the 3-week dataset every
@@ -346,7 +357,7 @@ workshop-seed: setup  ## seed the workshop window: $(WORKSHOP_WEEKS) weeks, a fa
 	@$(PY) -c "from workshops.ml._data import ensure_database; \
 	print('  created' if ensure_database('$(WORKSHOP_DB)') else '  already exists')"
 	@echo "── seeding $(WORKSHOP_DB): $(WORKSHOP_WEEKS) weeks, a fault every $(WORKSHOP_HOURS) h ──"
-	@echo "   $$(($(WORKSHOP_WEEKS) * 7)) days at 1 s, about $$(($(WORKSHOP_WEEKS) * 7 * 605000 / 1000))k rows."
+	@echo "   $$(($(WORKSHOP_WEEKS) * 7)) days at $(WORKSHOP_SAMPLE_INTERVAL) s."
 	# `--database`, never `POSTGRES_DB=`: `$(PY)` sources `.env` after the inherited
 	# environment, so an environment assignment here names `wwtp` -- the plant's own
 	# database -- and this target passes `--reset`. An argument cannot be overridden
@@ -359,7 +370,7 @@ workshop-seed: setup  ## seed the workshop window: $(WORKSHOP_WEEKS) weeks, a fa
 	# nowhere to seed to" check is a container-deployment check rather than a
 	# general one -- the library default of 127.0.0.1 is right from a laptop.
 	POSTGRES_HOST=127.0.0.1 $(PY) -m storage.seed.main --database $(WORKSHOP_DB) \
-	  --days $$(($(WORKSHOP_WEEKS) * 7)) --sample-interval 1 \
+	  --days $$(($(WORKSHOP_WEEKS) * 7)) --sample-interval $(WORKSHOP_SAMPLE_INTERVAL) \
 	  --fault-every-hours $(WORKSHOP_HOURS) --storm-after 36 \
 	  --end $(WORKSHOP_END) --reset
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from storage.seed import schedule
 from workshops.ml import measure_long_window as measure
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -344,4 +345,82 @@ class TestTheLongWindowIsMeasuredNotExtrapolated:
             "the README no longer records that `reading` was trimmed to 5 days of "
             "56 while `reading_1h` kept all 56. That measured pair is the evidence "
             "for the durability claim; without it the claim is an assertion."
+        )
+
+
+class TestTheDiskKnobsAreVariables:
+    """Two knobs decide whether the long window is buildable on a given machine.
+
+    Both were hardcoded, which made "how much disk does it take" an unanswerable
+    question rather than a trade-off:
+
+    - `--sample-interval 1` fixed the resolution, and so fixed ~240 bytes per
+      generated reading. 54 weeks is ~55 GB at 1 s and ~1.2 GB at 60 s.
+    - `WORKSHOP_HOURS 36` fixed the fault recurrence, and so fixed the positive
+      count. The seeder's floor is 2 h -- `minimum_interval_s()` is 7200 s, because
+      two overlapping drifts bias a reading twice -- so the recurrence can be cut
+      by 18x before anything is refused.
+
+    Buying positives with recurrence instead of duration is the only way to reach
+    notebook 03's threshold without a 55 GB disk, and neither knob being a variable
+    is what stopped anyone from noticing.
+    """
+
+    def test_the_sample_interval_is_a_variable(self) -> None:
+        body = target("workshop-seed")
+        assert "--sample-interval $(WORKSHOP_SAMPLE_INTERVAL)" in body, (
+            "workshop-seed no longer takes the sample interval from a variable. It "
+            "was hardcoded to 1, which fixed the disk cost of the long window with "
+            "no way to trade resolution for space."
+        )
+        assert not re.search(r"--sample-interval\s+1\s", body), (
+            "a literal --sample-interval is back in workshop-seed alongside the "
+            "variable, so one of the two is dead and a reader cannot tell which."
+        )
+        assert re.search(r"^WORKSHOP_SAMPLE_INTERVAL\s*\?=\s*1\s*$", MAKEFILE, re.M), (
+            "WORKSHOP_SAMPLE_INTERVAL must default to 1. The workshop's numbers "
+            "were measured at 1 s, and at 60 s the per-signal baseline collapses: a "
+            "quiet signal writes zero rows in 24 h, so base_24 is 0 for healthy and "
+            "broken alike and the 29x separation disappears."
+        )
+
+    def test_the_recurrence_is_inherited_by_the_long_window(self) -> None:
+        """`workshop-long` must not pin the recurrence back to the default."""
+        body = target("workshop-long")
+        assert "WORKSHOP_HOURS" not in body, (
+            "workshop-long overrides WORKSHOP_HOURS. It should inherit it, so that "
+            "WORKSHOP_HOURS=6 buys three times the positives in a third of the "
+            "disk -- which is the only affordable route to notebook 03's threshold."
+        )
+        assert "WORKSHOP_SAMPLE_INTERVAL" not in body, (
+            "workshop-long overrides WORKSHOP_SAMPLE_INTERVAL. It should inherit it, "
+            "for the same reason: 60 s sampling turns 55 GB into 1.2 GB."
+        )
+
+    def test_the_documented_trade_off_is_recorded(self) -> None:
+        """Coarser sampling breaks the mechanism, and that has to be written down.
+
+        Without this, `WORKSHOP_SAMPLE_INTERVAL=60` looks like a free saving. It is
+        not: it preserves the fault *count* and destroys the per-signal baseline the
+        whole workshop is built on.
+        """
+        flat = MAKEFILE.replace("*", "")
+        assert "base_24" in flat and "collapses" in flat, (
+            "the Makefile no longer records that coarser sampling collapses "
+            "base_24. Without it, WORKSHOP_SAMPLE_INTERVAL=60 reads as a free "
+            "saving rather than a trade of the mechanism for the disk."
+        )
+
+    def test_the_seeder_floor_is_two_hours(self) -> None:
+        """The recurrence cannot go below 2 h, and the reason is correctness.
+
+        `sensor_drift` compounds: the engine applies every active instance to the
+        same value, so two overlapping drifts bias a reading twice. This is a
+        property of `storage/seed/schedule.py::minimum_interval_s`, and pinning the
+        number here means a change to that guard has to be a deliberate one.
+        """
+        assert schedule.minimum_interval_s() == 7200.0, (
+            "minimum_interval_s() moved. It guards against two overlapping "
+            "do_sensor_drift instances biasing one reading twice, so a change here "
+            "changes what the workshop's faults mean, not just how fast they recur."
         )
