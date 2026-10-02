@@ -871,7 +871,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_workshop_panel_paths.py": 18,
     "tests/test_measure_long_window.py": 17,
     # 171 = three rules x every markdown file in the repository.
-    "tests/test_readme_teaches_no_destructive_command.py": 175,
+    "tests/test_readme_teaches_no_destructive_command.py": 177,
     "tests/test_makefile_env.py": 7,
     "tests/test_lessons_gate_ports.py": 4,
     "tests/test_notebook_kernels.py": 7,

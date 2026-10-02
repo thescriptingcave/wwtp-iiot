@@ -184,10 +184,35 @@ the prose no longer matches.
 Full walkthrough, configuration reference and troubleshooting, in
 [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
+## I want to… — [`docs/TASKS.md`](docs/TASKS.md)
+
+**Start here if you do not know this repository.** Every task below is answered
+by one command, and the commands are executed by `tests/test_task_index.py`, so
+one that stops working fails a test instead of misleading you.
+
+| I want to | Go to |
+|---|---|
+| start the plant and look at it | [`make up`](docs/TASKS.md#start-the-plant-and-look-at-it) |
+| change a threshold or an alarm rule | [`docs/TASKS.md`](docs/TASKS.md#change-a-threshold-or-an-alarm-rule) |
+| add a signal, a register or an asset | [`docs/TASKS.md`](docs/TASKS.md#add-a-signal-a-register-or-an-asset) |
+| work out why a value is not moving | [`docs/TASKS.md`](docs/TASKS.md#a-value-is-not-moving) |
+| fix a setpoint that will not take | [`docs/TASKS.md`](docs/TASKS.md#the-operator-setpoint-does-not-take) |
+| make a fault happen on demand | [`docs/TASKS.md`](docs/TASKS.md#make-a-fault-happen-on-demand) |
+| check that a fault is actually detected | [`docs/TASKS.md`](docs/TASKS.md#check-that-a-fault-is-actually-detected) |
+| verify everything still works | [`docs/TASKS.md`](docs/TASKS.md#verify-the-whole-thing-still-works) |
+| query the plant | [`docs/TASKS.md`](docs/TASKS.md#query-the-plant) |
+
+---
+
 ## Documentation
+
+A catalogue of what exists. If you already know which document you want, this is
+the list; if you do not, start at [`docs/TASKS.md`](docs/TASKS.md) above.
 
 | Document | What it is for |
 |---|---|
+| [`docs/TASKS.md`](docs/TASKS.md) | **Task-indexed entry point** — every task to the command that does it |
+| [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | From nothing to a running plant, step by step |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Why the architecture is shaped this way, what was rejected, and the honest weaknesses |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Components, boundaries, and the four things deliberately not here |
 | [`docs/DATA-FLOW.md`](docs/DATA-FLOW.md) | One scan end to end, and what each layer can lose |
