@@ -26,6 +26,6 @@ SELECT
 FROM reading r
 JOIN signal s ON s.id = r.signal_id
 WHERE r.signal_id = 'EFFLUENT:FLOW:NH4'
-  AND r.ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+  AND r.ts >= (SELECT max(ts) FROM reading) - interval '3 days'
   AND (r.value < s.normal_low OR r.value > s.normal_high)
 ORDER BY r.ts;

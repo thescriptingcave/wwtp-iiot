@@ -22,7 +22,25 @@ WITH windowed AS (
         ) - ts AS held_for
     FROM reading
     WHERE signal_id = 'PRIMARY:PRI-SCR-1:TORQUE'
-      AND ts >= (SELECT max(ts) FROM reading) - interval '1 hour'
+      -- **Scoped to this signal's own newest reading, not the plant's.**
+      --
+      -- The original anchored on `(SELECT max(ts) FROM reading)` — the newest
+      -- reading of *any* signal — and returned no rows at all. Not because the
+      -- query is wrong: because screen torque is only stored in bursts, and on a
+      -- live plant the newest thing to change is usually influent flow. So the
+      -- one-hour window ended at a point where this signal had written nothing
+      -- for five hours, and "the last hour" contained no screen torque.
+      --
+      -- Which is the general hazard: **a window anchored on the wrong signal's
+      -- clock silently becomes an empty window.** Nothing errors. The lesson on
+      -- `avg` versus the instrument's last reading is impossible to learn from
+      -- no rows, and `make sql` reported it as `EMPTY`.
+      --
+      -- Scoping the anchor to the same signal asks the question the lesson is
+      -- actually about — *over the last hour of this signal* — and works whether
+      -- the plant is running, stopped, or writing only fast-moving signals.
+      AND ts >= (SELECT max(ts) FROM reading
+                 WHERE signal_id = 'PRIMARY:PRI-SCR-1:TORQUE') - interval '1 hour'
 ),
 bucketed AS (
     SELECT

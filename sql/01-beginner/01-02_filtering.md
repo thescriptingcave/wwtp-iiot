@@ -63,10 +63,28 @@ SELECT
 FROM reading r
 JOIN signal s ON s.id = r.signal_id
 WHERE r.signal_id = 'EFFLUENT:FLOW:NH4'
-  AND r.ts >= (SELECT max(ts) FROM reading) - interval '1 day'
+  AND r.ts >= (SELECT max(ts) FROM reading) - interval '3 days'
   AND (r.value < s.normal_low OR r.value > s.normal_high)
 ORDER BY r.ts;
 ```
+
+> **Three days, and not one, and the reason is worth a paragraph.**
+>
+> The first version of this lesson used a one-day window and it returned **no
+> rows at all** on the seeded plant — which `make sql` reported as
+> `EMPTY` rather than as a pass, correctly, because a query that teaches
+> "here is how to find out-of-band readings" and finds none is not
+> demonstrating anything.
+>
+> Two things combine. Effluent ammonia's band is wide (0.5–8.0 mg/L) and the
+> signal moves slowly, so the gateway's deadband — 0.1 mg/L — suppresses most
+> of what the plant produces. What *is* stored in any given day sits comfortably
+> inside the band. There are out-of-band readings; there are **68 of them in
+> three days** and none in one.
+>
+> That is not a defect in the data or in the query. A windowed query over a
+> deadband-filtered historian is a claim about how much history exists, and the
+> honest fix is to ask for enough history to contain the thing being taught.
 
 Two things to notice.
 
@@ -153,15 +171,27 @@ SELECT
 FROM reading r
 JOIN signal s ON s.id = r.signal_id
 WHERE r.signal_id = 'EFFLUENT:FLOW:NH4'
-  AND r.ts >= (SELECT max(ts) FROM reading) - interval '1 day';
+  AND r.ts >= (SELECT max(ts) FROM reading) - interval '3 days';
 ```
 
 `FILTER (WHERE …)` is the readable way to say *of these rows, the ones where…*,
 without a `CASE` and an `ELSE 0`. You will use it constantly.
 
-Now you can read the result as a sentence: "98 readings, all of them with a value,
-51 of them out of band, and every one of them Good quality." A reader knows
-exactly what they are looking at and what has been discarded.
+Now you can read the result as a sentence: "a few hundred readings, all of them
+with a value, some dozens of them out of band, and every one of them Good
+quality." A reader knows exactly what they are looking at and what has been
+discarded.
+
+> **That sentence used to quote exact figures** — "98 readings, … 51 of them out
+> of band" — and it was wrong before anybody checked it, because a hard-coded
+> count in a lesson about a live database is a number that rots the moment the
+> plant moves. `make sql` executes these queries and reports `EMPTY` or `FAIL`,
+> but it does not compare prose against output, because deciding which number in
+> a paragraph is load-bearing is not something a checker should be guessing at.
+>
+> So the claim is now a *shape* rather than a total: you can read how many rows
+> and how many of them are out of band, which is the thing the lesson is
+> teaching. If you want the arithmetic, run it.
 
 ## Exercises
 

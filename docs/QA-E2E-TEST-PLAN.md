@@ -1123,10 +1123,20 @@ make grafana          # docker compose --profile observability up -d grafana
    ```
    Expect three mounts: `./ui/grafana/provisioning:/etc/grafana/provisioning:ro`,
    `./ui/grafana/dashboards:/var/lib/grafana/dashboards:ro`, `grafana-data:/var/lib/grafana`.
-8. If the admin password is wrong/stale, recover it and record that you had to:
+8. If the admin password is wrong/stale, recover it and record that you had to.
+   **Generate a new one; do not reset it to a word.**
    ```bash
-   docker compose exec grafana grafana cli admin reset-admin-password admin
+   # Read the current one out of .env, or set a fresh random value
+   grep GRAFANA_ADMIN_PASSWORD .env
+   # then apply whatever that says — the placeholder below is not a password:
+   docker compose exec grafana grafana cli admin reset-admin-password '<new-value>'
    ```
+   This line previously read `reset-admin-password admin`, which writes the
+   literal string `admin`. Harmless on a loopback-only development stack, and the
+   real credential lives in `.env` rather than here — but a runbook that tells a
+   reader to *choose* `admin` is teaching the wrong habit, and the whole point of
+   this document is that the QA engineer follows it without reading it first.
+   Update `.env` to match, or the container will reset it again on next start.
 9. Verify sign-up is disabled (this is a hardening item with a test behind it):
    ```bash
    docker compose --profile observability config | grep GF_USERS_ALLOW_SIGN_UP   # expect "false"
