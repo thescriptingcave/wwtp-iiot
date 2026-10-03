@@ -157,6 +157,23 @@ def _report(problems: list[str]) -> int:
     return 1
 
 
+def _closest(claim: str, printed: str) -> str:
+    """The printed line most resembling `claim`, or nothing.
+
+    A *resemblance*, not a match: the point is to put the actual value in front of
+    the reader, and a wrong-but-near line is far more use than no line. Returned
+    only when there is a real candidate, so this never invents a comparison that
+    does not exist -- a suggestion with nothing behind it is worse than none.
+    """
+    import difflib
+
+    lines = {ln for ln in printed.split("\n") if ln.strip()}
+    matches = difflib.get_close_matches(claim, sorted(lines), n=1, cutoff=0.6)
+    if not matches:
+        return ""
+    return f"\n  the notebook printed:\n    {matches[0]}"
+
+
 def check_outputs(notebook_path: Path, source_path: Path, executed: dict) -> list[str]:
     """Compare each claimed `output` block against what the notebook printed.
 
@@ -204,11 +221,17 @@ def check_outputs(notebook_path: Path, source_path: Path, executed: dict) -> lis
             if line in skipped:
                 continue
             if line not in printed:
+                # **Say what it printed instead.** "The notebook does not print
+                # X" makes the reader re-run the notebook to find out what it does
+                # print, which is the expensive half of the work this message is
+                # supposed to save. This job's log is behind an authenticated
+                # endpoint, so for four runs the only available answer was the
+                # claim itself — the one number already known to be wrong.
                 problems.append(
                     f"{notebook_path.name}: the notebook does not print\n"
                     f"    {line}\n"
                     f"  claimed in {source_path.name}. Re-run it and update "
-                    "the block."
+                    "the block." + _closest(line, printed)
                 )
     return problems
 
