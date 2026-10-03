@@ -511,6 +511,30 @@ jobs:
         # cell one, and a missing dependency reads as a broken notebook.
         run: uv sync --all-extras --frozen
 
+      # **The database has to exist before anything seeds it.**
+      # `storage.seed.main` connects to `POSTGRES_DB`, applies the schema to
+      # whatever is already there, and does not create anything — so pointing it at
+      # a database nobody has made fails with
+      #
+      #     database "wwtp_ml" does not exist
+      #
+      # `make workshop-seed` has always called `ensure_database` first, and the
+      # analyst job gets the same thing from `tools.notebook_data`. This step had
+      # neither, so it failed on the absence of a database rather than on anything
+      # about the data it was seeding. `workshops/ml/_data.py::ensure_database`
+      # is where the reasoning lives, and its docstring records the same failure
+      # from a clean `make workshop-seed`.
+      - name: create the workshop database
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: wwtp
+          POSTGRES_PASSWORD: itpass
+          POSTGRES_DB: wwtp_ml
+        run: >-
+          uv run python -c "from workshops.ml._data import ensure_database;
+          print('created' if ensure_database('wwtp_ml') else 'already exists')"
+
       - name: seed the workshop window
         # **A third database, for the same reason `wwtp_notebooks` is a second one.**
         # The workshop needs a *recurring* fault schedule and 25 weeks of history to

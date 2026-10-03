@@ -123,3 +123,46 @@ def test_the_unit_job_excludes_the_markers_it_cannot_honour() -> None:
         f"the no-database step is {body!r}. It must keep `-m \"not slow and "
         f"not integration\"`, or it reports a connection error as a failure."
     )
+
+
+def test_a_seeding_step_creates_its_database_first() -> None:
+    """Nothing seeds a database that does not exist.
+
+    `storage.seed.main` connects to `POSTGRES_DB`, applies the schema to whatever
+    is there, and **creates nothing**. So a job that seeds without creating
+    first fails with `database "wwtp_ml" does not exist` — about the absence of a
+    database, not about the data.
+
+    `make workshop-seed` has always called `ensure_database` first, and the
+    analyst notebooks get the same from `tools.notebook_data`. The workshop job in
+    CI had neither, so it was red on a database that had never been made.
+
+    Ordered, not merely present: creating *after* the seed is the same as not
+    creating it.
+    """
+    text = _text()
+    job = text[text.index("  workshop-notebooks:"):]
+    job = job[: job.index("\n  # ──") if "\n  # ──" in job else len(job)]
+
+    # **Comments stripped first.** The first version of this test searched the raw
+    # text and matched the comment *explaining* this rule -- which names
+    # `storage.seed.main` before it names `ensure_database` -- so it reported the
+    # steps in the wrong order. That is the fourth time in this repository that a
+    # check has matched the prose describing a rule instead of the rule, and it is
+    # why every one of these assertions reads the commands and not the file.
+    job = "\n".join(
+        line for line in job.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    create_at = job.find("ensure_database")
+    seed_at = job.find("storage.seed.main")
+    assert create_at != -1, (
+        "the workshop job seeds without creating its database. "
+        "`storage/seed/main.py` does not create one — add an `ensure_database` "
+        "step, the way `make workshop-seed` and `tools.notebook_data` both do."
+    )
+    assert seed_at != -1, "the seeding step was not found; check this test's anchors"
+    assert create_at < seed_at, (
+        "the workshop job creates its database *after* seeding it, which is the "
+        "same as never creating it."
+    )
