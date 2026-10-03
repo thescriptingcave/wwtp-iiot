@@ -104,17 +104,36 @@ WEEK_DAYS = 7
 #: diurnal cycle: a shorter window would call the plant's own 07:00 peak an anomaly.
 BASELINE_WINDOW_H = 24
 
-#: Decimal places the panel's `mean` is rounded to, and why that number.
+#: Decimal places the panel's float columns are written at, and why that number.
 #:
 #: Postgres computes `AVG()` by summing a group, and the order it sums in is not
-#: fixed across runs -- parallel workers, and how many of them, are a matter of
-#: sizing and load rather than of the data. So two builds of the panel over
-#: byte-identical readings disagree at roughly the tenth decimal place.
+#: fixed — parallel workers, and how many of them, are a matter of sizing and load
+#: rather than of the data. So two builds of the panel disagree at roughly the tenth
+#: decimal place.
 #:
 #: Six is four orders of magnitude coarser than that noise and eight finer than
-#: anything the workshop quotes, so it removes the instability without touching
-#: any measurement. See `dense_panel`.
+#: anything the workshop quotes, so it removes the instability without touching a
+#: measurement. See `stabilise`.
 MEAN_DECIMALS = 6
+
+#: The panel's float columns. **Everything here is a model input**, which is the
+#: whole reason the list is explicit rather than "every float column": `FEATURES` is
+#: what a forest splits on, and a split landing 1e-10 to the other side changes the
+#: tree and the reported score.
+#:
+#: Rounding only `mean` was not enough, and the reason is worth recording. Per-column
+#: fingerprints of the CI-built panel against a local one showed `mean`, `n`,
+#: `row_written`, `value_is_null`, `base_24` and `missing_streak` byte-identical and
+#: `min`, `max` and `n_over_base` different — and those three are all in `FEATURES`.
+#: The claim had been "corrected" to the local value and CI printed a third one.
+#:
+#: `n_over_base` is `n / base_24`, so it inherits the noise through the division even
+#: where both operands round cleanly.
+#:
+#: `n`, `row_written`, `value_is_null` and `missing_streak` are deliberately absent.
+#: They are counts and flags, and a rounded count is a measurement that has quietly
+#: become an estimate.
+FLOAT_COLUMNS = ("mean", "min", "max", "base_24", "n_over_base")
 
 #: The columns a model is given. Deliberately excludes the labels, the week and the
 #: bucket, so that "the model found it" cannot mean "the model was told the answer".
@@ -161,34 +180,43 @@ def dense_panel(
     panel["row_written"] = panel["n"].notna().astype("int8")
     panel["n"] = panel["n"].fillna(0).astype("float64")
     panel["value_is_null"] = panel["mean"].isna().astype("int8")
-    # **Round `mean`, so the panel is a reproducible artefact.**
-    #
-    # The seed is deterministic: two runs of the same window produce byte-identical
-    # readings. `AVG()` is not. Postgres may sum a group across parallel workers,
-    # and the number of workers and the order they combine in are not fixed, so
-    # two runs over identical rows produce means that differ in the last bits:
-    #
-    #     1119.808718833635   vs   1119.8087188336349
-    #
-    # Only `mean` is affected — `min`, `max` and `n` are order-independent, and
-    # comparing two builds of the panel found `mean` the only field that moved, in
-    # 8,482 of 28,728 rows.
-    #
-    # That noise is ~1e-10, which is invisible on its own and **not** invisible
-    # downstream. `06-predictive` fits a `RandomForestRegressor` to the panel, and a
-    # forest is chaotic: one split landing 1e-10 to the other side changes the tree,
-    # and the reported MAE moved 0.3414 -> 0.3400 with nothing else changing. The
-    # prose claim was pinned to a number that was never a property of the data, only
-    # of the order the database happened to add it up in.
-    #
-    # Rounding to six decimals is four orders of magnitude coarser than the noise and
-    # eight finer than anything the workshop measures (MAE is quoted to four), so it
-    # costs no accuracy and makes the panel -- and therefore every number downstream
-    # of it -- identical on every machine. `tests/test_workshop_dataset.py` fails if
-    # the rounding is ever undone, and names why the tolerance on that assertion
-    # cannot be loosened.
-    panel["mean"] = panel["mean"].round(MEAN_DECIMALS)
     return panel.sort_values(["signal_id", "bucket"], ignore_index=True)
+
+
+def stabilise(panel: pd.DataFrame) -> pd.DataFrame:
+    """Round the float columns, so the panel is a reproducible artefact.
+
+    **The seed is deterministic and the panel was not.** Two runs of the same window
+    produce byte-identical readings — verified by hashing `ts, signal_id, value`
+    across two independent seeds. What is not deterministic is the *aggregation*:
+    Postgres sums a group in an order fixed by parallel-worker scheduling, so means
+    over identical rows differ around the tenth decimal:
+
+        1119.808718833635   vs   1119.8087188336349
+
+    That noise is invisible on its own and **not** invisible downstream. Every column
+    rounded here is in `FEATURES`, and `06-predictive` fits a
+    `RandomForestRegressor` to them. A forest is chaotic: one split landing 1e-10 to
+    the other side changes the tree, and the reported MAE moved 0.3414 -> 0.3400 ->
+    0.3402 across three machines running the same commit. The prose claim was pinned
+    to a number that was never a property of the data — only of the order the
+    database happened to add it up in — and CI failed on a claim that was correct
+    when it was written.
+
+    Rounding to six decimals is four orders of magnitude coarser than the noise and
+    eight finer than anything the workshop measures, so it costs no accuracy and
+    makes the panel — and so every number downstream of it — identical everywhere.
+    `tests/test_workshop_dataset.py` fails if this is undone.
+
+    Applied at the end rather than inside `dense_panel`, because `n_over_base` does
+    not exist until `per_signal_baseline` has run, and a column that is rounded in
+    one place and not another is a column nobody can reason about.
+    """
+    out = panel.copy()
+    for column in FLOAT_COLUMNS:
+        if column in out.columns:
+            out[column] = out[column].round(MEAN_DECIMALS)
+    return out
 
 
 def per_signal_baseline(
@@ -440,7 +468,9 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         raise SystemExit(f"panel is missing {missing}; that is a bug in this module")
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    panel[list(COLUMNS)].to_csv(args.out, index=False)
+    # Last, and after every column exists: the float columns are rounded here so
+    # the file on disk is reproducible, not the frame on the way to it.
+    panel[list(COLUMNS)].pipe(stabilise).to_csv(args.out, index=False)
     print(f"\nwrote {args.out}  ({args.out.stat().st_size / 1e6:.1f} MB)")
     return 0
 

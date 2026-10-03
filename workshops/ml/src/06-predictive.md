@@ -81,7 +81,7 @@ report("RandomForest on the panel's features",
   same hour, previous 3 days               MAE 0.4367
   LinearRegression on hour-of-day          MAE 2.3475
   RandomForest on hour-of-day              MAE 0.3304
-  RandomForest on the panel's features     MAE 0.3399
+  RandomForest on the panel's features     MAE 0.3395
 ```
 
 Three things in that table.

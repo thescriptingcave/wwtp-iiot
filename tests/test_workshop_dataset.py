@@ -20,17 +20,21 @@ wrong while looking completely fine:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 import pytest
 from workshops.ml import build_dataset
 from workshops.ml.build_dataset import (
     COLUMNS,
     FEATURES,
+    FLOAT_COLUMNS,
     MEAN_DECIMALS,
     WEEK_DAYS,
     dense_panel,
     label_panel,
     per_signal_baseline,
+    stabilise,
     summarise,
 )
 
@@ -344,102 +348,178 @@ def test_an_impossible_baseline_window_is_refused(bad: int) -> None:
 # ── the panel is reproducible, which is what makes a pinned number pinnable ────
 
 
-def test_two_readings_that_differ_in_the_last_bits_give_the_same_panel() -> None:
+def _panel(**overrides: float) -> pd.DataFrame:
+    """A one-row panel carrying float noise in every column that can carry it."""
+    row = {
+        "signal_id": SIGNALS[0], "bucket": HOURS[0],
+        "mean": 1119.808718833635, "min": 1101.5087188336351,
+        "max": 1138.2087188336342, "n": 17, "row_written": 1,
+        "value_is_null": 0, "base_24": 3.9876543210987,
+        "n_over_base": 4.2654321098765, "missing_streak": 0,
+    }
+    row.update(overrides)
+    return pd.DataFrame([row])
+
+
+def test_two_panels_differing_only_in_the_last_bits_are_written_identically() -> None:
     """The panel must not inherit Postgres's floating-point noise.
 
-    **The seed is deterministic and `AVG()` is not.** Two builds over byte-identical
-    readings produced means differing around the tenth decimal place, because
-    Postgres sums a group in an order fixed by parallel-worker scheduling rather
-    than by the data. Comparing the two builds, `mean` was the only field that
-    moved — in 8,482 of 28,728 rows. `min`, `max` and `n` are order-independent.
+    **The seed is deterministic and the panel was not.** Two runs of the same window
+    produce byte-identical readings — verified by hashing `ts, signal_id, value`
+    across two independent seeds. `AVG()` is not deterministic: Postgres sums a group
+    in an order fixed by parallel-worker scheduling, so two builds over identical
+    rows disagree around the tenth decimal place.
 
-    On its own that noise is invisible. Downstream it is not: `06-predictive` fits
-    a `RandomForestRegressor`, and a forest is chaotic, so a split landing 1e-10 to
-    the other side changes the tree and moved the reported MAE from 0.3414 to 0.3400
-    with no other input changed. The prose claim was pinned to a number that was
-    never a property of the data — only of the order the database happened to add it
-    up in — and CI failed on a claim that was correct when it was written.
+    Invisible on its own. Downstream, not: every column rounded by `stabilise` is in
+    `FEATURES`, and `06-predictive` fits a `RandomForestRegressor` to them. A forest
+    is chaotic, so one split landing 1e-10 to the other side changes the tree, and
+    the reported MAE came out 0.3414, then 0.3400, then 0.3402 on three machines
+    running the same commit. The prose claim was pinned to a number that was never a
+    property of the data, only of the order the database added it up in.
 
-    So `dense_panel` rounds. This asserts the rounding is *load-bearing*: without it
-    the two frames below are unequal, and the suite goes red rather than the workshop
-    going quietly wrong three weeks later.
+    Rounding only `mean` was the first attempt and it was not enough. Per-column
+    fingerprints of the CI-built panel against a local one showed `mean`, `n`,
+    `row_written`, `value_is_null`, `base_24` and `missing_streak` byte-identical,
+    and `min`, `max` and `n_over_base` different — all three of them features. That
+    is why the second version of this file rounds a *named set* of columns and
+    asserts the set covers `FEATURES`.
     """
-    exact_mean, reordered_mean = 1119.808718833635, 1119.8087188336349
-    signal, bucket, n = SIGNALS[0], HOURS[0], 17
+    a = stabilise(_panel())
+    b = stabilise(_panel(
+        mean=1119.8087188336349, min=1101.5087188336350,
+        max=1138.2087188336341, base_24=3.9876543210986,
+        n_over_base=4.2654321098764,
+    ))
 
-    # Built inline rather than through `stored_rows`, which sets `min` and `max` to
-    # the same value as `mean`. That is a convenience for the arithmetic tests and a
-    # lie here: in a real panel `min` and `max` are *actual readings*, and since the
-    # seed is deterministic they are bit-identical between builds. Only `mean` —
-    # which Postgres computes with `AVG()`, and so sums in a scheduling-dependent
-    # order — carries the noise. A fixture that copied the noise into all three
-    # would be testing a rounding decision that was never made.
-    def stored(mean: float) -> pd.DataFrame:
-        return pd.DataFrame(
-            [{"signal_id": signal, "bucket": bucket, "mean": mean,
-              "min": 1101.5, "max": 1138.25, "n": n}],
-            columns=["signal_id", "bucket", "mean", "min", "max", "n"],
-        )
+    # The inputs really do differ, or this test passes for the wrong reason.
+    assert not a[list(FLOAT_COLUMNS)].equals(
+        _panel()[list(FLOAT_COLUMNS)]
+    ), "the fixture is not actually noisy"
 
-    a = dense_panel(stored(exact_mean), SIGNALS, HOURS)
-    b = dense_panel(stored(reordered_mean), SIGNALS, HOURS)
-
-    # The two *inputs* really are different floats — otherwise this test would pass
-    # for the wrong reason, which is the failure mode this file's docstring is about.
-    assert exact_mean != reordered_mean
-    assert exact_mean - reordered_mean < 1e-9
-
-    # And the panels built from them are not.
-    #
     # **`check_exact=True` is the whole test.** `assert_frame_equal` defaults to
-    # `rtol=1e-5`, which is three orders of magnitude looser than the noise being
-    # guarded against — so with the default this assertion passed with the rounding
-    # deleted, and the test named after reproducibility was the one check in the file
-    # that could not fail. A tolerance is a decision about what counts as different,
-    # and "the same bytes" has no tolerance.
+    # `rtol=1e-5`, three orders of magnitude looser than the noise guarded against,
+    # so with the default this passed with the rounding deleted — the test named
+    # after reproducibility being the one check here that could not fail. "The same
+    # bytes" has no tolerance.
     pd.testing.assert_frame_equal(a, b, check_exact=True), (
         "the panel is not reproducible"
     )
 
 
+def test_every_float_column_is_a_feature_and_every_count_is_not_rounded() -> None:
+    """The rounded set and `FEATURES` must not drift apart.
+
+    Rounding a column nothing models is harmless but pointless; **failing to round
+    one that a forest splits on is the bug this file exists to catch**, and it is
+    silent — the panel still looks like data. So rather than trusting the list to
+    stay correct, this asserts the two agree.
+
+    And the counts stay exact. `n`, `row_written`, `value_is_null` and
+    `missing_streak` are integers the fault classifier reads as integers; a rounded
+    count is a measurement that has quietly become an estimate.
+    """
+    assert set(FLOAT_COLUMNS) <= set(FEATURES), (
+        f"{sorted(set(FLOAT_COLUMNS) - set(FEATURES))} are rounded but never used "
+        f"as features — either drop them or say why they are kept"
+    )
+
+    out = stabilise(_panel())
+    for column in ("n", "row_written", "value_is_null", "missing_streak"):
+        source = _panel()[column].iloc[0]
+        assert out[column].iloc[0] == source
+        assert float(out[column].iloc[0]).is_integer()
+        assert column not in FLOAT_COLUMNS, f"{column} must stay exact"
+
+    for column in FLOAT_COLUMNS:
+        assert out[column].iloc[0] == round(
+            _panel()[column].iloc[0], MEAN_DECIMALS
+        ), f"{column} was not rounded"
+
+
 def test_six_decimals_clears_the_noise_and_keeps_the_work() -> None:
     """Six decimals is a considered number, and this is the argument for it.
 
-    Postgres' instability is around 1e-10 on values of order 1e3. The workshop quotes
-    MAE to four decimals on a target with a standard deviation of 4.46. Six decimals
-    sits four orders of magnitude above the noise and eight below anything measured,
-    so it removes the instability without discarding a digit anybody looks at.
+    The instability is around 1e-10 on values of order 1e3. The workshop quotes MAE
+    to four decimals on a target with a standard deviation of 4.46. Six sits four
+    orders of magnitude above the noise and eight below anything measured, so it
+    removes the instability without discarding a digit anybody looks at.
     """
     assert MEAN_DECIMALS == 6
-    assert build_dataset.MEAN_DECIMALS == MEAN_DECIMALS
 
     # Far above the noise: the last-bit difference is gone.
     assert round(1119.808718833635, MEAN_DECIMALS) == round(
         1119.8087188336349, MEAN_DECIMALS
     )
 
-    # Far below the work: a difference of a thousandth still survives, so the
-    # rounding has not quietly merged two genuinely different readings.
+    # Far below the work: a difference of a thousandth survives, so the rounding has
+    # not quietly merged two genuinely different readings.
     assert round(1119.808718833635, MEAN_DECIMALS) != round(
         1119.807718833635, MEAN_DECIMALS
     )
 
 
-def test_only_mean_is_rounded_and_the_exact_columns_are_not() -> None:
-    """Rounding `n` would turn row counts into estimates.
+def test_stabilise_does_not_mutate_its_argument() -> None:
+    """It returns a new frame, because `main` hands it the panel it still summarises.
 
-    `n`, `min`, `max` and `row_written` are order-independent already, and `n` is an
-    integer count that the fault classifier reads as an exact one. Rounding a count
-    to look tidy is a way of making a measurement approximate for no gain, so this
-    asserts the change stayed where the noise is.
+    In-place rounding would also change the `summarise()` output, so the printed
+    summary would quietly stop describing the file that was just written — and the
+    summary is what a reader compares against the prose.
     """
-    panel = dense_panel(
-        stored_rows([(SIGNALS[0], HOURS[0], 1.23456789012345, 17)]),
-        SIGNALS,
-        HOURS,
+    before = _panel()
+    snapshot = before.copy(deep=True)
+    stabilise(before)
+    pd.testing.assert_frame_equal(before, snapshot, check_exact=True)
+
+
+def test_the_written_csv_is_the_stabilised_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`stabilise` must be on the path to the file, not merely defined.
+
+    **This is the guard that matters most, and it was missing.** The three tests
+    above all call `stabilise` directly, so deleting `.pipe(stabilise)` from the
+    `to_csv` in `main` left every one of them green — verified by doing exactly
+    that. The function was tested, the call site was not, and the call site is the
+    part that decides what lands on disk.
+
+    That is the same shape as the guard that could not fire in `_node_package_probe`
+    and the workflow check that read prose instead of commands: a check on a
+    component rather than on the thing that has to be true. So this runs `main`,
+    intercepts the write, and asserts on the frame that would have been written.
+
+    `_read_source` is stubbed so this needs no database, which keeps it in the unit
+    suite — the same reason the rest of this file is a set of pure functions.
+    """
+    captured: dict[str, pd.DataFrame] = {}
+
+    def capture(self: pd.DataFrame, path: Any, **kwargs: Any) -> None:
+        captured["frame"] = self
+
+    hours = pd.date_range("2026-01-01", periods=48, freq="h", tz="UTC")
+    stored = pd.DataFrame(
+        {
+            "signal_id": ["A:ONE"] * 48,
+            "bucket": hours,
+            "mean": [1119.808718833635 + i * 1e-13 for i in range(48)],
+            "min": [1101.5087188336351 + i * 1e-13 for i in range(48)],
+            "max": [1138.2087188336342 + i * 1e-13 for i in range(48)],
+            "n": [17] * 48,
+        }
     )
-    row = panel.iloc[0]
-    assert row["n"] == 17.0 and float(row["n"]).is_integer()
-    assert row["min"] == 1.23456789012345
-    assert row["max"] == 1.23456789012345
-    assert row["mean"] == round(1.23456789012345, MEAN_DECIMALS)
+    monkeypatch.setattr(
+        build_dataset, "_read_source", lambda dsn, table: (stored, ["A:ONE"], hours)
+    )
+    monkeypatch.setattr(pd.DataFrame, "to_csv", capture)
+
+    build_dataset.main([
+        "--dsn", "postgresql:///unused", "--days", "1", "--end", "2026-01-02T00:00:00Z",
+    ])
+
+    assert "frame" in captured, "main never wrote a frame; the test proved nothing"
+    written = captured["frame"]
+    for column in FLOAT_COLUMNS:
+        if column not in written.columns:
+            continue
+        column_values = written[column].dropna()
+        assert (column_values == column_values.round(MEAN_DECIMALS)).all(), (
+            f"{column} reached the CSV unrounded — `stabilise` is not on the "
+            f"write path, and the panel will differ between machines again"
+        )
