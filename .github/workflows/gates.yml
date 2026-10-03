@@ -448,21 +448,6 @@ jobs:
           POSTGRES_DB: wwtp
         run: uv run python -m tools.notebook_data
 
-      # **A per-column fingerprint of the panel, as a notice annotation.**
-      # The check below compares prose against a run, so when it fails the only
-      # question worth asking is *which column of the panel is different from the
-      # one the claims were written against* — and the panel is 3 MB and
-      # gitignored, so there is no other way to find out. One annotation per
-      # column, readable without a token, localises it in a single run.
-      - name: fingerprint the panel
-        run: >-
-          uv run python -c "import hashlib, pandas as pd;
-          df = pd.read_csv('workshops/ml/dataset.csv');
-          print('::notice::panel rows=%d cols=%d' % df.shape);
-          [print('::notice::col %-18s sha=%s' % (c,
-          hashlib.sha256(df[c].to_csv(index=False).encode()).hexdigest()[:12]))
-          for c in df.columns]"
-
       - name: build, execute, and check every number in the prose
         # The gate is `tools/check_notebooks.py`, and it is four checks per
         # notebook: the generated `.ipynb` is in step with its `src/*.md`, the
@@ -587,6 +572,21 @@ jobs:
         env:
           WORKSHOP_DSN: host=127.0.0.1 port=5432 user=wwtp password=itpass dbname=wwtp_ml
         run: uv run python -m workshops.ml.build_dataset --days 21 --every-hours 36 --end 2026-09-29T00:00:00Z
+
+      # **A per-column fingerprint of the panel, as a notice annotation.**
+      # The check below compares prose against a run, so when it fails the only
+      # question worth asking is *which column of the panel is different from the
+      # one the claims were written against* — and the panel is 3 MB and
+      # gitignored, so there is no other way to find out. One annotation per
+      # column, readable without a token, localises it in a single run.
+      - name: fingerprint the panel
+        run: >-
+          uv run python -c "import hashlib, pandas as pd;
+          df = pd.read_csv('workshops/ml/dataset.csv');
+          print('::notice::panel rows=%d cols=%d' % df.shape);
+          [print('::notice::col %-18s sha=%s' % (c,
+          hashlib.sha256(df[c].to_csv(index=False).encode()).hexdigest()[:12]))
+          for c in df.columns]"
 
       - name: build, execute, and check every number in the prose
         # The same gate as the analyst notebooks, on the same four checks. It is
