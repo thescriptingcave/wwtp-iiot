@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1176 | no |
+| Unit, no database | 1179 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -96,7 +96,7 @@ Per file, for the ones worth naming:
 | `test_db_ready.py` | 5 | that the readiness check distinguishes an unreachable database from an empty one, and says why |
 | `test_getting_started_agrees.py` | 13 | that the README and the getting-started guide give the same commands, since they had drifted and broken a clean-machine setup |
 | `test_seed_target_database.py` | 19 | that the seeder seeds the database it is told to, and that `--reset` without `--database` is refused |
-| `test_workshop_dataset.py` | 15 | that the modelling panel is dense, that the per-signal baseline cannot see the hour it judges, and that the two row states stay distinguishable |
+| `test_workshop_dataset.py` | 18 | that the modelling panel is dense, that the per-signal baseline cannot see the hour it judges, that the two row states stay distinguishable, and that the panel is byte-reproducible |
 | `test_seed_schedule.py` | 15 | that the seeder and the ground truth derive the fault schedule from one function |
 | `test_seed.py` | 5 | the storm window is armed at all, and `--end` is honoured |
 | `test_makefile_env.py` | 7 | that make's fast path cannot strip `.env` from a recipe again |

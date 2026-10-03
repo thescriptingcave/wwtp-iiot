@@ -151,7 +151,7 @@ check, not decoration.
 make test
 ```
 
-Expect: **1176 passed**, no failures. The documented count is checked by a test, so
+Expect: **1179 passed**, no failures. The documented count is checked by a test, so
 a different number means either a missing file or a genuine change in count.
 
 **Step 11** — integration tests.

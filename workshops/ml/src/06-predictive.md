@@ -81,7 +81,7 @@ report("RandomForest on the panel's features",
   same hour, previous 3 days               MAE 0.4367
   LinearRegression on hour-of-day          MAE 2.3475
   RandomForest on hour-of-day              MAE 0.3304
-  RandomForest on the panel's features     MAE 0.3414
+  RandomForest on the panel's features     MAE 0.3399
 ```
 
 Three things in that table.
@@ -96,7 +96,7 @@ cannot see it at all.
 started from — *a seasonal naive beats every model* — is wrong, and it is worth being
 explicit that it is wrong, because it would have been a satisfying thing to believe.
 
-**The panel's own features do not help.** 0.341 against 0.330 for hour-of-day alone.
+**The panel's own features do not help.** 0.340 against 0.330 for hour-of-day alone.
 
 ## Why nothing else matters here
 

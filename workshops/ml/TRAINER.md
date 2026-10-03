@@ -157,7 +157,7 @@ Predict effluent TSS an hour ahead, held-out final fifth:
 |---|---|
 | `LinearRegression` on hour-of-day | 2.3475 |
 | "same hour, previous 3 days" — three lines of arithmetic | 0.4367 |
-| `RandomForest` on the panel's own features | 0.3414 |
+| `RandomForest` on the panel's own features | 0.3399 |
 | **`RandomForest` on hour-of-day** | **0.3304** |
 | the same model, **random split** | **0.0627** |
 

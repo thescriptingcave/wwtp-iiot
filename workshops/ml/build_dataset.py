@@ -104,6 +104,18 @@ WEEK_DAYS = 7
 #: diurnal cycle: a shorter window would call the plant's own 07:00 peak an anomaly.
 BASELINE_WINDOW_H = 24
 
+#: Decimal places the panel's `mean` is rounded to, and why that number.
+#:
+#: Postgres computes `AVG()` by summing a group, and the order it sums in is not
+#: fixed across runs -- parallel workers, and how many of them, are a matter of
+#: sizing and load rather than of the data. So two builds of the panel over
+#: byte-identical readings disagree at roughly the tenth decimal place.
+#:
+#: Six is four orders of magnitude coarser than that noise and eight finer than
+#: anything the workshop quotes, so it removes the instability without touching
+#: any measurement. See `dense_panel`.
+MEAN_DECIMALS = 6
+
 #: The columns a model is given. Deliberately excludes the labels, the week and the
 #: bucket, so that "the model found it" cannot mean "the model was told the answer".
 FEATURES = (
@@ -149,6 +161,33 @@ def dense_panel(
     panel["row_written"] = panel["n"].notna().astype("int8")
     panel["n"] = panel["n"].fillna(0).astype("float64")
     panel["value_is_null"] = panel["mean"].isna().astype("int8")
+    # **Round `mean`, so the panel is a reproducible artefact.**
+    #
+    # The seed is deterministic: two runs of the same window produce byte-identical
+    # readings. `AVG()` is not. Postgres may sum a group across parallel workers,
+    # and the number of workers and the order they combine in are not fixed, so
+    # two runs over identical rows produce means that differ in the last bits:
+    #
+    #     1119.808718833635   vs   1119.8087188336349
+    #
+    # Only `mean` is affected — `min`, `max` and `n` are order-independent, and
+    # comparing two builds of the panel found `mean` the only field that moved, in
+    # 8,482 of 28,728 rows.
+    #
+    # That noise is ~1e-10, which is invisible on its own and **not** invisible
+    # downstream. `06-predictive` fits a `RandomForestRegressor` to the panel, and a
+    # forest is chaotic: one split landing 1e-10 to the other side changes the tree,
+    # and the reported MAE moved 0.3414 -> 0.3400 with nothing else changing. The
+    # prose claim was pinned to a number that was never a property of the data, only
+    # of the order the database happened to add it up in.
+    #
+    # Rounding to six decimals is four orders of magnitude coarser than the noise and
+    # eight finer than anything the workshop measures (MAE is quoted to four), so it
+    # costs no accuracy and makes the panel -- and therefore every number downstream
+    # of it -- identical on every machine. `tests/test_workshop_dataset.py` fails if
+    # the rounding is ever undone, and names why the tolerance on that assertion
+    # cannot be loosened.
+    panel["mean"] = panel["mean"].round(MEAN_DECIMALS)
     return panel.sort_values(["signal_id", "bucket"], ignore_index=True)
 
 
