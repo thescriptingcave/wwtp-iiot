@@ -134,6 +134,29 @@ def _normalise(text: str) -> str:
     )
 
 
+def _report(problems: list[str]) -> int:
+    """Print the problems, and *also* raise them as GitHub annotations.
+
+    **A CI failure nobody can read is a CI failure nobody will fix.** GitHub keeps
+    a job's full log behind an authenticated endpoint, but it publishes workflow
+    `::error::` annotations unauthenticated through the check-runs API. So a gate
+    that prints to stderr is invisible to anything that is not a human with a
+    browser and a token, and this repository's log endpoint returns 403 without
+    one — which is how four consecutive runs of this job were red with nothing to
+    go on but "exit code 1".
+
+    The annotation is the same text, escaped per GitHub's rules: `%`, CR and LF
+    become `%25`, `%0D` and `%0A`, because an unescaped newline ends the
+    annotation and the rest of the message is silently discarded — a failure
+    reported *almost* legibly, which is worse than one reported not at all.
+    """
+    for problem in problems:
+        print(f"  {problem}", file=sys.stderr)
+        flat = problem.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error::{flat}", file=sys.stderr)
+    return 1
+
+
 def check_outputs(notebook_path: Path, source_path: Path, executed: dict) -> list[str]:
     """Compare each claimed `output` block against what the notebook printed.
 
@@ -511,9 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if problems:
-        for problem in problems:
-            print(f"  {problem}", file=sys.stderr)
-        return 1
+        return _report(problems)
 
     # Deferred: importing nbformat and nbclient costs a second, and this module
     # is imported by the test suite purely for `_normalise` and the claim parser.
@@ -545,9 +566,7 @@ def main(argv: list[str] | None = None) -> int:
     problems.extend(check_portable_numbers(src_dir))
 
     if problems:
-        for problem in problems:
-            print(f"  {problem}", file=sys.stderr)
-        return 1
+        return _report(problems)
     print(
         f"  {len(selected)} notebook(s): built, executed, "
         "outputs and prose numbers agree"
