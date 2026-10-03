@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scada import build_flows, generate_tags
@@ -560,6 +561,65 @@ PER_NODE_OUTPUTS = {"function"}
 STRUCTURAL_TYPES = {"tab", "subflow", "group"}
 
 
+#: The container name, from `container_name:` in compose.yaml. Asserted there so
+#: renaming one side without the other fails loudly.
+CONTAINER_NAME = "wwtp-scada"
+
+#: How the probe reaches the container. A named constant rather than an inline
+#: list so it can be *asserted* — a source-scan for the argv is defeated by the
+#: scan mentioning it, which is how the first version of that test passed
+#: vacuously and then failed on its own comment.
+PROBE_COMMAND = ("docker", "exec", "-i", CONTAINER_NAME)
+
+
+def test_the_probe_does_not_shell_out_to_docker_compose() -> None:
+    """`docker exec`, not `docker compose exec`, and this is why.
+
+    `docker compose exec` interpolates the whole project file before it reaches a
+    container, and interpolation needs `POSTGRES_PASSWORD`,
+    `GATEWAY_DB_PASSWORD`, `WEB_DB_PASSWORD` and `GRAFANA_ADMIN_PASSWORD` --
+    all of which live in the gitignored `.env`. On CI there is no `.env`, so the
+    command failed with a wall of `error while interpolating ...` and the probe
+    reported it as *"the container is reachable, so this is a bug in the probe
+    script"* -- a confident wrong diagnosis, on a machine where the container was
+    not the problem.
+
+    **Asserted on a constant, not by scanning this file's source.** Two earlier
+    versions tried the scan and both were wrong: one searched for the phrase
+    "docker compose exec", which its own explanatory comment contains, and one
+    located the probe with `source.index("def _node_package_probe(")`, which
+    matched the *test's own* line of that text. A guard that cannot pass is not a
+    guard.
+    """
+    assert PROBE_COMMAND[0] == "docker", PROBE_COMMAND
+    assert "compose" not in PROBE_COMMAND, (
+        f"the node-package probe shells out to {PROBE_COMMAND}, which cannot "
+        f"interpolate the project file without `.env` -- so on CI it fails "
+        f"before reaching the container and reports a missing container as a "
+        f"broken probe. Use docker exec with CONTAINER_NAME."
+    )
+    assert "exec" in PROBE_COMMAND, (
+        f"the probe no longer reaches its container with exec: {PROBE_COMMAND}"
+    )
+
+
+def test_the_probe_container_name_matches_compose_file() -> None:
+    """The probe reaches the container by name, so the name has to be right.
+
+    Hardcoding it is what removes the `.env` dependency that made this check
+    fail on CI, and hardcoding is only safe while somebody notices the rename.
+    Parsed out of `compose.yaml` rather than by running compose, because
+    running compose is the thing that needs the environment this change
+    exists to avoid.
+    """
+    compose = (FLOWS.parent.parent / "compose.yaml").read_text(encoding="utf-8")
+    assert f"container_name: {CONTAINER_NAME}" in compose, (
+        f"compose.yaml does not declare container_name: {CONTAINER_NAME}, so "
+        f"the node-package probe would look for a container that does not "
+        f"exist and skip, which reads as a pass. Update CONTAINER_NAME."
+    )
+
+
 def _node_package_probe() -> dict[str, int] | None:
     """Output counts straight from the installed node packages, or None.
 
@@ -674,10 +734,26 @@ function walk(dir, depth) {
 for (const r of roots) walk(r, 0);
 process.stdout.write(JSON.stringify({counts: out, files: files, roots: roots}));
 """
+    # **`docker exec`, not `docker compose exec`.** The compose form needs the
+    # project file interpolated, and interpolation requires `.env` — which is
+    # gitignored and therefore absent in CI. Without it the command fails before
+    # it reaches the container:
+    #
+    #     error while interpolating services.db.environment.POSTGRES_PASSWORD:
+    #     required variable POSTGRES_PASSWORD is missing a value
+    #
+    # That exit was being reported as *"the container is reachable, so this is a
+    # bug in the probe script"* — a confident, wrong diagnosis, on a machine
+    # where the container was not the problem at all. The function had three
+    # states to tell apart (absent / reachable-but-broken / cannot-form-the-
+    # command) and two branches.
+    #
+    # The container name is fixed in `compose.yaml` (`container_name:
+    # wwtp-scada`), so `docker exec` reaches it with no project file, no
+    # profiles and no environment at all. The third state stops existing.
     try:
         raw = subprocess.run(
-            ["docker", "compose", "--profile", "scada", "exec", "-T", "scada",
-             "node", "-e", script],
+            [*PROBE_COMMAND, "node", "-e", script],
             capture_output=True, text=True, check=False, timeout=60,
         )
     except subprocess.TimeoutExpired:
@@ -691,6 +767,10 @@ process.stdout.write(JSON.stringify({counts: out, files: files, roots: roots}));
             f"this should skip rather than fail, but a docker that exists and does "
             f"not work is a different problem and should be visible."
         ) from exc
+
+    if raw.returncode != 0 and "No such container" in raw.stderr:
+        # The only "cannot check" left, and now it is unambiguous.
+        return None
 
     if raw.returncode != 0 or not raw.stdout.strip():
         raise AssertionError(
@@ -2339,6 +2419,32 @@ def _to_pyformat(query: str, names: list[str]) -> tuple[str, list[str]]:
     carried alongside so a mismatch between the two is visible.
     """
     out = query
+    positional = sorted({int(m) for m in re.findall(r"\$(\d+)", out)})
+    if positional:
+        # **A second dialect, and the test did not speak it.** The
+        # acknowledgement query writes `$1, $2, $3, $4` rather than `$msg`,
+        # `$signal`, and every earlier version of this translator rewrote only
+        # named placeholders — so it handed psycopg a query still carrying `$1`
+        # and got back
+        #
+        #     UndefinedParameter: there is no parameter $1
+        #
+        # which names the *driver* rather than the query.
+        #
+        # The flow is right and this was wrong. `node-postgres-named`'s token
+        # pattern is `(?<=\$)[a-zA-Z]…`, so a positional placeholder is not
+        # substituted at all; the node passes `msg.params` straight to `pg`,
+        # which *is* the extended query protocol and expects `$1`. So the node
+        # works with positional binds and would also work with named ones —
+        # the query just has to be in a dialect this test can read.
+        #
+        # Ordering is by first appearance of `$1`, `$2`, …, matching what `pg`
+        # expects: the *values* array is positional, so the mapping is defined
+        # by the sequence, not by any name.
+        for number in positional:
+            out = re.sub(rf"\${number}\b", "%s", out)
+        return out, [f"${number}" for number in positional]
+
     order: list[str] = []
     for name in names:
         if f"${name}" in out and name not in order:
@@ -2346,6 +2452,79 @@ def _to_pyformat(query: str, names: list[str]) -> tuple[str, list[str]]:
     for name in order:
         out = out.replace(f"${name}", "%s")
     return out, order
+
+
+#: What each positional placeholder feeds, for the one query in this project
+#: written that way.
+#:
+#: **A positional bind carries no name**, so the values cannot be looked up by
+#: name the way the named dialect's are. That makes the binding a property of
+#: the statement rather than of the message, and the only honest place for it is
+#: spelled out here, next to a comment saying what each position is.
+#:
+#: `record the acknowledgement` is
+#:
+#:     INSERT INTO event (ts, kind, severity, message, signal_id,
+#:                        equipment_id, detail)
+#:     VALUES (now(), 'alarm_acknowledged', 'critical', $1, $2, $3,
+#:             jsonb_build_object('rule', $4::text, 'acknowledged_at', now()))
+#:
+#: so $1 is the message, $2 the signal, $3 the equipment — which must be NULL
+#: rather than a made-up string, because `event.equipment_id` is a foreign key
+#: and the probe deliberately uses no real asset — and $4 the rule, cast to text
+#: inside the JSON object.
+#:
+#: A second positional query has to be added here, and the test says so if it is
+#: not. That is the point of listing them: a dialect this test cannot bind
+#: silently is a gap, and the gap should be a failure rather than an exception
+#: from the driver.
+#:
+#: `audit trail` is the other one, and it is the control action's record:
+#:
+#:     INSERT INTO event (ts, kind, severity, message, signal_id, detail)
+#:     VALUES (now(), 'setpoint_written', 'info', $1, $2,
+#:             jsonb_build_object('value', $3::float8,
+#:                                'write_range', $4::jsonb))
+#:
+#: $3 is cast to float8 and $4 to jsonb, so the probe values must be a number
+#: and a **JSON string** — which is exactly how `record what was written`
+#: builds them, and the reason the flow stringifies the range rather than
+#: handing `pg` an array. It is a detail worth restating here, because a JS array
+#: in this position produces a Postgres array literal rather than JSON and the
+#: insert fails at run time with nothing pointing at the operator's number.
+_POSITIONAL_BINDINGS: dict[str, list[Any]] = {
+    "record the acknowledgement": [
+        "probe acknowledgement",
+        "AERATION:AHU-1:DO",
+        None,
+        "probe_rule",
+    ],
+    "audit trail": [
+        "probe setpoint",
+        "AERATION:AHU-1:SETPOINT_DO",
+        1.0,
+        "[0.5, 6.0]",
+    ],
+}
+
+
+def _positional_values(
+        node_name: str, count: int, fallback: dict[str, Any],
+) -> list[Any]:
+    declared = _POSITIONAL_BINDINGS.get(node_name)
+    if declared is None:
+        raise AssertionError(
+            f"{node_name!r} uses positional placeholders ($1, $2, …) and is not "
+            f"in _POSITIONAL_BINDINGS, so this test cannot bind it. Add the "
+            f"values in order, with a comment saying what each position feeds — "
+            f"do not guess them from the column names. The query is "
+            f"{count} placeholders wide."
+        )
+    assert len(declared) == count, (
+        f"{node_name!r} has {count} positional placeholders but "
+        f"_POSITIONAL_BINDINGS lists {len(declared)} values"
+    )
+    return list(declared)
 
 
 def test_every_named_placeholder_is_declared_in_the_params_list(flows: dict) -> None:
@@ -2418,7 +2597,11 @@ def test_every_flow_query_runs_against_a_live_database(flows: dict) -> None:
                  "tag": "AERATION:AHU-1:DO", "value": 1.0, "rule": "probe_rule",
                  "range": "[0.5, 6.0]"}
             ]
-            params = [values[0][n] for n in order]
+            params = (
+                _positional_values(node["name"], len(order), values[0])
+                if order and order[0].startswith("$")
+                else [values[0][n] for n in order]
+            )
             try:
                 with connect() as conn:
                     with conn.cursor() as cur:

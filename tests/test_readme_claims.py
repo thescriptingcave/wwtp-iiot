@@ -264,7 +264,7 @@ def _count_tests(path: str) -> int:
 @pytest.mark.parametrize(
     ("path", "claimed"),
     [
-        ("tests/test_scada_contract.py", 52),
+        ("tests/test_scada_contract.py", 54),
         ("tests/test_grafana_dashboards.py", 19),
         ("tests/test_web_page.py", 22),
         ("tests/test_opcua_course.py", 34),
@@ -847,7 +847,7 @@ DOCUMENTED_SUITE_COUNTS = {
     "tests/test_alarm_detectors.py": 63,
     "tests/test_modbus.py": 65,
     "tests/test_process.py": 40,
-    "tests/test_scada_contract.py": 52,
+    "tests/test_scada_contract.py": 54,
     "tests/test_scanloop.py": 31,
     "tests/test_faults.py": 29,
     "tests/test_control.py": 26,

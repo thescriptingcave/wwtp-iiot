@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1171 | no |
+| Unit, no database | 1177 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -70,8 +70,9 @@ Per file, for the ones worth naming:
 | `test_modbus.py` | 65 | word order, the register model, the client |
 | `test_modbus_writeback.py` | 7 | that a write reaches the **plant**, not just the server's queue |
 | `test_process.py` | 40 | the chemistry and the control loops, dimensionally |
-| `test_scada_contract.py` | 52 | the generated flows — and it *executes their SQL* |
+| `test_scada_contract.py` | 54 | the generated flows — and it *executes their SQL* |
 | `test_task_index.py` | 16 | that the commands in `docs/TASKS.md` still run |
+| `test_ci_workflow_matches_the_code.py` | 4 | that `.github/workflows/gates.yml` still agrees with the code it runs |
 | `test_guide_claims.py` | 10 | that `docs/GUIDE.md`'s claims about the code are still true |
 | `test_plant_manager_use_cases.py` | 12 | that every surface `docs/USE-CASES.md` sends an operator to exists |
 | `test_scanloop.py` | 31 | pacing, metrics, fault propagation |

@@ -521,6 +521,16 @@ jobs:
         # labels are confidently wrong without failing anything.
         #
         # `--reset` for the same idempotence reason the analyst job gives.
+        #
+        # **`--database wwtp_ml`, and not only `POSTGRES_DB`.** The seeder refuses
+        # `--reset` unless the run was told which database it is emptying —
+        # deliberately, because `tools/py.sh` sources `.env` *after* the inherited
+        # environment, so `POSTGRES_DB=wwtp_ml` in a recipe can resolve to `wwtp`
+        # and a command that looks correct empties the plant's own database.
+        # This step was doing the thing the rule exists to prevent, and failing on
+        # every run with a message naming the flag it needed. **The rule is right;
+        # the invocation was wrong.** `storage/seed/main.py::_target_database` is
+        # where the reasoning lives.
         env:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: "5432"
@@ -529,6 +539,7 @@ jobs:
           POSTGRES_DB: wwtp_ml
         run: >-
           uv run python -m storage.seed.main
+          --database wwtp_ml
           --days 21 --sample-interval 1
           --fault-every-hours 36 --storm-after 36
           --end 2026-09-29T00:00:00Z --reset
