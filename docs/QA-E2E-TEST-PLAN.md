@@ -4702,14 +4702,14 @@ scanloop alone-vs-full run.
    uv run ruff check . --output-format concise 2>/dev/null | grep -cE ':[0-9]+:[0-9]+:'
    cat lint-debt-baseline.txt   # expect 156
    ```
-   **Current values:** 1177 unit / 48 integration / 5 slow / 155 lint findings / 73 mypy files
+   **Current values:** 1176 unit / 48 integration / 5 slow / 155 lint findings / 73 mypy files
    / 78 SQL queries in 26 files / 87 snippets in 18 lessons.
    ```bash
-   grep -nE '1177|48|155|73|78|87|4303' docs/TESTING.md | head
+   grep -nE '1176|48|155|73|78|87|4303' docs/TESTING.md | head
    ```
 3. **Find the stale block in `docs/VERIFYING.md`.** Its Part 10 expected-output block says
    **606 unit tests, 159 lint findings, 55 mypy files, 46 integration**. Current values are
-   1177 / 155 / 73 / 48. **FINDING — stale.**
+   1176 / 155 / 73 / 48. **FINDING — stale.**
    ```bash
    grep -nE '606|159|55 mypy|46 ' docs/VERIFYING.md
    ```
@@ -4820,7 +4820,7 @@ scanloop alone-vs-full run.
     ```
 15. **Verify the clean-machine plan's own numbers are current.** It is the master script:
     ```bash
-    grep -nE '1177|48|155|73|4\.2|28728|42284|28,728' docs/CLEAN-MACHINE-TEST-PLAN.md | head -20
+    grep -nE '1176|48|155|73|4\.2|28728|42284|28,728' docs/CLEAN-MACHINE-TEST-PLAN.md | head -20
     ```
 
 **Expected result** — `test_readme_claims.py` (83) and `test_getting_started_agrees.py` (13) pass; current counts confirmed; the four stale blocks located; dead directories confirmed dead; every documented service name real.

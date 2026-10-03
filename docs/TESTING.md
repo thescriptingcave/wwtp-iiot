@@ -14,7 +14,7 @@ not**.
 
 | Suite | Count | Needs a database? |
 |---|---|---|
-| Unit, no database | 1177 | no |
+| Unit, no database | 1176 | no |
 | Integration | 48 | yes, and refuses to truncate a seeded one |
 | Slow (`-m slow`) | 5 | no — they run the plant model, ~18 min |
 | SQL course | 78 queries in 26 files | yes |
@@ -32,7 +32,7 @@ counts the *checks* rather than the tests: `make notebooks` runs four gates per
 notebook (output fences, prose numbers, SQL fences, seed fingerprint) and 11
 notebooks, which is 44 assertions a reader can name.
 
-The `test_readme_teaches_no_destructive_command.py` row is 181 because it is
+The `test_readme_teaches_no_destructive_command.py` row is 179 because it is
 parametrised over every markdown file in the repository: three rules, applied
 per file. **It moves every time a `.md` file is added or removed**, which is why
 adding `docs/TASKS.md` moved it by two. That coupling is the point: a new
@@ -89,7 +89,7 @@ Per file, for the ones worth naming:
 | `test_alarm_engine.py` | 17 | a list for a sink, an injected clock |
 | `test_workshop_panel_paths.py` | 18 | that building the long window cannot overwrite the 3-week panel, and that its cost and growth claims stay measured rather than extrapolated |
 | `test_measure_long_window.py` | 17 | that the long-window measurement does not leak the future, and measures notebook 03's ratio rather than a different one |
-| `test_readme_teaches_no_destructive_command.py` | 181 | that no runnable fence in any markdown pairs `POSTGRES_DB=` with a database reset |
+| `test_readme_teaches_no_destructive_command.py` | 179 | that no runnable fence in any markdown pairs `POSTGRES_DB=` with a database reset |
 | `test_browse_is_not_values.py` | 5 | that no document promises values from `browse`, which reads none |
 | `test_py_wrapper.py` | 3 | that `tools/py.sh` refuses a missing interpreter by name, and that the targets needing Python depend on the install |
 | `test_pinned_seed_is_durable.py` | 4 | that the pinned week has no retention policy eating it, and that the plant's own database still has one |

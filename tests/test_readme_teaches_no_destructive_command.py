@@ -60,8 +60,27 @@ RESET = re.compile(r"--reset\b|\bdropdb\b|\bDROP\s+DATABASE\b", re.I)
 
 
 def markdown_files() -> list[Path]:
-    """Every tracked markdown file, skipping vendored trees."""
-    skip = {".venv", "node_modules", ".git", "__pycache__", "dist", "build"}
+    """Every markdown file in the project, skipping vendored and generated trees.
+
+    **The docstring used to say "tracked", and the code did not check.** It
+    skipped a list of vendor directories and globbed everything else, so the
+    corpus depended on what happened to be lying around in the working copy --
+    and `docs/TESTING.md`'s count for this file was therefore measuring my
+    machine rather than the repository. `make test` runs pytest with
+    `-p no:cacheprovider` and CI does too, so `.pytest_cache/README.md` exists
+    locally and not there, and the file collected 180 tests on one and 178 on
+    the other. That is a documented figure failing in CI for a reason that has
+    nothing to do with the thing it documents.
+
+    Two ways to fix it: glob only tracked files with `git ls-files`, or skip the
+    trees that are not the project's. **Skipping is right here** -- `git` is not
+    a dependency of a test, and a source tarball has no index -- so the docstring
+    is corrected to describe what the code does rather than the other way round.
+    A comment that overstates what the code checks is a small lie that costs an
+    afternoon.
+    """
+    skip = {".venv", "node_modules", ".git", "__pycache__", "dist", "build",
+            ".pytest_cache", ".ruff_cache", ".mypy_cache", "evidence"}
     return sorted(
         path
         for path in ROOT.rglob("*.md")
