@@ -20,6 +20,7 @@ wrong while looking completely fine:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -471,7 +472,9 @@ def test_stabilise_does_not_mutate_its_argument() -> None:
     pd.testing.assert_frame_equal(before, snapshot, check_exact=True)
 
 
-def test_the_written_csv_is_the_stabilised_one(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_written_csv_is_the_stabilised_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """`stabilise` must be on the path to the file, not merely defined.
 
     **This is the guard that matters most, and it was missing.** The three tests
@@ -492,6 +495,15 @@ def test_the_written_csv_is_the_stabilised_one(monkeypatch: pytest.MonkeyPatch) 
 
     def capture(self: pd.DataFrame, path: Any, **kwargs: Any) -> None:
         captured["frame"] = self
+        # **Write something.** `main` ends with `args.out.stat()` to report the
+        # size, so a stub that only records the frame leaves a path that does not
+        # exist -- and the first version of this test passed locally and failed in
+        # CI for exactly that reason, because a real `dataset.csv` happened to be
+        # lying in the working copy. Second time in this repository that an
+        # untracked artefact has masked a failure: the documented test counts were
+        # measuring my machine for the same reason. A test may depend on its own
+        # `tmp_path` and on nothing else.
+        Path(path).write_bytes(b"")
 
     hours = pd.date_range("2026-01-01", periods=48, freq="h", tz="UTC")
     stored = pd.DataFrame(
@@ -511,6 +523,7 @@ def test_the_written_csv_is_the_stabilised_one(monkeypatch: pytest.MonkeyPatch) 
 
     build_dataset.main([
         "--dsn", "postgresql:///unused", "--days", "1", "--end", "2026-01-02T00:00:00Z",
+        "--out", str(tmp_path / "dataset.csv"),
     ])
 
     assert "frame" in captured, "main never wrote a frame; the test proved nothing"
